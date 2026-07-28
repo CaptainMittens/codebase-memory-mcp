@@ -1048,7 +1048,13 @@ TEST(daemon_ipc_windows_startup_retries_transient_rendezvous_reader) {
     if (record_status == CBM_PRIVATE_FILE_LOCK_OK) {
         thread_started = cbm_thread_create(&thread, 0, ipc_test_win_startup_call, &call) == 0;
     }
-    for (size_t attempt = 0; thread_started && attempt < 200U; attempt++) {
+    /* Onset wait: once the startup thread reaches its startup lock it HOLDS it
+     * for as long as this test's reader lock blocks the rendezvous write, so
+     * the observed state is stable — only the onset (thread spawn + IPC
+     * preamble) is timing-dependent, and 200ms missed it on a starved x64
+     * runner (release run 30322785509). 10s bounds a wedged spawn; a healthy
+     * run still exits on first observation. */
+    for (size_t attempt = 0; thread_started && attempt < 10000U; attempt++) {
         if (ipc_test_win_lock_busy(directory, "cbm-startup-v2.lock")) {
             startup_observed = true;
             break;
@@ -1126,7 +1132,13 @@ TEST(daemon_ipc_windows_rendezvous_bridges_concurrent_lifetime_owner) {
     if (record_status == CBM_PRIVATE_FILE_LOCK_OK) {
         thread_started = cbm_thread_create(&thread, 0, ipc_test_win_startup_call, &call) == 0;
     }
-    for (size_t attempt = 0; thread_started && attempt < 200U; attempt++) {
+    /* Onset wait: once the startup thread reaches its startup lock it HOLDS it
+     * for as long as this test's reader lock blocks the rendezvous write, so
+     * the observed state is stable — only the onset (thread spawn + IPC
+     * preamble) is timing-dependent, and 200ms missed it on a starved x64
+     * runner (release run 30322785509). 10s bounds a wedged spawn; a healthy
+     * run still exits on first observation. */
+    for (size_t attempt = 0; thread_started && attempt < 10000U; attempt++) {
         if (ipc_test_win_lock_busy(directory, "cbm-startup-v2.lock")) {
             startup_observed = true;
             break;
@@ -1534,8 +1546,7 @@ TEST(daemon_ipc_endpoint_is_namespaced_by_instance_key) {
     if (a_startup_status == 1 && !cbm_daemon_ipc_startup_lock_prepare_handoff(a_startup)) {
         a_startup_status = -1;
     }
-    if (other_startup_status == 1 &&
-        !cbm_daemon_ipc_startup_lock_prepare_handoff(other_startup)) {
+    if (other_startup_status == 1 && !cbm_daemon_ipc_startup_lock_prepare_handoff(other_startup)) {
         other_startup_status = -1;
     }
     cbm_daemon_ipc_startup_lock_release(&a_startup);
