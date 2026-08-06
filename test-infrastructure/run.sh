@@ -85,6 +85,11 @@ ci_cleanup() {
     if [ "${CBM_CI_BUILD_VOLUME}" = "cbm-build" ] || [ "${CBM_CI_KEEP:-0}" = "1" ]; then
         return $rc
     fi
+    # A failure BEFORE any container ran (bad leg name, preflight) never created
+    # a volume; claiming to have "kept" one then sends the reader after nothing.
+    if ! docker volume inspect "${CBM_CI_BUILD_VOLUME}" >/dev/null 2>&1; then
+        return $rc
+    fi
     if [ $rc -eq 0 ]; then
         docker volume rm -f "${CBM_CI_BUILD_VOLUME}" >/dev/null 2>&1 || true
     else
