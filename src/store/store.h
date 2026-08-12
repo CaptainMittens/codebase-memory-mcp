@@ -211,6 +211,8 @@ typedef struct {
     int visited_count;
     cbm_edge_info_t *edges;
     int edge_count;
+    bool truncated;       /* traversal safety ceiling reached; counts are lower bounds */
+    bool edges_truncated; /* optional edge-data ceiling reached; node counts stay exact */
 } cbm_traverse_result_t;
 
 /* ── Schema introspection ───────────────────────────────────────── */
@@ -599,6 +601,14 @@ void cbm_store_search_free(cbm_search_output_t *out);
 
 int cbm_store_bfs(cbm_store_t *s, int64_t start_id, const char *direction, const char **edge_types,
                   int edge_type_count, int max_depth, int max_results, cbm_traverse_result_t *out);
+
+/* BFS with an explicit edge-data budget. max_edges=0 skips the secondary
+ * all-pairs edge lookup; max_edges>0 collects at most that many edges and
+ * raises out->edges_truncated on saturation. Node traversal is unchanged.
+ * This is intended for lean callers that need nodes but not edge properties. */
+int cbm_store_bfs_with_edge_limit(cbm_store_t *s, int64_t start_id, const char *direction,
+                                  const char **edge_types, int edge_type_count, int max_depth,
+                                  int max_results, int max_edges, cbm_traverse_result_t *out);
 
 /* Multi-source BFS from ALL seed ids at once (one CTE, temp-table anchored).
  * Seeds are EXCLUDED from the result (impact semantics); MIN(hop) across the

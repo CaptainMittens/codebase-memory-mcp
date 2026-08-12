@@ -8,6 +8,7 @@
 
 // for ISO timestamp
 
+#include <limits.h>
 #include <stdint.h>
 #include "foundation/constants.h"
 #include "foundation/hash_table.h"
@@ -4451,10 +4452,14 @@ void cbm_store_search_free(cbm_search_output_t *out) {
 
 static int bfs_collect_edges(cbm_store_t *s, int64_t start_id, const cbm_node_hop_t *visited,
                              int visited_count, const char *types_clause, const char **edge_types,
-                             int edge_type_count, cbm_edge_info_t **out_edges,
-                             int *out_edge_count) {
+                             int edge_type_count, int max_edges, cbm_edge_info_t **out_edges,
+                             int *out_edge_count, bool *out_truncated) {
     *out_edges = NULL;
     *out_edge_count = 0;
+    *out_truncated = false;
+    if (max_edges == 0) {
+        return CBM_STORE_OK;
+    }
 
     /* Visited-ID set via a per-connection TEMP table. The previous approach
      * interpolated the ids into a fixed 4KB SQL string: past ~1000 visited
@@ -4466,22 +4471,37 @@ static int bfs_collect_edges(cbm_store_t *s, int64_t start_id, const cbm_node_ho
                      "CREATE TEMP TABLE IF NOT EXISTS bfs_ids (id INTEGER PRIMARY KEY);"
                      "DELETE FROM bfs_ids;",
                      NULL, NULL, NULL) != SQLITE_OK) {
-        return CBM_STORE_OK; /* best-effort: nodes without edges beat an error */
+        store_set_error_sqlite(s, "bfs edge ids");
+        return CBM_STORE_ERR;
     }
     sqlite3_stmt *ins = NULL;
     if (sqlite3_prepare_v2(s->db, "INSERT OR IGNORE INTO bfs_ids(id) VALUES (?1)", CBM_NOT_FOUND,
                            &ins, NULL) != SQLITE_OK) {
-        return CBM_STORE_OK;
+        store_set_error_sqlite(s, "bfs edge ids prepare");
+        return CBM_STORE_ERR;
     }
     sqlite3_bind_int64(ins, SKIP_ONE, start_id);
-    (void)sqlite3_step(ins);
+    if (sqlite3_step(ins) != SQLITE_DONE) {
+        store_set_error_sqlite(s, "bfs edge root id");
+        sqlite3_finalize(ins);
+        return CBM_STORE_ERR;
+    }
     for (int i = 0; i < visited_count; i++) {
         sqlite3_reset(ins);
         sqlite3_bind_int64(ins, SKIP_ONE, visited[i].node.id);
-        (void)sqlite3_step(ins);
+        if (sqlite3_step(ins) != SQLITE_DONE) {
+            store_set_error_sqlite(s, "bfs edge visited id");
+            sqlite3_finalize(ins);
+            return CBM_STORE_ERR;
+        }
     }
     sqlite3_finalize(ins);
 
+    char limit_clause[ST_BUF_64] = "";
+    if (max_edges > 0) {
+        snprintf(limit_clause, sizeof(limit_clause), " LIMIT %d",
+                 max_edges < INT_MAX ? max_edges + SKIP_ONE : max_edges);
+    }
     char edge_sql[ST_SQL_BUF];
     snprintf(edge_sql, sizeof(edge_sql),
              "SELECT n1.name, n2.name, e.type, e.source_id, e.target_id, e.properties "
@@ -4490,15 +4510,15 @@ static int bfs_collect_edges(cbm_store_t *s, int64_t start_id, const cbm_node_ho
              "JOIN nodes n2 ON n2.id = e.target_id "
              "WHERE e.source_id IN (SELECT id FROM bfs_ids) "
              "AND e.target_id IN (SELECT id FROM bfs_ids) "
-             "AND e.type IN (%s)",
-             types_clause);
+             "AND e.type IN (%s) "
+             "ORDER BY e.source_id, e.target_id, e.type%s",
+             types_clause, limit_clause);
 
     sqlite3_stmt *estmt = NULL;
     int rc = sqlite3_prepare_v2(s->db, edge_sql, CBM_NOT_FOUND, &estmt, NULL);
     if (rc != SQLITE_OK) {
-        *out_edges = NULL;
-        *out_edge_count = 0;
-        return CBM_STORE_OK;
+        store_set_error_sqlite(s, "bfs edges prepare");
+        return CBM_STORE_ERR;
     }
 
     if (edge_type_count > 0) {
@@ -4537,6 +4557,15 @@ static int bfs_collect_edges(cbm_store_t *s, int64_t start_id, const cbm_node_ho
     }
     sqlite3_finalize(estmt);
 
+    if (max_edges > 0 && en > max_edges) {
+        en = max_edges;
+        safe_str_free(&edges[en].from_name);
+        safe_str_free(&edges[en].to_name);
+        safe_str_free(&edges[en].type);
+        safe_str_free(&edges[en].properties_json);
+        *out_truncated = true;
+    }
+
     *out_edges = edges;
     *out_edge_count = en;
     return CBM_STORE_OK;
@@ -4563,9 +4592,13 @@ static void bfs_build_types_clause(int edge_type_count, char *buf, int buf_sz) {
     }
 }
 
-int cbm_store_bfs(cbm_store_t *s, int64_t start_id, const char *direction, const char **edge_types,
-                  int edge_type_count, int max_depth, int max_results, cbm_traverse_result_t *out) {
+int cbm_store_bfs_with_edge_limit(cbm_store_t *s, int64_t start_id, const char *direction,
+                                  const char **edge_types, int edge_type_count, int max_depth,
+                                  int max_results, int max_edges, cbm_traverse_result_t *out) {
     memset(out, 0, sizeof(*out));
+    if (max_results < 0) {
+        max_results = 0;
+    }
 
     cbm_node_t root = {0};
     int rc = cbm_store_find_node_by_id(s, start_id, &root);
@@ -4616,7 +4649,8 @@ int cbm_store_bfs(cbm_store_t *s, int64_t start_id, const char *direction, const
               * watermarks and reproducible trace output depend on it. */
              "ORDER BY hop, n.id "
              "LIMIT %d;",
-             (long long)start_id, next_id, join_cond, types_clause, max_depth, max_results);
+             (long long)start_id, next_id, join_cond, types_clause, max_depth,
+             max_results < INT_MAX ? max_results + SKIP_ONE : max_results);
 
     sqlite3_stmt *stmt = NULL;
     rc = sqlite3_prepare_v2(s->db, sql, CBM_NOT_FOUND, &stmt, NULL);
@@ -4658,19 +4692,40 @@ int cbm_store_bfs(cbm_store_t *s, int64_t start_id, const char *direction, const
 
     sqlite3_finalize(stmt);
 
+    if (n > max_results) {
+        n = max_results;
+        cbm_node_free_fields(&visited[n].node);
+        out->truncated = true;
+    }
+
     out->visited = visited;
     out->visited_count = n;
 
-    /* Collect edges between visited nodes (including root) */
-    if (n > 0) {
-        bfs_collect_edges(s, start_id, out->visited, n, types_clause, edge_types, edge_type_count,
-                          &out->edges, &out->edge_count);
+    /* Edge properties are a secondary, potentially dense all-pairs lookup.
+     * Lean callers pass max_edges=0 and avoid it entirely; diagnostics callers
+     * pass an explicit ceiling and receive an honest saturation bit. */
+    if (n > 0 && max_edges != 0) {
+        rc = bfs_collect_edges(s, start_id, out->visited, n, types_clause, edge_types,
+                               edge_type_count, max_edges, &out->edges, &out->edge_count,
+                               &out->edges_truncated);
+        if (rc != CBM_STORE_OK) {
+            return rc;
+        }
     } else {
         out->edges = NULL;
         out->edge_count = 0;
     }
 
     return CBM_STORE_OK;
+}
+
+int cbm_store_bfs(cbm_store_t *s, int64_t start_id, const char *direction, const char **edge_types,
+                  int edge_type_count, int max_depth, int max_results, cbm_traverse_result_t *out) {
+    /* Compatibility API: existing store/Cypher consumers historically
+     * requested the complete internal edge set. MCP trace calls use the
+     * explicit bounded API above. */
+    return cbm_store_bfs_with_edge_limit(s, start_id, direction, edge_types, edge_type_count,
+                                         max_depth, max_results, -1, out);
 }
 
 /* Multi-source BFS: one recursive CTE anchored on ALL seeds (via a temp

@@ -49,4 +49,13 @@ bool cbm_mcp_auto_index_within_file_limit(const char *root_path, int file_limit,
 bool cbm_detect_node_in_hunks(const cbm_node_t *node, const cbm_changed_hunk_t *hunks,
                               int hunk_count, const char *file);
 
+#ifdef CBM_ENABLE_TEST_SEAMS
+/* Filesystem PATH_MAX prevents a portable end-to-end fixture for multi-KiB
+ * stored paths. This seam drives the normal search result ownership,
+ * directory aggregation, and renderer pipeline with synthetic identities. */
+char *cbm_mcp_render_search_rows_for_testing(const char *const *qualified_names,
+                                             const char *const *file_paths, int row_count,
+                                             bool json_format);
+#endif
+
 #endif

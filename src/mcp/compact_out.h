@@ -51,4 +51,27 @@ void cbm_tree_cell_real(cbm_sb_t *sb, double v, bool first);
 void cbm_tree_cell_bool(cbm_sb_t *sb, bool v, bool first);
 void cbm_tree_row_end(cbm_sb_t *sb);
 
+/* Emit a flat string table without abbreviating cell values. `cells` is
+ * row-major with nrows*ncols entries. */
+void cbm_tree_table_rows(cbm_sb_t *sb, const char *key, int nrows, const char *const *cols,
+                         int ncols, const char *const *cells);
+
+/* Mixed string/literal variant. Literal columns (numbers/booleans) retain
+ * their unquoted types. NULL string_cols means every column is a string. */
+void cbm_tree_table_rows_typed(cbm_sb_t *sb, const char *key, int nrows, const char *const *cols,
+                               int ncols, const char *const *cells, const bool *string_cols);
+
+/* Semantic prefix-directory variant. Only columns explicitly marked in
+ * prefix_cols may be factored, so labels, diagnostics, and arbitrary query
+ * strings are never rewritten. The directory activates only when it saves at
+ * least 15% and 64 bytes. */
+void cbm_tree_table_rows_profiled(cbm_sb_t *sb, const char *key, int nrows, const char *const *cols,
+                                  int ncols, const char *const *cells, const bool *string_cols,
+                                  const bool *prefix_cols);
+
+/* Convert an arbitrary JSON value to the compact tree representation used by
+ * lean MCP responses. Homogeneous object arrays become header-once tables;
+ * nested values remain lossless JSON cells. Returns a heap string. */
+char *cbm_json_to_tree(const char *json);
+
 #endif /* CBM_MCP_COMPACT_OUT_H */
