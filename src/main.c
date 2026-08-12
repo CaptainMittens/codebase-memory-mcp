@@ -6,6 +6,7 @@
  *   cli <tool> <json>  Run a single tool call and print result
  *   --version       Print version and exit
  *   --help          Print usage and exit
+ *   cli --verbose   Include informational logs for one-shot commands
  *   --ui=true/false Enable/disable HTTP UI server (persisted)
  *   --port=N        Set HTTP UI port (persisted, default 9749)
  *   --tool-profile=analysis|scout  Expose a restricted agent tool surface
@@ -539,7 +540,11 @@ static bool client_start_parent_watchdog(pid_t initial_ppid) {
 
 /* ── CLI mode ───────────────────────────────────────────────────── */
 
-#define CLI_USAGE "Usage: codebase-memory-mcp cli [--progress] [--json] <tool_name> [json_args]\n"
+#define CLI_USAGE                                                                                \
+    "Usage: codebase-memory-mcp cli [--progress] [--verbose] [--json] <tool_name> [json_args]\n" \
+    "  --progress  Show lifecycle progress even when stderr is redirected\n"                     \
+    "  --verbose   Include informational logs (preserves CBM_LOG_LEVEL=debug)\n"                 \
+    "  --json      Print the raw MCP result envelope\n"
 
 /* Extract text content from MCP tool result envelope and print it.
  * MCP results: {"content":[{"type":"text","text":"..."}],"isError":...}
@@ -575,6 +580,24 @@ static int cli_print_mcp_result(const char *result) {
 /* Strip a flag from argv, returning true if found. */
 static bool cli_strip_flag(int *argc, char **argv, const char *flag) {
     for (int i = 0; i < *argc; i++) {
+        if (strcmp(argv[i], flag) != 0) {
+            continue;
+        }
+        for (int j = i; j < *argc - SKIP_ONE; j++) {
+            argv[j] = argv[j + SKIP_ONE];
+        }
+        (*argc)--;
+        return true;
+    }
+    return false;
+}
+
+/* Outer CLI flags precede the tool name. Keep this distinct from
+ * cli_strip_flag(): several MCP tools have their own `verbose` input, so
+ * `cli index_status --verbose` must remain a tool argument while
+ * `cli --verbose index_status` configures process logging. */
+static bool cli_strip_outer_flag(int *argc, char **argv, const char *flag) {
+    for (int i = 0; i < *argc && argv[i] && argv[i][0] == '-'; i++) {
         if (strcmp(argv[i], flag) != 0) {
             continue;
         }
@@ -669,6 +692,10 @@ static char *main_local_cli_daemon_execute(const char *tool_name, const char *ar
 
 static int run_cli(int argc, char **argv, cbm_project_lock_manager_t *project_locks,
                    main_local_maintenance_context_t *maintenance_context) {
+    bool verbose_requested = cli_strip_outer_flag(&argc, argv, "--verbose");
+    if (verbose_requested && cbm_log_get_level() > CBM_LOG_INFO) {
+        cbm_log_set_level(CBM_LOG_INFO);
+    }
     if (argc == 1 && argv && (strcmp(argv[0], "--help") == 0 || strcmp(argv[0], "-h") == 0)) {
         (void)fputs(CLI_USAGE, stdout);
         return 0;
@@ -898,7 +925,7 @@ static void print_help(void) {
     printf("codebase-memory-mcp %s\n\n", CBM_VERSION);
     printf("Usage:\n");
     printf("  codebase-memory-mcp              Run MCP server on stdio\n");
-    printf("  codebase-memory-mcp cli [--progress] [--json] <tool> [args]\n");
+    printf("  codebase-memory-mcp cli [--progress] [--verbose] [--json] <tool> [args]\n");
     printf("                                      Run one tool locally, then exit\n");
     printf("  codebase-memory-mcp install [-y|-n] [--force] [--dry-run] "
            "[--dir=<path>] [--skip-config]\n");
@@ -1610,9 +1637,10 @@ static char *main_local_cli_daemon_execute(const char *tool_name, const char *ar
         return NULL;
     }
     if (bootstrap.daemon_spawned) {
-        (void)fprintf(stderr, "hint: this command started a temporary CBM daemon. "
-                              "`codebase-memory-mcp daemon start` keeps one warm and removes this "
-                              "startup cost from every CLI command.\n");
+        /* Routine cold-start advice is informational. Default one-shot CLI
+         * output stays pipe-clean; `cli --verbose ...` opts into this detail. */
+        cbm_log_info("cli.daemon.spawned", "hint",
+                     "codebase-memory-mcp daemon start keeps one warm");
     }
     char session_root[MAIN_PATH_CAP];
     char allowed_root[MAIN_PATH_CAP];

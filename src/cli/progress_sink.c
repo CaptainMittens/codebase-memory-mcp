@@ -31,6 +31,8 @@ static FILE *s_out;
 static atomic_int s_needs_newline;
 static int s_gbuf_nodes = NOT_SET;
 static int s_gbuf_edges = NOT_SET;
+static CBMLogLevel s_previous_log_level = CBM_LOG_WARN;
+static bool s_raised_log_level;
 static cbm_mutex_t s_sink_mutex;
 static atomic_int s_sink_mutex_state = ATOMIC_VAR_INIT(LOCK_UNINITIALIZED);
 
@@ -184,6 +186,13 @@ void cbm_progress_sink_init(FILE *out) {
     atomic_store(&s_needs_newline, 0);
     s_gbuf_nodes = NOT_SET;
     s_gbuf_edges = NOT_SET;
+    s_previous_log_level = cbm_log_get_level();
+    s_raised_log_level = s_previous_log_level > CBM_LOG_INFO;
+    if (s_raised_log_level) {
+        /* Progress is an explicit INFO opt-in. The replacement sink below
+         * keeps only recognized lifecycle events plus warnings/errors. */
+        cbm_log_set_level(CBM_LOG_INFO);
+    }
     cbm_log_set_sink(cbm_progress_sink_fn);
     cbm_mutex_unlock(&s_sink_mutex);
 }
@@ -197,6 +206,10 @@ void cbm_progress_sink_fini(void) {
         (void)fflush(s_out);
     }
     s_out = NULL;
+    if (s_raised_log_level) {
+        cbm_log_set_level(s_previous_log_level);
+        s_raised_log_level = false;
+    }
     cbm_mutex_unlock(&s_sink_mutex);
 }
 
@@ -338,6 +351,19 @@ static const event_handler_t handlers[] = {
 
 enum { HANDLER_COUNT = sizeof(handlers) / sizeof(handlers[0]) };
 
+/* The progress sink replaces normal logger output. Preserve actionable
+ * failures verbatim, but keep routine worker chatter out of the human progress
+ * view. Logger callbacks do not include a trailing newline. */
+static void passthrough_failure(const char *line) {
+    flush_carriage();
+    (void)fputs(line, s_out);
+    size_t line_len = strlen(line);
+    if (line_len == 0 || line[line_len - 1] != '\n') {
+        (void)fputc('\n', s_out);
+    }
+    (void)fflush(s_out);
+}
+
 void cbm_progress_sink_fn(const char *line) {
     progress_sink_mutex_ensure();
     cbm_mutex_lock(&s_sink_mutex);
@@ -345,6 +371,21 @@ void cbm_progress_sink_fn(const char *line) {
         cbm_mutex_unlock(&s_sink_mutex);
         return;
     }
+    char level[CBM_SZ_32] = {0};
+    if (!extract_kv(line, "level", level, (int)sizeof(level))) {
+        cbm_mutex_unlock(&s_sink_mutex);
+        return;
+    }
+    if (strcmp(level, "warn") == 0 || strcmp(level, "error") == 0) {
+        passthrough_failure(line);
+        cbm_mutex_unlock(&s_sink_mutex);
+        return;
+    }
+    if (strcmp(level, "info") != 0) {
+        cbm_mutex_unlock(&s_sink_mutex);
+        return;
+    }
+
     char msg[CBM_SZ_64] = {0};
     if (!extract_kv(line, "msg", msg, (int)sizeof(msg))) {
         cbm_mutex_unlock(&s_sink_mutex);

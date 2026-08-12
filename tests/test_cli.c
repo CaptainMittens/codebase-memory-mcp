@@ -21,6 +21,7 @@
 #include <daemon/runtime.h>
 #include <daemon/version_cohort.h>
 #include <foundation/constants.h>
+#include <foundation/log.h>
 #include <foundation/platform.h>
 #include <mcp/mcp.h>
 #include <pipeline/pipeline.h>
@@ -100,6 +101,53 @@ TEST(cli_progress_sink_accepts_worker_json_logs) {
     ASSERT_TRUE(rendered_size > 0);
     ASSERT_NOT_NULL(strstr(rendered, "Discovering files (3 found)"));
     ASSERT_NOT_NULL(strstr(rendered, "[1/9] Building file structure"));
+    PASS();
+}
+
+TEST(cli_progress_sink_enables_lifecycle_info_then_restores_quiet_default) {
+    FILE *out = tmpfile();
+    ASSERT_NOT_NULL(out);
+    cbm_log_set_level(CBM_LOG_WARN);
+
+    cbm_progress_sink_init(out);
+    ASSERT_EQ(cbm_log_get_level(), CBM_LOG_INFO);
+    cbm_log_info("pipeline.discover", "files", "3");
+    cbm_progress_sink_fini();
+    ASSERT_EQ(cbm_log_get_level(), CBM_LOG_WARN);
+
+    ASSERT_EQ(fseek(out, 0, SEEK_SET), 0);
+    char rendered[256] = {0};
+    size_t rendered_size = fread(rendered, 1, sizeof(rendered) - 1, out);
+    (void)fclose(out);
+    ASSERT_TRUE(rendered_size > 0);
+    ASSERT_NOT_NULL(strstr(rendered, "Discovering files (3 found)"));
+    PASS();
+}
+
+TEST(cli_progress_sink_suppresses_noise_and_preserves_failures) {
+    FILE *out = tmpfile();
+    ASSERT_NOT_NULL(out);
+
+    cbm_progress_sink_init(out);
+    cbm_progress_sink_fn("level=info msg=parallel.extract.progress done=1 total=2");
+    cbm_progress_sink_fn("level=debug msg=worker.detail value=drop-debug");
+    cbm_progress_sink_fn(
+        "{\"level\":\"info\",\"event\":\"worker.detail\",\"value\":\"drop-info\"}");
+    cbm_progress_sink_fn("level=warn msg=worker.warning detail=keep-text");
+    cbm_progress_sink_fn(
+        "{\"level\":\"error\",\"event\":\"worker.failure\",\"detail\":\"keep-json\"}");
+    cbm_progress_sink_fini();
+
+    ASSERT_EQ(fseek(out, 0, SEEK_SET), 0);
+    char rendered[1024] = {0};
+    size_t rendered_size = fread(rendered, 1, sizeof(rendered) - 1, out);
+    (void)fclose(out);
+
+    ASSERT_TRUE(rendered_size > 0);
+    ASSERT_STR_EQ(rendered,
+                  "\r  Extracting: 1/2 files (50%)\n"
+                  "level=warn msg=worker.warning detail=keep-text\n"
+                  "{\"level\":\"error\",\"event\":\"worker.failure\",\"detail\":\"keep-json\"}\n");
     PASS();
 }
 
@@ -8810,6 +8858,57 @@ TEST(cli_hook_session_resolves_custom_named_index_by_root_path) {
     PASS();
 }
 
+TEST(cli_hook_session_exhausts_project_registry_pages) {
+    enum { DECOY_DATABASES = 500 };
+    char tmpdir[256];
+    snprintf(tmpdir, sizeof(tmpdir), "/tmp/cli-hook-project-pages-XXXXXX");
+    if (!cbm_mkdtemp(tmpdir))
+        FAIL("cbm_mkdtemp failed");
+    char cache[512];
+    char decoy_root[512];
+    char target_root[512];
+    char decoy_db[640];
+    char target_db[640];
+    snprintf(cache, sizeof(cache), "%s/cache", tmpdir);
+    snprintf(decoy_root, sizeof(decoy_root), "%s/decoy", tmpdir);
+    snprintf(target_root, sizeof(target_root), "%s/target", tmpdir);
+    snprintf(decoy_db, sizeof(decoy_db), "%s/decoy-000.db", cache);
+    snprintf(target_db, sizeof(target_db), "%s/target.db", cache);
+    test_mkdirp(cache);
+    test_mkdirp(decoy_root);
+    test_mkdirp(target_root);
+
+    cbm_store_t *store = cbm_store_open_path(decoy_db);
+    ASSERT_NOT_NULL(store);
+    ASSERT_EQ(cbm_store_upsert_project(store, "aaa-decoy", decoy_root), CBM_STORE_OK);
+    cbm_store_close(store);
+    for (int i = 1; i < DECOY_DATABASES; i++) {
+        char copy[640];
+        snprintf(copy, sizeof(copy), "%s/decoy-%03d.db", cache, i);
+        ASSERT_EQ(cbm_copy_file(decoy_db, copy), 0);
+    }
+
+    store = cbm_store_open_path(target_db);
+    ASSERT_NOT_NULL(store);
+    ASSERT_EQ(cbm_store_upsert_project(store, "zzz-custom-project", target_root), CBM_STORE_OK);
+    cbm_store_close(store);
+
+    char *saved_cache = save_test_env("CBM_CACHE_DIR");
+    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+    char input[1024];
+    snprintf(input, sizeof(input), "{\"hook_event_name\":\"SessionStart\",\"cwd\":\"%s\"}",
+             target_root);
+    char *output = cbm_hook_augment_lifecycle_json(input);
+    bool matched = output && strstr(output, "zzz-custom-project") && strstr(output, "is indexed");
+
+    free(output);
+    restore_test_env("CBM_CACHE_DIR", saved_cache);
+    test_rmdir_r(tmpdir);
+    if (!matched)
+        FAIL("SessionStart must exhaust list_projects pages before resolving root_path");
+    PASS();
+}
+
 TEST(cli_hook_session_sanitizes_untrusted_project_metadata) {
     char tmpdir[256];
     snprintf(tmpdir, sizeof(tmpdir), "/tmp/cli-hook-untrusted-project-XXXXXX");
@@ -10396,6 +10495,55 @@ TEST(cli_hook_augment_bash_pattern_extractor) {
                                                                 out, sizeof(out)));
     ASSERT_STR_EQ(out, "CreateStripeCheckout");
 
+    PASS();
+}
+TEST(cli_hook_augment_coverage_requests_machine_json) {
+    char tmpdir[256];
+    snprintf(tmpdir, sizeof(tmpdir), "/tmp/cli-hook-coverage-json-XXXXXX");
+    if (!cbm_mkdtemp(tmpdir))
+        FAIL("cbm_mkdtemp failed");
+    char repo[512];
+    char source[640];
+    char db_path[640];
+    snprintf(repo, sizeof(repo), "%s/repo", tmpdir);
+    snprintf(source, sizeof(source), "%s/src/partial.c", repo);
+    snprintf(db_path, sizeof(db_path), "%s/hook.db", tmpdir);
+    test_mkdirp(repo);
+    char source_dir[640];
+    snprintf(source_dir, sizeof(source_dir), "%s/src", repo);
+    test_mkdirp(source_dir);
+    write_test_file(source, "int partial(void) { return 1; }\n");
+
+    cbm_store_t *store = cbm_store_open_path(db_path);
+    ASSERT_NOT_NULL(store);
+    ASSERT_EQ(cbm_store_upsert_project(store, "repo", repo), CBM_STORE_OK);
+    ASSERT_EQ(cbm_store_upsert_file_hash(store, "repo", "src/partial.c", "fixture", 1, 32),
+              CBM_STORE_OK);
+    const cbm_coverage_row_t row = {
+        .rel_path = "src/partial.c", .kind = "parse_partial", .detail = "12-14"};
+    ASSERT_EQ(cbm_store_coverage_replace(store, "repo", &row, 1), CBM_STORE_OK);
+    cbm_store_close(store);
+
+    char *saved_cache = save_test_env("CBM_CACHE_DIR");
+    cbm_setenv("CBM_CACHE_DIR", tmpdir, 1);
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    ASSERT_NOT_NULL(srv);
+    cbm_mcp_server_set_project(srv, "repo");
+
+    char input[2048];
+    snprintf(input, sizeof(input),
+             "{\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Read\","
+             "\"tool_input\":{\"file_path\":\"%s\"},\"cwd\":\"%s\"}",
+             source, repo);
+    char *output = cbm_hook_augment_process(srv, input);
+    bool matched = output && strstr(output, "PARTIALLY indexed") && strstr(output, "12-14");
+
+    free(output);
+    cbm_mcp_server_free(srv);
+    restore_test_env("CBM_CACHE_DIR", saved_cache);
+    test_rmdir_r(tmpdir);
+    if (!matched)
+        FAIL("Post-read hook must parse check_index_coverage's explicit JSON response");
     PASS();
 }
 
@@ -14018,6 +14166,8 @@ SUITE(cli) {
     RUN_TEST(cli_raw_mcp_result_preserves_tool_error_status);
     RUN_TEST(cli_maintenance_cancellation_forces_failure_status);
     RUN_TEST(cli_progress_sink_accepts_worker_json_logs);
+    RUN_TEST(cli_progress_sink_enables_lifecycle_info_then_restores_quiet_default);
+    RUN_TEST(cli_progress_sink_suppresses_noise_and_preserves_failures);
     RUN_TEST(cli_progress_sink_serializes_concurrent_callbacks);
     RUN_TEST(cli_sha256_file_matches_known_vector);
     RUN_TEST(cli_checksum_manifest_requires_exact_filename_and_accepts_star);
@@ -14243,6 +14393,7 @@ SUITE(cli) {
     RUN_TEST(cli_augment_installs_session_context_and_subagent);
     RUN_TEST(cli_augment_session_uses_workspace_roots);
     RUN_TEST(cli_hook_session_resolves_custom_named_index_by_root_path);
+    RUN_TEST(cli_hook_session_exhausts_project_registry_pages);
     RUN_TEST(cli_hook_session_sanitizes_untrusted_project_metadata);
     RUN_TEST(cli_hook_ownership_requires_exact_command_identity);
     RUN_TEST(cli_gemini_hook_upgrade_migrates_released_exact_commands);
@@ -14274,6 +14425,7 @@ SUITE(cli) {
     RUN_TEST(cli_hook_augment_context_tracks_search_json_shape);
     RUN_TEST(cli_hook_augment_bash_pretooluse_reaches_augmenter);
     RUN_TEST(cli_hook_augment_bash_pattern_extractor);
+    RUN_TEST(cli_hook_augment_coverage_requests_machine_json);
     RUN_TEST(cli_hook_augment_lifecycle_output_contract);
     RUN_TEST(cli_hook_augment_subagent_tier_router_contract);
     RUN_TEST(cli_hook_augment_subagent_no_project_guidance_is_read_only);

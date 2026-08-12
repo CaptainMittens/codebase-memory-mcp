@@ -44,7 +44,7 @@ typedef enum {
  * unchanged. Call once at startup before any threads or log lines. */
 void cbm_log_init_from_env(void);
 
-/* Set minimum log level (default: INFO). */
+/* Set minimum log level (default: WARN; INFO is opt-in). */
 void cbm_log_set_level(CBMLogLevel level);
 
 /* Get current log level. */

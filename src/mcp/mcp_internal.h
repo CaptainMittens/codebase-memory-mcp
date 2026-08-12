@@ -75,5 +75,13 @@ bool cbm_search_code_windows_path_matches_prefilter(const char *path, const char
 void cbm_search_code_build_grep_cmd(char *cmd, size_t cmd_sz, bool use_regex, bool scoped,
                                     const char *file_pattern, const char *tmpfile,
                                     const char *filelist, const char *root_path);
+#ifdef CBM_ENABLE_TEST_SEAMS
+/* Filesystem PATH_MAX prevents a portable end-to-end fixture for multi-KiB
+ * stored paths. This seam drives the normal search result ownership,
+ * directory aggregation, and renderer pipeline with synthetic identities. */
+char *cbm_mcp_render_search_rows_for_testing(const char *const *qualified_names,
+                                             const char *const *file_paths, int row_count,
+                                             bool json_format);
+#endif
 
 #endif

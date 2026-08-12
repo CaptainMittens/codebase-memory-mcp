@@ -810,6 +810,9 @@ TEST(cypher_exec_optional_saturated_does_not_fabricate_no_match) {
     /* The discriminator: C has 5 callees, so claiming it has none is a
      * fabrication. Pre-fix this is exactly what the saturated path emitted. */
     ASSERT_FALSE(saw_c);
+    /* Late filtering leaves fewer than max_rows output rows, but the earlier
+     * relationship materialization still saturated its candidate budget. */
+    ASSERT_TRUE(r.truncated);
 
     cbm_cypher_result_free(&r);
     cbm_store_close(s);
@@ -1274,6 +1277,9 @@ TEST(cypher_exec_varlength_path_semantics_issue797) {
     ASSERT_EQ(r4.row_count, 0);
     ASSERT_NOT_NULL(r4.warning);
     ASSERT_NOT_NULL(strstr(r4.warning, "clamped"));
+    /* The warning reports the policy clamp, but this shallow fixture has no
+     * candidate beyond the ceiling, so evaluation was still exhaustive. */
+    ASSERT_FALSE(r4.truncated);
     cbm_cypher_result_free(&r4);
 
     cbm_store_close(s);
@@ -1783,6 +1789,7 @@ TEST(cypher_exec_variable_length) {
     ASSERT_EQ(rc, 0);
     /* Should find: ValidateOrder (1 hop), SubmitOrder (2 hops), LogError (1 hop) */
     ASSERT_GTE(r.row_count, 3);
+    ASSERT_FALSE(r.truncated);
 
     cbm_cypher_result_free(&r);
     cbm_store_close(s);
@@ -1866,6 +1873,7 @@ TEST(cypher_exec_var_length_explicit_bound_capped) {
     ASSERT_TRUE(saw_n10);  /* within the ceiling — proves the traversal really ran */
     ASSERT_FALSE(saw_n11); /* clamped away */
     ASSERT_FALSE(saw_n12);
+    ASSERT_TRUE(r.truncated);
 
     cbm_cypher_result_free(&r);
     cbm_store_close(s);
@@ -2786,6 +2794,7 @@ TEST(cypher_apply_limit) {
     int rc = cbm_cypher_execute(s, "MATCH (f:Function) RETURN f.name LIMIT 5", "lim", 0, &r);
     ASSERT_EQ(rc, 0);
     ASSERT_EQ(r.row_count, 5);
+    ASSERT_FALSE(r.truncated);
     cbm_cypher_result_free(&r);
 
     /* No LIMIT, max_rows=10 → capped at 10 */
@@ -2793,6 +2802,7 @@ TEST(cypher_apply_limit) {
     rc = cbm_cypher_execute(s, "MATCH (f:Function) RETURN f.name", "lim", 10, &r);
     ASSERT_EQ(rc, 0);
     ASSERT_EQ(r.row_count, 10);
+    ASSERT_TRUE(r.truncated);
     cbm_cypher_result_free(&r);
 
     /* LIMIT above max_rows → explicit limit wins */
@@ -2800,8 +2810,138 @@ TEST(cypher_apply_limit) {
     rc = cbm_cypher_execute(s, "MATCH (f:Function) RETURN f.name LIMIT 30", "lim", 10, &r);
     ASSERT_EQ(rc, 0);
     ASSERT_EQ(r.row_count, 30);
+    ASSERT_FALSE(r.truncated);
     cbm_cypher_result_free(&r);
 
+    cbm_store_close(s);
+    PASS();
+}
+
+/* max_rows is an engine output budget, not Cypher query semantics. Callers
+ * need to distinguish a complete short result from one cut off by that budget.
+ * An explicit LIMIT remains complete because it is part of the query itself. */
+TEST(cypher_result_reports_max_rows_saturation) {
+    cbm_store_t *s = cbm_store_open_memory();
+    cbm_store_upsert_project(s, "sat", "/tmp/sat");
+
+    for (int i = 0; i < 7; i++) {
+        char name[32];
+        char qn[64];
+        snprintf(name, sizeof(name), "func%d", i);
+        snprintf(qn, sizeof(qn), "sat.func%d", i);
+        cbm_node_t n = {.project = "sat",
+                        .label = "Function",
+                        .name = name,
+                        .qualified_name = qn,
+                        .file_path = "test.c"};
+        cbm_store_upsert_node(s, &n);
+    }
+
+    cbm_cypher_result_t r = {0};
+    int rc = cbm_cypher_execute(s, "MATCH (f:Function) RETURN f.name", "sat", 3, &r);
+    ASSERT_EQ(rc, 0);
+    ASSERT_EQ(r.row_count, 3);
+    ASSERT_TRUE(r.truncated);
+    cbm_cypher_result_free(&r);
+
+    memset(&r, 0, sizeof(r));
+    rc = cbm_cypher_execute(s, "MATCH (f:Function) RETURN f.name", "sat", 10, &r);
+    ASSERT_EQ(rc, 0);
+    ASSERT_EQ(r.row_count, 7);
+    ASSERT_FALSE(r.truncated);
+    cbm_cypher_result_free(&r);
+
+    memset(&r, 0, sizeof(r));
+    rc = cbm_cypher_execute(s, "MATCH (f:Function) RETURN f.name LIMIT 3", "sat", 10, &r);
+    ASSERT_EQ(rc, 0);
+    ASSERT_EQ(r.row_count, 3);
+    ASSERT_FALSE(r.truncated);
+    cbm_cypher_result_free(&r);
+
+    /* RETURN * historically keeps max_rows as its output cap even when a
+     * larger Cypher LIMIT is present; preserve that behavior and report it. */
+    memset(&r, 0, sizeof(r));
+    rc = cbm_cypher_execute(s, "MATCH (f:Function) RETURN * LIMIT 5", "sat", 3, &r);
+    ASSERT_EQ(rc, 0);
+    ASSERT_EQ(r.row_count, 3);
+    ASSERT_TRUE(r.truncated);
+    cbm_cypher_result_free(&r);
+
+    cbm_store_close(s);
+    PASS();
+}
+
+/* An unlabeled scan has a max_rows*10 candidate budget. Aggregation can hide
+ * that loss behind one output row, so row_count alone cannot report it. */
+TEST(cypher_result_reports_scan_saturation_before_aggregation) {
+    cbm_store_t *s = cbm_store_open_memory();
+    cbm_store_upsert_project(s, "scan_sat", "/tmp/scan_sat");
+
+    for (int i = 0; i < 11; i++) {
+        char name[32];
+        char qn[64];
+        snprintf(name, sizeof(name), "node%d", i);
+        snprintf(qn, sizeof(qn), "scan_sat.node%d", i);
+        cbm_node_t n = {
+            .project = "scan_sat", .label = "Function", .name = name, .qualified_name = qn};
+        cbm_store_upsert_node(s, &n);
+    }
+
+    cbm_cypher_result_t r = {0};
+    int rc = cbm_cypher_execute(s, "MATCH (n) RETURN count(*) AS n", "scan_sat", 1, &r);
+    ASSERT_EQ(rc, 0);
+    ASSERT_EQ(r.row_count, 1);
+    ASSERT_STR_EQ(r.rows[0][0], "10");
+    ASSERT_TRUE(r.truncated);
+    cbm_cypher_result_free(&r);
+
+    memset(&r, 0, sizeof(r));
+    rc = cbm_cypher_execute(s, "MATCH (n) RETURN count(*) AS n", "scan_sat", 2, &r);
+    ASSERT_EQ(rc, 0);
+    ASSERT_EQ(r.row_count, 1);
+    ASSERT_STR_EQ(r.rows[0][0], "11");
+    ASSERT_FALSE(r.truncated);
+    cbm_cypher_result_free(&r);
+
+    cbm_store_close(s);
+    PASS();
+}
+
+/* Variable-length traversal historically materializes at most 100 visited
+ * nodes. Probe one extra candidate so an exact 100 is distinguishable from a
+ * graph with additional reachable nodes, while preserving the 100-row output. */
+TEST(cypher_result_reports_variable_length_candidate_saturation) {
+    cbm_store_t *s = cbm_store_open_memory();
+    cbm_store_upsert_project(s, "bfs_sat", "/tmp/bfs_sat");
+
+    cbm_node_t root = {.project = "bfs_sat",
+                       .label = "Function",
+                       .name = "root",
+                       .qualified_name = "bfs_sat.root"};
+    int64_t root_id = cbm_store_upsert_node(s, &root);
+    for (int i = 0; i < 101; i++) {
+        char name[32];
+        char qn[64];
+        snprintf(name, sizeof(name), "target%03d", i);
+        snprintf(qn, sizeof(qn), "bfs_sat.target%03d", i);
+        cbm_node_t target = {
+            .project = "bfs_sat", .label = "Var", .name = name, .qualified_name = qn};
+        int64_t target_id = cbm_store_upsert_node(s, &target);
+        cbm_edge_t edge = {
+            .project = "bfs_sat", .source_id = root_id, .target_id = target_id, .type = "CALLS"};
+        cbm_store_insert_edge(s, &edge);
+    }
+
+    cbm_cypher_result_t r = {0};
+    int rc = cbm_cypher_execute(s,
+                                "MATCH (a:Function {name: \"root\"})-[:CALLS*1..2]->(b:Var) "
+                                "RETURN b.name",
+                                "bfs_sat", 1000, &r);
+    ASSERT_EQ(rc, 0);
+    ASSERT_EQ(r.row_count, 100);
+    ASSERT_TRUE(r.truncated);
+
+    cbm_cypher_result_free(&r);
     cbm_store_close(s);
     PASS();
 }
@@ -4360,6 +4500,9 @@ SUITE(cypher) {
     RUN_TEST(cypher_edge_filter_regex);
     RUN_TEST(cypher_edge_builtin_type_filter);
     RUN_TEST(cypher_apply_limit);
+    RUN_TEST(cypher_result_reports_max_rows_saturation);
+    RUN_TEST(cypher_result_reports_scan_saturation_before_aggregation);
+    RUN_TEST(cypher_result_reports_variable_length_candidate_saturation);
     /* Phase 1: Simple operators */
     RUN_TEST(cypher_lex_neq_operators);
     RUN_TEST(cypher_lex_ends_keyword);

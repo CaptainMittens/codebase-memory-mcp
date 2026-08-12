@@ -1568,26 +1568,29 @@ TEST(tool_qg_two_hop) {
 
 TEST(tool_qg_max_rows) {
     double ms;
-    /* Query without max_rows — gets many results */
+    /* Query without max_rows — its explicit Cypher LIMIT is the visible cap. */
     char *r1 = call_tool_timed("query_graph", &ms,
                                "{\"project\":\"%s\","
                                "\"query\":\"MATCH (n:Function) RETURN n.name LIMIT 100\"}",
                                g_project);
     TOOL_OK(r1, ms);
-    int total_unlimited = count_in_response(r1, "total");
+    int returned_unlimited = count_in_response(r1, "returned");
     free(r1);
 
-    /* Same query without LIMIT but with max_rows=3 — must cap results */
+    /* max_rows caps presentation, not evaluation: returned is bounded while
+     * total remains the exact full materialized count. */
     char *r2 = call_tool_timed("query_graph", &ms,
                                "{\"project\":\"%s\","
                                "\"query\":\"MATCH (n:Function) RETURN n.name\","
                                "\"max_rows\":3}",
                                g_project);
     TOOL_OK(r2, ms);
+    int returned_limited = count_in_response(r2, "returned");
     int total_limited = count_in_response(r2, "total");
-    ASSERT_LTE(total_limited, 3);
-    /* Without max_rows should have more than with */
-    ASSERT_GT(total_unlimited, total_limited);
+    ASSERT_EQ(returned_limited, 3);
+    ASSERT_GT(total_limited, returned_limited);
+    ASSERT_GT(returned_unlimited, returned_limited);
+    ASSERT_NOT_NULL(strstr(r2, "page_limit"));
     free(r2);
     PASS();
 }
@@ -2262,8 +2265,11 @@ TEST(tool_qg_max_rows_1) {
                               "\"max_rows\":1}",
                               g_project);
     TOOL_OK(r, ms);
+    int returned = count_in_response(r, "returned");
     int total = count_in_response(r, "total");
-    ASSERT_EQ(total, 1);
+    ASSERT_EQ(returned, 1);
+    ASSERT_GT(total, returned);
+    ASSERT_NOT_NULL(strstr(r, "page_limit"));
     free(r);
     PASS();
 }
