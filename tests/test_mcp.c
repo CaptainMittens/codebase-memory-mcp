@@ -13398,7 +13398,35 @@ TEST(tool_detect_changes_pages_changed_files_and_honors_semantic_budget) {
     yyjson_doc_free(doc);
     free(inner);
     free(response);
+    ASSERT_EQ(cbm_unlink(changed_link), 0);
 #endif
+
+    /* A tracked deletion is complete snapshot evidence, not an inspection
+     * failure. Keep enough other changes to require pagination and prove a
+     * deleted path can still mint the opaque continuation. */
+    char deleted_path[CBM_SZ_4K];
+    snprintf(deleted_path, sizeof(deleted_path), "%s/deleted.c", repo);
+    ASSERT_EQ(th_write_file(deleted_path, "int deleted;\n"), 0);
+    const char *const add_deleted_args[] = {"add", "--", "deleted.c", NULL};
+    ASSERT_EQ(mcp_test_git(repo, add_deleted_args), 0);
+    ASSERT_EQ(mcp_test_git(repo, commit_args), 0);
+    ASSERT_EQ(cbm_unlink(deleted_path), 0);
+    response = cbm_mcp_handle_tool(
+        srv, "detect_changes",
+        "{\"project\":\"detect-pages-project\",\"base_branch\":\"HEAD\","
+        "\"scope\":\"files\",\"format\":\"json\"}");
+    ASSERT_NOT_NULL(response);
+    inner = extract_text_content(response);
+    ASSERT_NOT_NULL(inner);
+    doc = yyjson_read(inner, strlen(inner), 0);
+    ASSERT_NOT_NULL(doc);
+    root = yyjson_doc_get_root(doc);
+    ASSERT_EQ(yyjson_get_int(yyjson_obj_get(root, "changed_total")), 26);
+    ASSERT_NULL(yyjson_obj_get(root, "snapshot_cursor_unavailable"));
+    ASSERT_TRUE(yyjson_is_str(yyjson_obj_get(root, "changed_next_cursor")));
+    yyjson_doc_free(doc);
+    free(inner);
+    free(response);
     free(changed_cursor);
 
     cbm_mcp_server_free(srv);
