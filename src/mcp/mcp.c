@@ -482,8 +482,8 @@ static const tool_def_t TOOLS[] = {
      "},\"required\":[\"repo_path\"]}"},
 
     {"search_graph", "Search graph",
-     "Regex rows keep qn/file/lines and in/out over CALLS/USAGE/CALL_REFERENCE/INHERITS/"
-     "IMPLEMENTS. Pages: offset/limit; semantic_offset/semantic_limit.",
+     "Find symbols via BM25 query, regex name/qn filters, or semantic_query. Rows keep "
+     "qn/file/lines and in/out over CALLS/USAGE/CALL_REFERENCE/INHERITS/IMPLEMENTS.",
      "{\"type\":\"object\",\"properties\":{\"project\":{\"type\":\"string\"},"
      "\"query\":{\"type\":\"string\"},"
      "\"label\":{\"type\":\"string\"},\"name_pattern\":{\"type\":\"string\"},\"qn_pattern\":{"
@@ -501,9 +501,9 @@ static const tool_def_t TOOLS[] = {
      "\"offset\":{\"type\":\"integer\",\"default\":0,\"minimum\":0},"
      "\"max_output_tokens\":{\"type\":\"integer\",\"default\":3200,\"minimum\":128,"
      "\"maximum\":1000000},"
-     "\"format\":{\"type\":\"string\",\"enum\":[\"tree\",\"json\"]},"
+     "\"format\":{\"type\":\"string\",\"enum\":[\"tree\",\"json\"],\"default\":\"tree\"},"
      "\"fields\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},"
-     "\"detail\":{\"type\":\"string\",\"enum\":[\"ids\",\"default\"]}},"
+     "\"detail\":{\"type\":\"string\",\"enum\":[\"ids\",\"default\"],\"default\":\"default\"}},"
      "\"required\":[\"project\"]}"},
 
     {"query_graph", "Query graph",
@@ -720,7 +720,7 @@ static const tool_def_t TOOLS[] = {
     {"detect_changes", "Detect changes",
      "Map a Git diff to files and impact. Page with snapshot cursors.",
      "{\"type\":\"object\",\"properties\":{\"project\":{\"type\":\"string\"},\"scope\":{\"type\":"
-     "\"string\",\"enum\":[\"files\",\"impact\"]},"
+     "\"string\",\"enum\":[\"files\",\"impact\"],\"default\":\"impact\"},"
      "\"direction\":{\"type\":\"string\",\"enum\":[\"inbound\",\"outbound\",\"both\"],\"default\":"
      "\"inbound\",\"description\":\"inbound=callers; outbound=dependencies; both=union.\"},"
      "\"depth\":{\"type\":\"integer\",\"default\":2},"
@@ -15143,7 +15143,8 @@ static char *handle_detect_changes(cbm_mcp_server_t *srv, const char *args) {
     int depth = cbm_mcp_get_int_arg(args, "depth", MCP_DEFAULT_BFS_DEPTH);
     depth = clamp_mcp_depth(depth, "detect_changes");
 
-    /* scope: "files" = just changed files, "symbols" = files + symbols (default) */
+    /* scope: "files" = changed files only; "impact" = files + symbols (default).
+     * Keep accepting the legacy "symbols" spelling for compatibility. */
     bool want_symbols = !scope || strcmp(scope, "symbols") == 0 || strcmp(scope, "impact") == 0;
 
     /* `since` (e.g. "HEAD~10", "v0.5.0") is the documented diff base but was

@@ -13775,10 +13775,49 @@ TEST(cli_build_args_json_bad_positional_errors_issue680) {
     PASS();
 }
 
-/* Per-tool --help returns 0 for a known tool, -1 for an unknown one. */
+/* Capture per-tool help using the same tmpfile+dup2 idiom as config-command
+ * output above. This stays portable to the MinGW test leg. */
+static int cli_tool_help_capture(const char *tool_name, char *out, size_t cap) {
+    out[0] = '\0';
+    FILE *capture = tmpfile();
+    int saved = capture ? dup(fileno(stdout)) : -1;
+    if (!capture || saved < 0) {
+        if (capture)
+            fclose(capture);
+        if (saved >= 0)
+            close(saved);
+        return -1000;
+    }
+    fflush(stdout);
+    if (dup2(fileno(capture), fileno(stdout)) < 0) {
+        fclose(capture);
+        close(saved);
+        return -1000;
+    }
+    int rc = cbm_cli_print_tool_help(tool_name);
+    fflush(stdout);
+    (void)dup2(saved, fileno(stdout));
+    close(saved);
+    rewind(capture);
+    size_t got = fread(out, 1, cap - 1, capture);
+    out[got] = '\0';
+    fclose(capture);
+    return rc;
+}
+
+/* Per-tool --help returns 0 for a known tool, -1 for an unknown one, and
+ * surfaces schema choices/defaults rather than flattening every flag to its
+ * primitive JSON type. */
 TEST(cli_print_tool_help_issue680) {
-    ASSERT_EQ(cbm_cli_print_tool_help("index_repository"), 0);
-    ASSERT_EQ(cbm_cli_print_tool_help("nope_not_a_tool"), -1);
+    char out[16 * 1024];
+    ASSERT_EQ(cli_tool_help_capture("search_graph", out, sizeof(out)), 0);
+    ASSERT_NOT_NULL(strstr(out, "--format <tree|json> [default: tree]"));
+    ASSERT_NOT_NULL(strstr(out, "--detail <ids|default> [default: default]"));
+    ASSERT_EQ(cli_tool_help_capture("index_repository", out, sizeof(out)), 0);
+    ASSERT_NOT_NULL(strstr(out, "--mode <full|moderate|fast|cross-repo-intelligence> [default: "
+                                "full]"));
+    ASSERT_EQ(cli_tool_help_capture("nope_not_a_tool", out, sizeof(out)), -1);
+    ASSERT_STR_EQ(out, "");
     PASS();
 }
 
