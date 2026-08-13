@@ -1911,12 +1911,22 @@ TEST(tool_arch_no_aspects) {
 
 TEST(tool_detect_changes_default) {
     double ms;
-    char *r = call_tool_timed("detect_changes", &ms, "{\"project\":\"%s\"}", g_project);
+    /* The fixture is intentionally detached, so pin only the base while
+     * exercising every other default (scope, direction, depth, and budget). */
+    char *r = call_tool_timed("detect_changes", &ms,
+                              "{\"project\":\"%s\",\"base_branch\":\"HEAD\"}", g_project);
     TOOL_OK(r, ms);
-    /* New tree contract: base + direction scalars, a changed_files section,
-     * and the seed/impact accounting. (The old changed_count/impacted_symbols/
-     * depth keys are gone — impact is now a real traversal, not bare names.) */
-    ASSERT(strstr(r, "changed_files:") != NULL);
+    NOT_ERROR(r);
+    /* Lean tree contract: preserve exact changed-file accounting, but do not
+     * spend tokens on a zero-row table. A non-empty page still carries the
+     * changed_files rows; an empty page is represented by its exact scalars. */
+    int changed_total = count_in_response(r, "changed_total");
+    int changed_returned = count_in_response(r, "changed_returned");
+    ASSERT_GTE(changed_total, 0);
+    ASSERT_GTE(changed_returned, 0);
+    ASSERT_LTE(changed_returned, changed_total);
+    ASSERT(changed_returned > 0 ? resp_has_key(r, "changed_files")
+                                : resp_lacks_key(r, "changed_files"));
     ASSERT(strstr(r, "direction:") != NULL);
     ASSERT(strstr(r, "seed_symbols:") != NULL);
     free(r);
@@ -1964,7 +1974,15 @@ TEST(tool_detect_changes_since) {
     char *r = call_tool_timed("detect_changes", &ms, "{\"project\":\"%s\",\"since\":\"HEAD\"}",
                               g_project);
     TOOL_OK(r, ms);
-    ASSERT(resp_has_key(r, "changed_files"));
+    NOT_ERROR(r);
+    ASSERT(strstr(r, "base: HEAD") != NULL);
+    int changed_total = count_in_response(r, "changed_total");
+    int changed_returned = count_in_response(r, "changed_returned");
+    ASSERT_GTE(changed_total, 0);
+    ASSERT_GTE(changed_returned, 0);
+    ASSERT_LTE(changed_returned, changed_total);
+    ASSERT(changed_returned > 0 ? resp_has_key(r, "changed_files")
+                                : resp_lacks_key(r, "changed_files"));
     free(r);
     PASS();
 }
