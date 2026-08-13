@@ -635,6 +635,8 @@ Large compact-tree tables may start with a response-local `<section>_refs` direc
 
 Lean responses truncate semantically, never by cutting arbitrary bytes from code or identifiers. Ranked graph rows are retained ahead of raw grep rows and diagnostic summaries; omitted rows/sections report totals, `has_more`, and a strictly advancing continuation offset or cursor. If even the first whole row cannot fit, CBM asks for a higher budget and emits no self-looping cursor. `max_output_tokens` is model-neutral sizing guidance: CBM enforces a deterministic ceiling of four UTF-8 bytes per requested token, so it is not a tokenizer-exact count. Detail flags such as `diagnostics`, `source_mode`, and `detail` opt into heavier fields. `search_code` additionally exposes `raw_limit`/`raw_offset`, `directory_limit`/`directory_offset`, `match_limit`, and `source_max_lines`; its default retains eight match locations per graph result and reports the exact `matches_omitted` remainder. The ranked graph answer stays intact while raw matches and directory summaries page independently. `detect_changes` pages changed files, impacted symbols, and module summaries independently.
 
+Every response is standard UTF-8 without sacrificing POSIX byte-string identities. A value containing malformed UTF-8 is emitted reversibly as `@bytes:<lowercase hex of every original byte>`. A valid value that literally begins with the reserved `@bytes:` or `@utf8:` prefix is emitted as `@utf8:<original value>`, so decoding is unambiguous: strip one `@utf8:` prefix for literal UTF-8, or hex-decode one `@bytes:` prefix for original bytes. Ordinary valid UTF-8 is unchanged and pays no output-token overhead.
+
 Use `cli <tool> --help` to see the flags generated from that tool's input schema:
 
 ```bash

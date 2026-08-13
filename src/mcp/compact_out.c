@@ -99,10 +99,12 @@ static bool looks_numeric(const char *s) {
 }
 
 /* UTF-8 sequence length starting at p, validating continuation bytes and the
- * lead-byte ranges (RFC 3629: no overlongs, no surrogates, max U+10FFFF);
- * 0 = not a valid sequence start. Reads stop at the first invalid byte, so a
- * terminating NUL is never overrun. */
-static size_t utf8_sequence_length(const unsigned char *p) {
+ * lead-byte ranges (RFC 3629: no overlongs, no surrogates, max U+10FFFF).
+ * `remaining` makes truncated multibyte input safe to inspect. */
+static size_t utf8_sequence_length(const unsigned char *p, size_t remaining) {
+    if (!p || remaining == 0) {
+        return 0;
+    }
     unsigned char c = p[0];
     if (c < 0x80) {
         return 1;
@@ -111,9 +113,12 @@ static size_t utf8_sequence_length(const unsigned char *p) {
         return 0; /* bare continuation byte or overlong lead */
     }
     if (c < 0xE0) {
-        return (p[1] & 0xC0) == 0x80 ? 2 : 0;
+        return remaining >= 2 && (p[1] & 0xC0) == 0x80 ? 2 : 0;
     }
     if (c < 0xF0) {
+        if (remaining < 3) {
+            return 0;
+        }
         unsigned char lo = c == 0xE0 ? 0xA0 : 0x80;
         unsigned char hi = c == 0xED ? 0x9F : 0xBF;
         if (p[1] < lo || p[1] > hi || (p[2] & 0xC0) != 0x80) {
@@ -122,6 +127,9 @@ static size_t utf8_sequence_length(const unsigned char *p) {
         return 3;
     }
     if (c < 0xF5) {
+        if (remaining < 4) {
+            return 0;
+        }
         unsigned char lo = c == 0xF0 ? 0x90 : 0x80;
         unsigned char hi = c == 0xF4 ? 0x8F : 0xBF;
         if (p[1] < lo || p[1] > hi || (p[2] & 0xC0) != 0x80 || (p[3] & 0xC0) != 0x80) {
@@ -132,11 +140,91 @@ static size_t utf8_sequence_length(const unsigned char *p) {
     return 0;
 }
 
+static bool output_text_requires_encoding(const char *data, size_t len) {
+    static const char bytes_prefix[] = "@bytes:";
+    static const char utf8_prefix[] = "@utf8:";
+    if (!data) {
+        return len != 0;
+    }
+    if ((len >= sizeof(bytes_prefix) - 1 &&
+         memcmp(data, bytes_prefix, sizeof(bytes_prefix) - 1) == 0) ||
+        (len >= sizeof(utf8_prefix) - 1 &&
+         memcmp(data, utf8_prefix, sizeof(utf8_prefix) - 1) == 0)) {
+        return true;
+    }
+    size_t offset = 0;
+    while (offset < len) {
+        size_t sequence = utf8_sequence_length((const unsigned char *)data + offset, len - offset);
+        if (!sequence) {
+            return true;
+        }
+        offset += sequence;
+    }
+    return false;
+}
+
+bool cbm_output_encode_text(const char *data, size_t len, char **encoded, size_t *encoded_len) {
+    static const char bytes_prefix[] = "@bytes:";
+    static const char utf8_prefix[] = "@utf8:";
+    static const char hex[] = "0123456789abcdef";
+    if (!encoded || !encoded_len || (!data && len != 0)) {
+        return false;
+    }
+    *encoded = NULL;
+    *encoded_len = len;
+    if (!output_text_requires_encoding(data, len)) {
+        return true;
+    }
+
+    bool valid_utf8 = true;
+    size_t offset = 0;
+    while (offset < len) {
+        size_t sequence = utf8_sequence_length((const unsigned char *)data + offset, len - offset);
+        if (!sequence) {
+            valid_utf8 = false;
+            break;
+        }
+        offset += sequence;
+    }
+
+    size_t prefix_len = valid_utf8 ? sizeof(utf8_prefix) - 1 : sizeof(bytes_prefix) - 1;
+    size_t payload_len = len;
+    if (!valid_utf8) {
+        if (len > ((size_t)-1 - prefix_len - 1) / 2) {
+            return false;
+        }
+        payload_len = len * 2;
+    } else if (len > (size_t)-1 - prefix_len - 1) {
+        return false;
+    }
+    char *out = (char *)malloc(prefix_len + payload_len + 1);
+    if (!out) {
+        return false;
+    }
+    memcpy(out, valid_utf8 ? utf8_prefix : bytes_prefix, prefix_len);
+    if (valid_utf8) {
+        if (len > 0) {
+            memcpy(out + prefix_len, data, len);
+        }
+    } else {
+        for (size_t i = 0; i < len; i++) {
+            unsigned char byte = (unsigned char)data[i];
+            out[prefix_len + i * 2] = hex[byte >> 4];
+            out[prefix_len + i * 2 + 1] = hex[byte & 0x0f];
+        }
+    }
+    *encoded_len = prefix_len + payload_len;
+    out[*encoded_len] = '\0';
+    *encoded = out;
+    return true;
+}
+
 static bool needs_quotes(const char *s) {
     if (!s || !*s) {
         return false; /* empty cells emit as the "-" placeholder, not quotes */
     }
-    for (const char *p = s; *p; p++) {
+    size_t remaining = strlen(s);
+    for (const char *p = s; *p; p++, remaining--) {
         unsigned char c = (unsigned char)*p;
         /* Space-delimited rows: any internal whitespace or quote forces
          * quoting so column positions stay parseable. Control bytes and
@@ -147,11 +235,12 @@ static bool needs_quotes(const char *s) {
             return true;
         }
         if (c >= 0x80) {
-            size_t len = utf8_sequence_length((const unsigned char *)p);
+            size_t len = utf8_sequence_length((const unsigned char *)p, remaining);
             if (!len) {
                 return true;
             }
             p += len - 1;
+            remaining -= len - 1;
         }
     }
     if (strcmp(s, "true") == 0 || strcmp(s, "false") == 0 || strcmp(s, "null") == 0 ||
@@ -163,7 +252,8 @@ static bool needs_quotes(const char *s) {
 
 static void append_quoted(cbm_sb_t *sb, const char *s) {
     cbm_sb_append_n(sb, "\"", 1);
-    for (const char *p = s ? s : ""; *p; p++) {
+    size_t remaining = s ? strlen(s) : 0;
+    for (const char *p = s ? s : ""; *p; p++, remaining--) {
         switch (*p) {
         case '"':
             cbm_sb_append_n(sb, "\\\"", 2);
@@ -187,14 +277,17 @@ static void append_quoted(cbm_sb_t *sb, const char *s) {
                 snprintf(esc, sizeof(esc), "\\u%04x", (unsigned)c);
                 cbm_sb_append(sb, esc);
             } else {
-                size_t len = utf8_sequence_length((const unsigned char *)p);
+                size_t len = utf8_sequence_length((const unsigned char *)p, remaining);
                 if (len) {
                     cbm_sb_append_n(sb, p, len);
                     p += len - 1;
+                    remaining -= len - 1;
                 } else {
-                    /* Invalid byte → U+FFFD: output is valid UTF-8 by
-                     * construction, and the corruption stays visible. */
-                    cbm_sb_append_n(sb, "\xEF\xBF\xBD", 3);
+                    /* Callers normalize first; retain a defensive printable
+                     * escape if an internal caller ever violates that rule. */
+                    char esc[8];
+                    snprintf(esc, sizeof(esc), "\\u%04x", (unsigned)c);
+                    cbm_sb_append(sb, esc);
                 }
             }
             break;
@@ -209,11 +302,19 @@ static void append_value(cbm_sb_t *sb, const char *s) {
         cbm_sb_append_n(sb, "-", 1); /* stable column positions for empties */
         return;
     }
-    if (needs_quotes(s)) {
-        append_quoted(sb, s);
-    } else {
-        cbm_sb_append(sb, s);
+    char *encoded = NULL;
+    size_t encoded_len = 0;
+    if (!cbm_output_encode_text(s, strlen(s), &encoded, &encoded_len)) {
+        sb->oom = true;
+        return;
     }
+    const char *safe = encoded ? encoded : s;
+    if (needs_quotes(safe)) {
+        append_quoted(sb, safe);
+    } else {
+        cbm_sb_append_n(sb, safe, encoded ? encoded_len : strlen(safe));
+    }
+    free(encoded);
 }
 
 /* Object keys and table column names share the compact tree's structural
@@ -222,17 +323,26 @@ static void append_value(cbm_sb_t *sb, const char *s) {
  * empty key must remain the lossless string "" rather than the missing-value
  * placeholder "-". */
 static void append_key(cbm_sb_t *sb, const char *s) {
-    if (!s || !*s || needs_quotes(s) || strpbrk(s, ":()\\")) {
-        append_quoted(sb, s ? s : "");
-    } else {
-        cbm_sb_append(sb, s);
+    const char *raw = s ? s : "";
+    char *encoded = NULL;
+    size_t encoded_len = 0;
+    if (!cbm_output_encode_text(raw, strlen(raw), &encoded, &encoded_len)) {
+        sb->oom = true;
+        return;
     }
+    const char *safe = encoded ? encoded : raw;
+    if (!*safe || needs_quotes(safe) || strpbrk(safe, ":()\\")) {
+        append_quoted(sb, safe);
+    } else {
+        cbm_sb_append_n(sb, safe, encoded ? encoded_len : strlen(safe));
+    }
+    free(encoded);
 }
 
 /* ── Scalars ────────────────────────────────────────────────────── */
 
 void cbm_tree_scalar_str(cbm_sb_t *sb, const char *key, const char *val) {
-    cbm_sb_append(sb, key);
+    append_key(sb, key);
     cbm_sb_append_n(sb, ": ", 2);
     append_value(sb, val);
     cbm_sb_append_n(sb, "\n", 1);
@@ -241,14 +351,14 @@ void cbm_tree_scalar_str(cbm_sb_t *sb, const char *key, const char *val) {
 void cbm_tree_scalar_int(cbm_sb_t *sb, const char *key, long long v) {
     char num[32];
     snprintf(num, sizeof(num), "%lld", v);
-    cbm_sb_append(sb, key);
+    append_key(sb, key);
     cbm_sb_append_n(sb, ": ", 2);
     cbm_sb_append(sb, num);
     cbm_sb_append_n(sb, "\n", 1);
 }
 
 void cbm_tree_scalar_bool(cbm_sb_t *sb, const char *key, bool v) {
-    cbm_sb_append(sb, key);
+    append_key(sb, key);
     cbm_sb_append_n(sb, ": ", 2);
     cbm_sb_append(sb, v ? "true" : "false");
     cbm_sb_append_n(sb, "\n", 1);
@@ -262,11 +372,11 @@ void cbm_tree_table_header(cbm_sb_t *sb, const char *key, int n, const char *con
                            int ncols) {
     char num[32];
     snprintf(num, sizeof(num), ": %d  (cols:", n);
-    cbm_sb_append(sb, key);
+    append_key(sb, key);
     cbm_sb_append(sb, num);
     for (int i = 0; i < ncols; i++) {
         cbm_sb_append_n(sb, " ", 1);
-        cbm_sb_append(sb, cols[i]);
+        append_key(sb, cols[i]);
     }
     cbm_sb_append_n(sb, ")\n", 2);
 }
@@ -420,8 +530,8 @@ static size_t tree_semantic_prefix_boundary(const char *text, size_t shared) {
 }
 
 static bool tree_prefix_matches(const char *value, const tree_prefix_candidate_t *candidate) {
-    return value && !needs_quotes(value) && strlen(value) >= candidate->len &&
-           memcmp(value, candidate->text, candidate->len) == 0;
+    return value && !output_text_requires_encoding(value, strlen(value)) && !needs_quotes(value) &&
+           strlen(value) >= candidate->len && memcmp(value, candidate->text, candidate->len) == 0;
 }
 
 static int tree_prefix_choice(const char *value, const tree_prefix_candidate_t *candidates,
@@ -731,7 +841,7 @@ static void json_tree_block_string(cbm_sb_t *sb, const char *text, int depth) {
             if (c == '\t' || (c >= 0x20 && c != 0x7f && c < 0x80)) {
                 cbm_sb_append_n(sb, p, 1);
             } else if (c >= 0x80) {
-                size_t sequence = utf8_sequence_length((const unsigned char *)p);
+                size_t sequence = utf8_sequence_length((const unsigned char *)p, (size_t)(end - p));
                 if (sequence && p + sequence <= end) {
                     cbm_sb_append_n(sb, p, sequence);
                     p += sequence - 1;
