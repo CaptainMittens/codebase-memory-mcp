@@ -3181,6 +3181,355 @@ TEST(tool_search_graph_bm25_reports_candidate_saturation) {
     PASS();
 }
 
+enum { MCP_TEST_SEMANTIC_VECTOR_DIM = 768 };
+
+static int mcp_test_insert_semantic_vector(cbm_store_t *store, const char *table,
+                                           const char *project, int64_t node_id, const char *token,
+                                           unsigned char primary, unsigned char secondary) {
+    unsigned char vector[MCP_TEST_SEMANTIC_VECTOR_DIM] = {0};
+    char hex[MCP_TEST_SEMANTIC_VECTOR_DIM * 2 + 1];
+    static const char digits[] = "0123456789abcdef";
+    vector[0] = primary;
+    vector[1] = secondary;
+    for (int i = 0; i < MCP_TEST_SEMANTIC_VECTOR_DIM; i++) {
+        hex[i * 2] = digits[vector[i] >> 4];
+        hex[i * 2 + 1] = digits[vector[i] & 0x0f];
+    }
+    hex[sizeof(hex) - 1] = '\0';
+
+    char sql[CBM_SZ_4K];
+    if (strcmp(table, "token_vectors") == 0) {
+        snprintf(sql, sizeof(sql),
+                 "INSERT INTO token_vectors(project,token,vector,idf) "
+                 "VALUES('%s','%s',X'%s',1);",
+                 project, token, hex);
+    } else {
+        snprintf(sql, sizeof(sql),
+                 "INSERT INTO node_vectors(node_id,project,vector) VALUES(%lld,'%s',X'%s');",
+                 (long long)node_id, project, hex);
+    }
+    return cbm_store_exec(store, sql);
+}
+
+static yyjson_doc *mcp_test_semantic_page(cbm_mcp_server_t *srv, const char *args,
+                                          char **out_response, char **out_inner) {
+    *out_response = cbm_mcp_handle_tool(srv, "search_graph", args);
+    *out_inner = extract_text_content(*out_response);
+    return *out_inner ? yyjson_read(*out_inner, strlen(*out_inner), 0) : NULL;
+}
+
+/* Semantic rows are their own ranked result set. Structural limit/offset must
+ * neither choose their page nor make a budget-trimmed tail unrecoverable. */
+TEST(tool_search_graph_semantic_pagination_is_lossless_and_independent) {
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    ASSERT_NOT_NULL(srv);
+    cbm_store_t *store = cbm_mcp_server_store(srv);
+    ASSERT_NOT_NULL(store);
+    const char *project = "semantic-pagination";
+    const char *token = "semantic-page-token";
+    cbm_mcp_server_set_project(srv, project);
+    ASSERT_EQ(cbm_store_upsert_project(store, project, "/tmp/semantic-pagination"), CBM_STORE_OK);
+    ASSERT_EQ(cbm_store_exec(store,
+                             "CREATE TABLE node_vectors(node_id INTEGER PRIMARY KEY,"
+                             "project TEXT NOT NULL,vector BLOB NOT NULL);"
+                             "CREATE TABLE token_vectors(id INTEGER PRIMARY KEY,"
+                             "project TEXT NOT NULL,token TEXT NOT NULL,vector BLOB NOT NULL,"
+                             "idf INTEGER NOT NULL);"),
+              CBM_STORE_OK);
+    ASSERT_EQ(mcp_test_insert_semantic_vector(store, "token_vectors", project, 0, token, 127, 0),
+              CBM_STORE_OK);
+
+    char long_qn[900];
+    memset(long_qn, 'q', sizeof(long_qn) - 1);
+    long_qn[sizeof(long_qn) - 1] = '\0';
+    const char *expected[] = {long_qn,           "semantic.rank.2", "semantic.rank.3",
+                              "semantic.rank.4", "semantic.rank.5", "semantic.rank.6"};
+    for (int i = 0; i < 6; i++) {
+        char name[32];
+        char path[64];
+        snprintf(name, sizeof(name), "semantic_rank_%d", i + 1);
+        snprintf(path, sizeof(path), "src/semantic_rank_%d.c", i + 1);
+        cbm_node_t node = {.project = project,
+                           .label = "Function",
+                           .name = name,
+                           .qualified_name = expected[i],
+                           .file_path = path,
+                           .start_line = i + 1,
+                           .end_line = i + 1};
+        int64_t id = cbm_store_upsert_node(store, &node);
+        ASSERT_GT(id, 0);
+        ASSERT_EQ(mcp_test_insert_semantic_vector(store, "node_vectors", project, id, NULL, 127,
+                                                  (unsigned char)(i * 20)),
+                  CBM_STORE_OK);
+    }
+
+    char args[512];
+    char *response = NULL;
+    char *inner = NULL;
+    snprintf(args, sizeof(args),
+             "{\"project\":\"%s\",\"semantic_query\":[\"%s\"],"
+             "\"semantic_limit\":6,\"limit\":1,\"offset\":99,\"format\":\"json\"}",
+             project, token);
+    yyjson_doc *full_doc = mcp_test_semantic_page(srv, args, &response, &inner);
+    ASSERT_NOT_NULL(full_doc);
+    yyjson_val *full_root = yyjson_doc_get_root(full_doc);
+    yyjson_val *full_semantic = yyjson_obj_get(full_root, "semantic");
+    yyjson_val *full_rows = full_semantic ? yyjson_obj_get(full_semantic, "rows") : NULL;
+    ASSERT_EQ(yyjson_arr_size(full_rows), 6);
+    ASSERT_EQ(yyjson_get_int(yyjson_obj_get(full_root, "semantic_total")), 6);
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(full_root, "semantic_total_relation")), "eq");
+    ASSERT_FALSE(yyjson_get_bool(yyjson_obj_get(full_root, "semantic_has_more")));
+
+    for (int page = 0; page < 3; page++) {
+        int semantic_offset = page * 2;
+        snprintf(args, sizeof(args),
+                 "{\"project\":\"%s\",\"semantic_query\":[\"%s\"],"
+                 "\"semantic_offset\":%d,\"semantic_limit\":2,"
+                 "\"limit\":1,\"offset\":99,\"format\":\"json\"}",
+                 project, token, semantic_offset);
+        char *page_response = NULL;
+        char *page_inner = NULL;
+        yyjson_doc *page_doc = mcp_test_semantic_page(srv, args, &page_response, &page_inner);
+        ASSERT_NOT_NULL(page_doc);
+        yyjson_val *page_root = yyjson_doc_get_root(page_doc);
+        yyjson_val *page_semantic = yyjson_obj_get(page_root, "semantic");
+        yyjson_val *page_rows = page_semantic ? yyjson_obj_get(page_semantic, "rows") : NULL;
+        ASSERT_EQ(yyjson_arr_size(page_rows), 2);
+        ASSERT_EQ(yyjson_get_int(yyjson_obj_get(page_root, "semantic_returned")), 2);
+        for (int row = 0; row < 2; row++) {
+            const char *actual = yyjson_get_str(yyjson_arr_get(yyjson_arr_get(page_rows, row), 0));
+            const char *from_full =
+                yyjson_get_str(yyjson_arr_get(yyjson_arr_get(full_rows, semantic_offset + row), 0));
+            ASSERT_STR_EQ(actual, from_full);
+        }
+        bool want_more = page < 2;
+        ASSERT_EQ(yyjson_get_bool(yyjson_obj_get(page_root, "semantic_has_more")), want_more);
+        if (want_more) {
+            ASSERT_EQ(yyjson_get_int(yyjson_obj_get(page_root, "semantic_next_offset")),
+                      semantic_offset + 2);
+            ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(page_root, "semantic_total_relation")),
+                          "gte");
+        } else {
+            ASSERT_NULL(yyjson_obj_get(page_root, "semantic_next_offset"));
+            ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(page_root, "semantic_total_relation")),
+                          "eq");
+        }
+        yyjson_doc_free(page_doc);
+        free(page_inner);
+        free(page_response);
+    }
+
+    snprintf(args, sizeof(args),
+             "{\"project\":\"%s\",\"name_pattern\":\".*\","
+             "\"semantic_query\":[\"%s\"],\"semantic_offset\":1,"
+             "\"semantic_limit\":2,\"limit\":1,\"offset\":4,\"format\":\"json\"}",
+             project, token);
+    char *combined_response = NULL;
+    char *combined_inner = NULL;
+    yyjson_doc *combined_doc =
+        mcp_test_semantic_page(srv, args, &combined_response, &combined_inner);
+    ASSERT_NOT_NULL(combined_doc);
+    yyjson_val *combined_root = yyjson_doc_get_root(combined_doc);
+    yyjson_val *combined_semantic = yyjson_obj_get(combined_root, "semantic");
+    yyjson_val *combined_rows =
+        combined_semantic ? yyjson_obj_get(combined_semantic, "rows") : NULL;
+    ASSERT_EQ(yyjson_get_int(yyjson_obj_get(combined_root, "returned")), 1);
+    ASSERT_EQ(yyjson_arr_size(combined_rows), 2);
+    for (int row = 0; row < 2; row++) {
+        ASSERT_STR_EQ(yyjson_get_str(yyjson_arr_get(yyjson_arr_get(combined_rows, row), 0)),
+                      yyjson_get_str(yyjson_arr_get(yyjson_arr_get(full_rows, row + 1), 0)));
+    }
+    yyjson_doc_free(combined_doc);
+    free(combined_inner);
+    free(combined_response);
+
+    snprintf(args, sizeof(args),
+             "{\"project\":\"%s\",\"semantic_query\":[\"%s\"],"
+             "\"semantic_offset\":2,\"semantic_limit\":2,\"limit\":1,\"offset\":99}",
+             project, token);
+    char *tree_response = cbm_mcp_handle_tool(srv, "search_graph", args);
+    char *tree = extract_text_content(tree_response);
+    ASSERT_NOT_NULL(tree);
+    ASSERT_NOT_NULL(strstr(tree, "semantic_total: 5"));
+    ASSERT_NOT_NULL(strstr(tree, "semantic_total_relation: gte"));
+    ASSERT_NOT_NULL(strstr(tree, "semantic_returned: 2"));
+    ASSERT_NOT_NULL(strstr(tree, "semantic_has_more: true"));
+    ASSERT_NOT_NULL(strstr(tree, "semantic_next_offset: 4"));
+    ASSERT_NOT_NULL(strstr(tree, "semantic.rank.3"));
+    ASSERT_NULL(strstr(tree, "semantic.rank.2"));
+    free(tree);
+    free(tree_response);
+
+    /* A byte budget may shorten this page, but continuation advances only by
+     * identities actually emitted. The first roomy retry row must therefore
+     * be the next row from the stable full ranking, with no gap. */
+    snprintf(args, sizeof(args),
+             "{\"project\":\"%s\",\"semantic_query\":[\"%s\"],"
+             "\"semantic_offset\":1,\"semantic_limit\":5,"
+             "\"max_output_tokens\":128,\"format\":\"json\"}",
+             project, token);
+    char *budget_response = NULL;
+    char *budget_inner = NULL;
+    yyjson_doc *budget_doc = mcp_test_semantic_page(srv, args, &budget_response, &budget_inner);
+    ASSERT_NOT_NULL(budget_doc);
+    yyjson_val *budget_root = yyjson_doc_get_root(budget_doc);
+    int budget_returned = (int)yyjson_get_int(yyjson_obj_get(budget_root, "semantic_returned"));
+    ASSERT_GT(budget_returned, 0);
+    ASSERT_LT(budget_returned, 5);
+    ASSERT_TRUE(yyjson_get_bool(yyjson_obj_get(budget_root, "semantic_has_more")));
+    int budget_next = (int)yyjson_get_int(yyjson_obj_get(budget_root, "semantic_next_offset"));
+    ASSERT_EQ(budget_next, 1 + budget_returned);
+    yyjson_doc_free(budget_doc);
+    free(budget_inner);
+    free(budget_response);
+
+    snprintf(args, sizeof(args),
+             "{\"project\":\"%s\",\"semantic_query\":[\"%s\"],"
+             "\"semantic_offset\":%d,\"semantic_limit\":1,\"format\":\"json\"}",
+             project, token, budget_next);
+    char *resume_response = NULL;
+    char *resume_inner = NULL;
+    yyjson_doc *resume_doc = mcp_test_semantic_page(srv, args, &resume_response, &resume_inner);
+    ASSERT_NOT_NULL(resume_doc);
+    yyjson_val *resume_semantic = yyjson_obj_get(yyjson_doc_get_root(resume_doc), "semantic");
+    yyjson_val *resume_rows = resume_semantic ? yyjson_obj_get(resume_semantic, "rows") : NULL;
+    ASSERT_EQ(yyjson_arr_size(resume_rows), 1);
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_arr_get(yyjson_arr_get(resume_rows, 0), 0)),
+                  yyjson_get_str(yyjson_arr_get(yyjson_arr_get(full_rows, budget_next), 0)));
+    yyjson_doc_free(resume_doc);
+    free(resume_inner);
+    free(resume_response);
+
+    snprintf(args, sizeof(args),
+             "{\"project\":\"%s\",\"semantic_query\":[\"%s\"],"
+             "\"semantic_limit\":0,\"format\":\"json\"}",
+             project, token);
+    char *zero_response = NULL;
+    char *zero_inner = NULL;
+    yyjson_doc *zero_doc = mcp_test_semantic_page(srv, args, &zero_response, &zero_inner);
+    ASSERT_NOT_NULL(zero_doc);
+    yyjson_val *zero_root = yyjson_doc_get_root(zero_doc);
+    ASSERT_EQ(yyjson_get_int(yyjson_obj_get(zero_root, "semantic_returned")), 0);
+    ASSERT_TRUE(yyjson_get_bool(yyjson_obj_get(zero_root, "semantic_has_more")));
+    ASSERT_TRUE(yyjson_get_bool(
+        yyjson_obj_get(zero_root, "semantic_continuation_requires_positive_limit")));
+    ASSERT_NULL(yyjson_obj_get(zero_root, "semantic_next_offset"));
+    yyjson_doc_free(zero_doc);
+    free(zero_inner);
+    free(zero_response);
+
+    snprintf(args, sizeof(args),
+             "{\"project\":\"%s\",\"semantic_query\":[\"%s\"],"
+             "\"semantic_limit\":1,\"max_output_tokens\":128,\"format\":\"json\"}",
+             project, token);
+    char *floor_response = NULL;
+    char *floor_inner = NULL;
+    yyjson_doc *floor_doc = mcp_test_semantic_page(srv, args, &floor_response, &floor_inner);
+    ASSERT_NOT_NULL(floor_doc);
+    ASSERT_TRUE(strlen(floor_inner) <= 512U);
+    yyjson_val *floor_root = yyjson_doc_get_root(floor_doc);
+    ASSERT_EQ(yyjson_get_int(yyjson_obj_get(floor_root, "semantic_returned")), 0);
+    ASSERT_TRUE(yyjson_get_bool(yyjson_obj_get(floor_root, "semantic_has_more")));
+    ASSERT_TRUE(yyjson_get_bool(
+        yyjson_obj_get(floor_root, "semantic_continuation_requires_higher_budget")));
+    ASSERT_NULL(yyjson_obj_get(floor_root, "semantic_next_offset"));
+    yyjson_doc_free(floor_doc);
+    free(floor_inner);
+    free(floor_response);
+
+    /* Multi-keyword min-cosine ranking must not depend on how deep a page asks
+     * the first-keyword prefilter to materialize. Fifteen first-keyword-heavy
+     * decoys put the genuinely balanced result just beyond the initial 5x
+     * window; every small page must still equal the corresponding full ranks. */
+    const char *stable_project = "semantic-page-stability";
+    const char *first_token = "semantic-rank-first";
+    const char *second_token = "semantic-rank-second";
+    ASSERT_EQ(cbm_store_upsert_project(store, stable_project, "/tmp/semantic-page-stability"),
+              CBM_STORE_OK);
+    cbm_mcp_server_set_project(srv, stable_project);
+    ASSERT_EQ(mcp_test_insert_semantic_vector(store, "token_vectors", stable_project, 0,
+                                              first_token, 127, 0),
+              CBM_STORE_OK);
+    ASSERT_EQ(mcp_test_insert_semantic_vector(store, "token_vectors", stable_project, 0,
+                                              second_token, 0, 127),
+              CBM_STORE_OK);
+    for (int i = 0; i < 16; i++) {
+        char name[40];
+        char qn[64];
+        snprintf(name, sizeof(name), "stable_rank_%02d", i + 1);
+        snprintf(qn, sizeof(qn), "semantic.stable.%02d", i + 1);
+        cbm_node_t node = {.project = stable_project,
+                           .label = "Function",
+                           .name = name,
+                           .qualified_name = qn,
+                           .file_path = "src/semantic_stable.c",
+                           .start_line = i + 1,
+                           .end_line = i + 1};
+        int64_t id = cbm_store_upsert_node(store, &node);
+        ASSERT_GT(id, 0);
+        unsigned char primary = i == 15 ? 90 : 127;
+        unsigned char secondary = i == 15 ? 90 : (unsigned char)(i + 1);
+        ASSERT_EQ(mcp_test_insert_semantic_vector(store, "node_vectors", stable_project, id, NULL,
+                                                  primary, secondary),
+                  CBM_STORE_OK);
+    }
+
+    snprintf(args, sizeof(args),
+             "{\"project\":\"%s\",\"semantic_query\":[\"%s\",\"%s\"],"
+             "\"semantic_limit\":16,\"format\":\"json\"}",
+             stable_project, first_token, second_token);
+    char *stable_full_response = NULL;
+    char *stable_full_inner = NULL;
+    yyjson_doc *stable_full_doc =
+        mcp_test_semantic_page(srv, args, &stable_full_response, &stable_full_inner);
+    ASSERT_NOT_NULL(stable_full_doc);
+    yyjson_val *stable_full_semantic =
+        yyjson_obj_get(yyjson_doc_get_root(stable_full_doc), "semantic");
+    yyjson_val *stable_full_rows =
+        stable_full_semantic ? yyjson_obj_get(stable_full_semantic, "rows") : NULL;
+    ASSERT_EQ(yyjson_arr_size(stable_full_rows), 16);
+    for (int page = 0; page < 2; page++) {
+        int stable_offset = page * 2;
+        snprintf(args, sizeof(args),
+                 "{\"project\":\"%s\",\"semantic_query\":[\"%s\",\"%s\"],"
+                 "\"semantic_offset\":%d,\"semantic_limit\":2,\"format\":\"json\"}",
+                 stable_project, first_token, second_token, stable_offset);
+        char *stable_page_response = NULL;
+        char *stable_page_inner = NULL;
+        yyjson_doc *stable_page_doc =
+            mcp_test_semantic_page(srv, args, &stable_page_response, &stable_page_inner);
+        ASSERT_NOT_NULL(stable_page_doc);
+        yyjson_val *stable_page_semantic =
+            yyjson_obj_get(yyjson_doc_get_root(stable_page_doc), "semantic");
+        yyjson_val *stable_page_rows =
+            stable_page_semantic ? yyjson_obj_get(stable_page_semantic, "rows") : NULL;
+        ASSERT_EQ(yyjson_arr_size(stable_page_rows), 2);
+        for (int row = 0; row < 2; row++) {
+            ASSERT_STR_EQ(yyjson_get_str(yyjson_arr_get(yyjson_arr_get(stable_page_rows, row), 0)),
+                          yyjson_get_str(yyjson_arr_get(
+                              yyjson_arr_get(stable_full_rows, stable_offset + row), 0)));
+        }
+        yyjson_doc_free(stable_page_doc);
+        free(stable_page_inner);
+        free(stable_page_response);
+    }
+    yyjson_doc_free(stable_full_doc);
+    free(stable_full_inner);
+    free(stable_full_response);
+
+    char *tools = cbm_mcp_tools_list();
+    ASSERT_NOT_NULL(tools);
+    ASSERT_NOT_NULL(strstr(tools, "semantic_offset"));
+    ASSERT_NOT_NULL(strstr(tools, "semantic_limit"));
+    free(tools);
+
+    yyjson_doc_free(full_doc);
+    free(inner);
+    free(response);
+    cbm_mcp_server_free(srv);
+    PASS();
+}
+
 TEST(tool_search_graph_budget_preserves_long_values_and_continuation) {
     cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
     ASSERT_NOT_NULL(srv);
@@ -14956,6 +15305,7 @@ SUITE(mcp) {
     RUN_TEST(tool_output_byte_budgets);
     RUN_TEST(tool_search_graph_query_honors_file_pattern_issue552);
     RUN_TEST(tool_search_graph_bm25_reports_candidate_saturation);
+    RUN_TEST(tool_search_graph_semantic_pagination_is_lossless_and_independent);
     RUN_TEST(tool_search_graph_budget_preserves_long_values_and_continuation);
     RUN_TEST(mcp_resource_discovery_methods_return_empty_lists);
     RUN_TEST(tool_query_graph_basic);

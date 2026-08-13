@@ -8504,6 +8504,18 @@ static cbm_vector_result_t *vs_append_result(cbm_vector_result_t *results, int *
     return results;
 }
 
+static int vs_ranked_result_cmp(const void *lhs, const void *rhs) {
+    const cbm_vector_result_t *a = lhs;
+    const cbm_vector_result_t *b = rhs;
+    if (a->score > b->score) {
+        return -1;
+    }
+    if (a->score < b->score) {
+        return 1;
+    }
+    return (a->node_id > b->node_id) - (a->node_id < b->node_id);
+}
+
 int cbm_store_vector_search(cbm_store_t *s, const char *project, const char **keywords,
                             int keyword_count, int limit, cbm_vector_result_t **out,
                             int *out_count) {
@@ -8519,16 +8531,15 @@ int cbm_store_vector_search(cbm_store_t *s, const char *project, const char **ke
         return CBM_STORE_OK;
     }
 
-    /* Scan all node vectors, compute per-keyword cosine, take min.
-     * We use the FIRST keyword as the SQL sort (for top-K pre-filter),
-     * then re-score with min across all keywords in the append helper. */
+    /* Use the first keyword for a cheap candidate ordering, then score each
+     * materialized candidate by min-cosine across every keyword. */
     const char *sql = "SELECT n.id, n.name, n.qualified_name, n.file_path, n.label,"
                       "       cbm_cosine_i8(v.vector, ?1) as score, v.vector"
                       " FROM node_vectors v"
                       " INNER JOIN nodes n ON n.id = v.node_id"
                       " WHERE v.project = ?2"
                       " AND n.label IN (" CBM_SQL_CALLABLE_OR_TYPE_LABELS ")"
-                      " ORDER BY score DESC"
+                      " ORDER BY score DESC, n.id ASC"
                       " LIMIT ?3";
 
     sqlite3_stmt *stmt = NULL;
@@ -8538,59 +8549,74 @@ int cbm_store_vector_search(cbm_store_t *s, const char *project, const char **ke
         return CBM_STORE_ERR;
     }
 
-    /* Use first keyword for SQL pre-filter, fetch more candidates for re-ranking */
-    int fetch_limit = (limit > 0 ? limit : CBM_SZ_16) * ST_COL_5;
+    /* A fixed 5x prefilter is normally ample, but it is not a proof: a later
+     * candidate can have a lower first-keyword score and a much higher
+     * all-keyword min-score. Expand until either the scan is exhausted or the
+     * Kth final score is strictly above the best possible omitted score. This
+     * makes top-K prefixes identical for every requested K, which semantic
+     * offset pagination requires. */
+    int requested_limit = limit > 0 ? limit : CBM_SZ_16;
+    int fetch_limit = requested_limit > INT_MAX / ST_COL_5 ? INT_MAX : requested_limit * ST_COL_5;
     sqlite3_bind_blob(stmt, SKIP_ONE, kw_vecs[0], VS_VEC_DIM, SQLITE_STATIC);
     sqlite3_bind_text(stmt, ST_COL_2, project, SQLITE_AUTO_LEN, SQLITE_STATIC);
-    sqlite3_bind_int(stmt, ST_COL_3, fetch_limit);
+
+    cbm_vector_result_t *results = NULL;
+    int count = 0;
+    for (;;) {
+        int cap = 0;
+        int step_rc;
+        double omitted_score_ceiling = 0.0;
+        sqlite3_bind_int(stmt, ST_COL_3, fetch_limit);
+        while ((step_rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+            omitted_score_ceiling = sqlite3_column_double(stmt, ST_COL_5);
+            cbm_vector_result_t *grown =
+                vs_append_result(results, &count, &cap, stmt, kw_vecs, actual_kw);
+            if (!grown) {
+                step_rc = SQLITE_NOMEM;
+                break;
+            }
+            results = grown;
+        }
+        if (step_rc != SQLITE_DONE) {
+            char rc_buf[VS_STR_BUF];
+            snprintf(rc_buf, sizeof(rc_buf), "%d", step_rc);
+            cbm_log_warn("vector_search.step_error", "rc", rc_buf, "msg", sqlite3_errmsg(s->db));
+            cbm_store_free_vector_results(results, count);
+            sqlite3_finalize(stmt);
+            return CBM_STORE_ERR;
+        }
+
+        if (count > 1) {
+            qsort(results, (size_t)count, sizeof(*results), vs_ranked_result_cmp);
+        }
+        bool scan_exhausted = count < fetch_limit;
+        bool top_k_certified = scan_exhausted || count < requested_limit ||
+                               results[requested_limit - 1].score > omitted_score_ceiling;
+        if (top_k_certified || fetch_limit == INT_MAX) {
+            break;
+        }
+
+        cbm_store_free_vector_results(results, count);
+        results = NULL;
+        count = 0;
+        fetch_limit = fetch_limit > INT_MAX / ST_COL_2 ? INT_MAX : fetch_limit * ST_COL_2;
+        sqlite3_reset(stmt);
+    }
 
     {
         char kw_buf[VS_STR_BUF];
         char fl_buf[VS_STR_BUF];
+        char cnt_buf[VS_STR_BUF];
         snprintf(kw_buf, sizeof(kw_buf), "%d", actual_kw);
         snprintf(fl_buf, sizeof(fl_buf), "%d", fetch_limit);
-        cbm_log_info("vector_search.exec", "kw_count", kw_buf, "fetch_limit", fl_buf, "project",
-                     project);
-    }
-
-    cbm_vector_result_t *results = NULL;
-    int count = 0;
-    int cap = 0;
-    int step_rc = 0;
-    while ((step_rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-        cbm_vector_result_t *grown =
-            vs_append_result(results, &count, &cap, stmt, kw_vecs, actual_kw);
-        if (!grown) {
-            break;
-        }
-        results = grown;
-    }
-
-    if (step_rc != SQLITE_DONE) {
-        char rc_buf[VS_STR_BUF];
-        snprintf(rc_buf, sizeof(rc_buf), "%d", step_rc);
-        cbm_log_warn("vector_search.step_error", "rc", rc_buf, "msg", sqlite3_errmsg(s->db));
-    }
-    {
-        char cnt_buf[VS_STR_BUF];
         snprintf(cnt_buf, sizeof(cnt_buf), "%d", count);
-        cbm_log_info("vector_search.done", "candidates", cnt_buf);
+        cbm_log_info("vector_search.done", "kw_count", kw_buf, "fetch_limit", fl_buf, "candidates",
+                     cnt_buf);
     }
     sqlite3_finalize(stmt);
 
-    /* Re-sort by min-score (SQL sorted by first keyword only) */
-    for (int i = 0; i < count - SKIP_ONE; i++) {
-        for (int j = i + SKIP_ONE; j < count; j++) {
-            if (results[j].score > results[i].score) {
-                cbm_vector_result_t tmp = results[i];
-                results[i] = results[j];
-                results[j] = tmp;
-            }
-        }
-    }
-
     /* Trim to requested limit */
-    int final_limit = limit > 0 ? limit : CBM_SZ_16;
+    int final_limit = requested_limit;
     if (count > final_limit) {
         for (int i = final_limit; i < count; i++) {
             free(results[i].name);

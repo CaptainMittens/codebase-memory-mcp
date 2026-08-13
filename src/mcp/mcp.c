@@ -473,10 +473,8 @@ static const tool_def_t TOOLS[] = {
      "},\"required\":[\"repo_path\"]}"},
 
     {"search_graph", "Search graph",
-     "Search: BM25 query, regex name/qn, or vector semantic_query. Regex rows keep "
-     "qn/file/lines and in/out over CALLS, USAGE, CALL_REFERENCE, INHERITS, IMPLEMENTS. "
-     "Defaults: the smaller lossless direct/grouped tree, limit 50, ~3200 tokens (4x byte cap). "
-     "Page with offset; detail=ids is qn-only.",
+     "Regex rows keep qn/file/lines and in/out over CALLS/USAGE/CALL_REFERENCE/INHERITS/"
+     "IMPLEMENTS. Pages: offset/limit structural; semantic_offset/semantic_limit semantic.",
      "{\"type\":\"object\",\"properties\":{\"project\":{\"type\":\"string\"},"
      "\"query\":{\"type\":\"string\"},"
      "\"label\":{\"type\":\"string\"},\"name_pattern\":{\"type\":\"string\"},\"qn_pattern\":{"
@@ -484,7 +482,12 @@ static const tool_def_t TOOLS[] = {
      "\"relationship\":{\"type\":\"string\"},\"min_degree\":{\"type\":\"integer\"},"
      "\"max_degree\":{\"type\":\"integer\"},\"exclude_entry_points\":{\"type\":\"boolean\"},"
      "\"include_connected\":{\"type\":\"boolean\"},\"semantic_query\":{"
-     "\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"limit\":{\"type\":"
+     "\"type\":\"array\",\"items\":{\"type\":\"string\"}},"
+     "\"semantic_limit\":{\"type\":\"integer\",\"default\":50,\"minimum\":0,"
+     "\"maximum\":500},"
+     "\"semantic_offset\":{\"type\":\"integer\",\"default\":0,\"minimum\":0,"
+     "\"maximum\":99998},"
+     "\"limit\":{\"type\":"
      "\"integer\",\"default\":50,\"minimum\":1,\"maximum\":500},"
      "\"offset\":{\"type\":\"integer\",\"default\":0,\"minimum\":0},"
      "\"max_output_tokens\":{\"type\":\"integer\",\"default\":3200,\"minimum\":128,"
@@ -3625,8 +3628,8 @@ static void emit_semantic_results(yyjson_mut_doc *doc, yyjson_mut_val *root,
  * Returns true if semantic_query was provided as a non-array (type error —
  * caller should surface to the user). */
 static bool run_semantic_query_core(const char *args, cbm_store_t *store, const char *project,
-                                    int limit, cbm_vector_result_t **out_vresults, int *out_vcount,
-                                    bool *out_present) {
+                                    int materialize_limit, cbm_vector_result_t **out_vresults,
+                                    int *out_vcount, bool *out_present) {
     enum { MAX_KW_SEARCH = 32 };
     *out_vresults = NULL;
     *out_vcount = 0;
@@ -3647,9 +3650,8 @@ static bool run_semantic_query_core(const char *args, cbm_store_t *store, const 
         int ki = extract_semantic_keywords(sq_val, keywords, MAX_KW_SEARCH);
         cbm_vector_result_t *vresults = NULL;
         int vcount = 0;
-        int sem_limit = limit > 0 ? limit : CBM_SZ_16;
-        if (cbm_store_vector_search(store, project, keywords, ki, sem_limit, &vresults, &vcount) ==
-                CBM_STORE_OK &&
+        if (cbm_store_vector_search(store, project, keywords, ki, materialize_limit, &vresults,
+                                    &vcount) == CBM_STORE_OK &&
             vcount > 0) {
             *out_vresults = vresults;
             *out_vcount = vcount;
@@ -3766,13 +3768,23 @@ typedef struct {
     bool floor_exceeded;
 } sg_render_plan_t;
 
+typedef struct {
+    const cbm_vector_result_t *results;
+    int total;
+    int offset;
+    int limit;
+    bool total_exact;
+    bool present;
+} sg_semantic_page_t;
+
 static bool sg_page_has_more(int total, int offset, int returned) {
-    return total > offset + returned;
+    return (long long)total > (long long)offset + returned;
 }
 
 static void sg_emit_paging_tree(cbm_sb_t *sb, int total, int offset, const sg_render_plan_t *plan,
                                 int requested_fields, bool connected_requested,
-                                size_t max_output_bytes, bool continuation_supported) {
+                                size_t max_output_bytes, bool continuation_supported,
+                                bool continuation_requires_positive_limit) {
     bool has_more = continuation_supported && sg_page_has_more(total, offset, plan->returned);
     cbm_tree_scalar_int(sb, "total", total);
     cbm_tree_scalar_int(sb, "returned", plan->returned);
@@ -3780,7 +3792,11 @@ static void sg_emit_paging_tree(cbm_sb_t *sb, int total, int offset, const sg_re
     if (has_more && plan->returned > 0) {
         cbm_tree_scalar_int(sb, "next_offset", offset + plan->returned);
     } else if (has_more) {
-        cbm_tree_scalar_bool(sb, "continuation_requires_higher_budget", true);
+        cbm_tree_scalar_bool(sb,
+                             continuation_requires_positive_limit
+                                 ? "continuation_requires_positive_limit"
+                                 : "continuation_requires_higher_budget",
+                             true);
     }
     bool truncated = has_more || plan->budget_hit;
     cbm_tree_scalar_bool(sb, "truncated", truncated);
@@ -3808,7 +3824,8 @@ static void sg_emit_paging_tree(cbm_sb_t *sb, int total, int offset, const sg_re
 static void sg_emit_paging_json(yyjson_mut_doc *doc, yyjson_mut_val *root, int total, int offset,
                                 const sg_render_plan_t *plan, int requested_fields,
                                 bool connected_requested, size_t max_output_bytes,
-                                bool continuation_supported) {
+                                bool continuation_supported,
+                                bool continuation_requires_positive_limit) {
     bool has_more = continuation_supported && sg_page_has_more(total, offset, plan->returned);
     yyjson_mut_obj_add_int(doc, root, "total", total);
     yyjson_mut_obj_add_int(doc, root, "returned", plan->returned);
@@ -3817,7 +3834,11 @@ static void sg_emit_paging_json(yyjson_mut_doc *doc, yyjson_mut_val *root, int t
     if (has_more && plan->returned > 0) {
         yyjson_mut_obj_add_int(doc, root, "next_offset", offset + plan->returned);
     } else if (has_more) {
-        yyjson_mut_obj_add_bool(doc, root, "continuation_requires_higher_budget", true);
+        yyjson_mut_obj_add_bool(doc, root,
+                                continuation_requires_positive_limit
+                                    ? "continuation_requires_positive_limit"
+                                    : "continuation_requires_higher_budget",
+                                true);
     }
     bool truncated = has_more || plan->budget_hit;
     yyjson_mut_obj_add_bool(doc, root, "truncated", truncated);
@@ -3840,6 +3861,46 @@ static void sg_emit_paging_json(yyjson_mut_doc *doc, yyjson_mut_val *root, int t
         yyjson_mut_obj_add_str(doc, root, "hint",
                                "first identity row exceeds max_output_bytes; raise "
                                "max_output_tokens");
+    }
+}
+
+static bool sg_semantic_has_more(const sg_semantic_page_t *semantic, int returned) {
+    return semantic && sg_page_has_more(semantic->total, semantic->offset, returned);
+}
+
+static void sg_emit_semantic_paging_tree(cbm_sb_t *sb, const sg_semantic_page_t *semantic,
+                                         int returned) {
+    bool has_more = sg_semantic_has_more(semantic, returned);
+    cbm_tree_scalar_int(sb, "semantic_total", semantic->total);
+    cbm_tree_scalar_str(sb, "semantic_total_relation", semantic->total_exact ? "eq" : "gte");
+    cbm_tree_scalar_int(sb, "semantic_returned", returned);
+    cbm_tree_scalar_bool(sb, "semantic_has_more", has_more);
+    if (has_more && returned > 0) {
+        cbm_tree_scalar_int(sb, "semantic_next_offset", semantic->offset + returned);
+    } else if (has_more) {
+        cbm_tree_scalar_bool(sb,
+                             semantic->limit == 0 ? "semantic_continuation_requires_positive_limit"
+                                                  : "semantic_continuation_requires_higher_budget",
+                             true);
+    }
+}
+
+static void sg_emit_semantic_paging_json(yyjson_mut_doc *doc, yyjson_mut_val *root,
+                                         const sg_semantic_page_t *semantic, int returned) {
+    bool has_more = sg_semantic_has_more(semantic, returned);
+    yyjson_mut_obj_add_int(doc, root, "semantic_total", semantic->total);
+    yyjson_mut_obj_add_str(doc, root, "semantic_total_relation",
+                           semantic->total_exact ? "eq" : "gte");
+    yyjson_mut_obj_add_int(doc, root, "semantic_returned", returned);
+    yyjson_mut_obj_add_bool(doc, root, "semantic_has_more", has_more);
+    if (has_more && returned > 0) {
+        yyjson_mut_obj_add_int(doc, root, "semantic_next_offset", semantic->offset + returned);
+    } else if (has_more) {
+        yyjson_mut_obj_add_bool(doc, root,
+                                semantic->limit == 0
+                                    ? "semantic_continuation_requires_positive_limit"
+                                    : "semantic_continuation_requires_higher_budget",
+                                true);
     }
 }
 
@@ -4137,12 +4198,12 @@ static void emit_semantic_results_toon(cbm_sb_t *sb, const cbm_vector_result_t *
 static char *sg_render_payload(bool json_format, const cbm_search_output_t *out, int offset,
                                const char *const *fields, int requested_fields, cbm_store_t *store,
                                const char *relationship, bool connected_requested, bool detail_ids,
-                               const cbm_vector_result_t *vresults, int semantic_total,
-                               bool semantic_only, const char *diagnostic_hint,
-                               const sg_render_plan_t *plan, size_t max_output_bytes) {
+                               const sg_semantic_page_t *semantic, bool semantic_only,
+                               const char *diagnostic_hint, const sg_render_plan_t *plan,
+                               size_t max_output_bytes) {
     sg_render_plan_t meta_plan = *plan;
-    int page_total = semantic_only ? semantic_total : out->total;
-    int page_offset = semantic_only ? 0 : offset;
+    int page_total = semantic_only ? semantic->total : out->total;
+    int page_offset = semantic_only ? semantic->offset : offset;
     if (semantic_only) {
         meta_plan.returned = plan->semantic_returned;
     }
@@ -4158,16 +4219,16 @@ static char *sg_render_payload(bool json_format, const cbm_search_output_t *out,
                                          relationship, plan->connected_returned, plan->returned);
             }
         }
-        if (semantic_total > 0 || semantic_only) {
-            cbm_tree_scalar_int(&sb, "semantic_total", semantic_total);
-            cbm_tree_scalar_int(&sb, "semantic_returned", plan->semantic_returned);
-            emit_semantic_results_toon(&sb, vresults, plan->semantic_returned);
+        if (semantic->present) {
+            sg_emit_semantic_paging_tree(&sb, semantic, plan->semantic_returned);
+            emit_semantic_results_toon(&sb, semantic->results, plan->semantic_returned);
         }
         if (plan->core_hint_returned && diagnostic_hint) {
             cbm_tree_scalar_str(&sb, "hint", diagnostic_hint);
         }
         sg_emit_paging_tree(&sb, page_total, page_offset, &meta_plan, requested_fields,
-                            connected_requested, max_output_bytes, !semantic_only);
+                            connected_requested, max_output_bytes, true,
+                            semantic_only && semantic->limit == 0);
         return cbm_sb_finish(&sb);
     }
 
@@ -4182,23 +4243,24 @@ static char *sg_render_payload(bool json_format, const cbm_search_output_t *out,
                                           relationship, plan->connected_returned, plan->returned);
         }
     }
-    if (semantic_total > 0 || semantic_only) {
-        yyjson_mut_obj_add_int(doc, root, "semantic_total", semantic_total);
-        yyjson_mut_obj_add_int(doc, root, "semantic_returned", plan->semantic_returned);
-        emit_semantic_results(doc, root, vresults, plan->semantic_returned);
+    if (semantic->present) {
+        sg_emit_semantic_paging_json(doc, root, semantic, plan->semantic_returned);
+        emit_semantic_results(doc, root, semantic->results, plan->semantic_returned);
     }
     if (plan->core_hint_returned && diagnostic_hint) {
         yyjson_mut_obj_add_strcpy(doc, root, "hint", diagnostic_hint);
     }
     sg_emit_paging_json(doc, root, page_total, page_offset, &meta_plan, requested_fields,
-                        connected_requested, max_output_bytes, !semantic_only);
+                        connected_requested, max_output_bytes, true,
+                        semantic_only && semantic->limit == 0);
     char *json = yy_doc_to_str(doc);
     yyjson_mut_doc_free(doc);
     return json;
 }
 
-static char *sg_budget_floor(bool json_format, int total, int offset, int semantic_total,
-                             size_t max_output_bytes, bool semantic_only) {
+static char *sg_budget_floor(bool json_format, int total, int offset,
+                             const sg_semantic_page_t *semantic, size_t max_output_bytes,
+                             bool semantic_only) {
     sg_render_plan_t floor = {
         .returned = 0,
         .fields_returned = 0,
@@ -4208,20 +4270,26 @@ static char *sg_budget_floor(bool json_format, int total, int offset, int semant
         .budget_hit = true,
         .floor_exceeded = true,
     };
-    int page_total = total > 0 ? total : semantic_total;
-    int page_offset = total > 0 ? offset : 0;
+    int page_total = semantic_only ? semantic->total : total;
+    int page_offset = semantic_only ? semantic->offset : offset;
     if (!json_format) {
         cbm_sb_t sb;
         cbm_sb_init(&sb);
-        sg_emit_paging_tree(&sb, page_total, page_offset, &floor, 0, false, max_output_bytes,
-                            !semantic_only);
+        if (semantic->present) {
+            sg_emit_semantic_paging_tree(&sb, semantic, 0);
+        }
+        sg_emit_paging_tree(&sb, page_total, page_offset, &floor, 0, false, max_output_bytes, true,
+                            semantic_only && semantic->limit == 0);
         return cbm_sb_finish(&sb);
     }
     yyjson_mut_doc *doc = yyjson_mut_doc_new(NULL);
     yyjson_mut_val *root = yyjson_mut_obj(doc);
     yyjson_mut_doc_set_root(doc, root);
+    if (semantic->present) {
+        sg_emit_semantic_paging_json(doc, root, semantic, 0);
+    }
     sg_emit_paging_json(doc, root, page_total, page_offset, &floor, 0, false, max_output_bytes,
-                        !semantic_only);
+                        true, semantic_only && semantic->limit == 0);
     char *json = yy_doc_to_str(doc);
     yyjson_mut_doc_free(doc);
     return json;
@@ -4260,6 +4328,22 @@ static char *handle_search_graph(cbm_mcp_server_t *srv, const char *args) {
     if (offset < 0) {
         offset = 0;
     }
+    int semantic_limit = cbm_mcp_get_int_arg(args, "semantic_limit", CBM_DEFAULT_SEARCH_LIMIT);
+    if (semantic_limit < 0) {
+        semantic_limit = 0;
+    } else if (semantic_limit > 500) {
+        semantic_limit = 500;
+    }
+    int semantic_offset = cbm_mcp_get_int_arg(args, "semantic_offset", 0);
+    if (semantic_offset < 0) {
+        semantic_offset = 0;
+    } else if (semantic_offset > MCP_QUERY_MAX_VISIBLE_ROWS) {
+        semantic_offset = MCP_QUERY_MAX_VISIBLE_ROWS;
+    }
+    /* One ranked hit beyond the requested semantic page makes has_more
+     * deterministic. Keeping the prefix through that lookahead also lets a
+     * budget-trimmed page resume at offset + rows actually emitted. */
+    int semantic_materialize_limit = semantic_offset + semantic_limit + 1;
     int max_output_tokens = cbm_mcp_get_int_arg(args, "max_output_tokens", 3200);
     if (max_output_tokens < 128) {
         max_output_tokens = 128;
@@ -4335,8 +4419,8 @@ static char *handle_search_graph(cbm_mcp_server_t *srv, const char *args) {
     cbm_vector_result_t *vresults = NULL;
     int vcount = 0;
     bool sq_present = false;
-    bool sq_type_error =
-        run_semantic_query_core(args, store, project, limit, &vresults, &vcount, &sq_present);
+    bool sq_type_error = run_semantic_query_core(args, store, project, semantic_materialize_limit,
+                                                 &vresults, &vcount, &sq_present);
     if (sq_type_error) {
         if (fields_owner) {
             yyjson_doc_free(fields_owner);
@@ -4354,6 +4438,18 @@ static char *handle_search_graph(cbm_mcp_server_t *srv, const char *args) {
             "min-cosine.",
             true);
     }
+
+    int semantic_available = vcount > semantic_offset ? vcount - semantic_offset : 0;
+    int semantic_page_count =
+        semantic_available < semantic_limit ? semantic_available : semantic_limit;
+    sg_semantic_page_t semantic = {
+        .results = semantic_page_count > 0 ? vresults + semantic_offset : NULL,
+        .total = vcount,
+        .offset = semantic_offset,
+        .limit = semantic_limit,
+        .total_exact = vcount < semantic_materialize_limit,
+        .present = sq_present,
+    };
 
     /* Semantic-only calls must not prepend an unrelated, unfiltered symbol
      * page. Combined calls retain both independently ranked result sets. */
@@ -4385,7 +4481,7 @@ static char *handle_search_graph(cbm_mcp_server_t *srv, const char *args) {
     sg_render_plan_t plan = {
         .returned = out.count,
         .fields_returned = requested_fields,
-        .semantic_returned = vcount,
+        .semantic_returned = semantic_page_count,
         .connected_returned = !detail_ids && include_connected,
         .core_hint_returned = diagnostic_hint != NULL,
         .budget_hit = false,
@@ -4396,8 +4492,8 @@ static char *handle_search_graph(cbm_mcp_server_t *srv, const char *args) {
     for (;;) {
         payload =
             sg_render_payload(json_format, &out, offset, fields, requested_fields, store,
-                              relationship, !detail_ids && include_connected, detail_ids, vresults,
-                              vcount, semantic_only, diagnostic_hint, &plan, max_output_bytes);
+                              relationship, !detail_ids && include_connected, detail_ids, &semantic,
+                              semantic_only, diagnostic_hint, &plan, max_output_bytes);
         if (!payload || strlen(payload) <= max_output_bytes) {
             break;
         }
@@ -4423,12 +4519,12 @@ static char *handle_search_graph(cbm_mcp_server_t *srv, const char *args) {
         }
     }
 
-    bool identity_available = out.count > 0 || vcount > 0;
+    bool identity_available = out.count > 0 || semantic_page_count > 0;
     bool identity_returned = plan.returned > 0 || plan.semantic_returned > 0;
     if (!payload || strlen(payload) > max_output_bytes ||
         (identity_available && plan.budget_hit && !identity_returned)) {
         free(payload);
-        payload = sg_budget_floor(json_format, out.total, offset, vcount, max_output_bytes,
+        payload = sg_budget_floor(json_format, out.total, offset, &semantic, max_output_bytes,
                                   semantic_only);
     }
 
