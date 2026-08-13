@@ -1607,6 +1607,10 @@ struct cbm_mcp_server {
     void *quarantine_test_context;
     cbm_mcp_command_test_hook_fn command_test_hook;
     void *command_test_context;
+#ifdef CBM_ENABLE_TEST_SEAMS
+    cbm_mcp_snapshot_read_test_hook_fn snapshot_read_test_hook;
+    void *snapshot_read_test_context;
+#endif
     cbm_thread_t autoindex_tid;
     bool autoindex_active; /* true if auto-index thread was started */
 
@@ -1904,6 +1908,18 @@ void cbm_mcp_server_set_command_test_hook(cbm_mcp_server_t *srv, cbm_mcp_command
     srv->command_test_hook = hook;
     srv->command_test_context = context;
 }
+
+#ifdef CBM_ENABLE_TEST_SEAMS
+void cbm_mcp_server_set_snapshot_read_test_hook(cbm_mcp_server_t *srv,
+                                                cbm_mcp_snapshot_read_test_hook_fn hook,
+                                                void *context) {
+    if (!srv) {
+        return;
+    }
+    srv->snapshot_read_test_hook = hook;
+    srv->snapshot_read_test_context = context;
+}
+#endif
 
 /* ── Cache dir + project DB path helpers ───────────────────────── */
 
@@ -13510,19 +13526,19 @@ static void detect_snapshot_add_field(cbm_sha256_ctx *hash, const char *value) {
     cbm_sha256_update(hash, "|", 1);
 }
 
-static void detect_snapshot_add_changed_file(cbm_sha256_ctx *hash, const char *root_path,
-                                             const char *relative_path) {
+static bool detect_snapshot_add_changed_file(cbm_mcp_server_t *srv, cbm_sha256_ctx *hash,
+                                             const char *root_path, const char *relative_path) {
     detect_snapshot_add_field(hash, relative_path);
     size_t root_len = strlen(root_path);
     size_t relative_len = strlen(relative_path);
     if (root_len > (size_t)-1 - relative_len - 2U) {
         detect_snapshot_add_field(hash, "path_overflow");
-        return;
+        return false;
     }
     char *absolute = malloc(root_len + relative_len + 2U);
     if (!absolute) {
         detect_snapshot_add_field(hash, "path_oom");
-        return;
+        return false;
     }
     memcpy(absolute, root_path, root_len);
     absolute[root_len] = '/';
@@ -13530,33 +13546,59 @@ static void detect_snapshot_add_changed_file(cbm_sha256_ctx *hash, const char *r
 
     cbm_path_info_t info = {0};
     if (cbm_path_info_utf8(absolute, &info) != 0) {
-        detect_snapshot_add_field(hash, "absent");
+        /* A missing path can be a legitimate deletion, but the portable
+         * metadata API cannot distinguish it from permission and transient
+         * inspection failures on every supported platform. Hash the observed
+         * state for diagnostics, but do not issue a cursor from incomplete
+         * evidence. Offset paging remains available. */
+        detect_snapshot_add_field(hash, "metadata_unavailable");
         free(absolute);
-        return;
+        return false;
     }
     char metadata[160];
     snprintf(metadata, sizeof(metadata), "r%d:d%d:l%d:s%lld:m%lld", info.is_regular ? 1 : 0,
              info.is_directory ? 1 : 0, info.is_symlink ? 1 : 0, (long long)info.size,
              (long long)info.mtime_ns);
     detect_snapshot_add_field(hash, metadata);
+    bool complete = true;
     if (info.is_regular) {
-        FILE *file = cbm_fopen(absolute, "rb");
+        bool allow_open = true;
+#ifdef CBM_ENABLE_TEST_SEAMS
+        if (srv && srv->snapshot_read_test_hook) {
+            allow_open = srv->snapshot_read_test_hook(srv->snapshot_read_test_context, absolute);
+        }
+#else
+        (void)srv;
+#endif
+        FILE *file = allow_open ? cbm_fopen(absolute, "rb") : NULL;
         if (file) {
             unsigned char buffer[64 * 1024];
             size_t count;
             while ((count = fread(buffer, 1, sizeof(buffer), file)) > 0) {
                 cbm_sha256_update(hash, buffer, count);
             }
-            detect_snapshot_add_field(hash, ferror(file) ? "read_error" : "read_complete");
+            bool read_error = ferror(file) != 0;
+            detect_snapshot_add_field(hash, read_error ? "read_error" : "read_complete");
+            complete = !read_error;
             (void)fclose(file);
         } else {
             detect_snapshot_add_field(hash, "open_error");
+            complete = false;
         }
+    } else if (info.is_symlink) {
+        /* lstat-style metadata identifies the link object but not its target
+         * bytes. The cross-platform metadata API intentionally does not expose
+         * a readlink/reparse payload, so fail closed instead of pretending the
+         * cursor is bound to the changed link identity. */
+        detect_snapshot_add_field(hash, "link_identity_unavailable");
+        complete = false;
     }
     free(absolute);
+    return complete;
 }
 
-static void detect_snapshot_fingerprint(const char *root_path, const char *head_oid,
+static bool detect_snapshot_fingerprint(cbm_mcp_server_t *srv, const char *root_path,
+                                        const char *head_oid,
                                         const char *base_oid, const char *merge_base,
                                         const char *generation, char **files, int file_count,
                                         const cbm_traverse_result_t *impact,
@@ -13569,8 +13611,11 @@ static void detect_snapshot_fingerprint(const char *root_path, const char *head_
     detect_snapshot_add_field(&hash, base_oid);
     detect_snapshot_add_field(&hash, merge_base);
     detect_snapshot_add_field(&hash, generation);
+    bool complete = true;
     for (int i = 0; i < file_count; i++) {
-        detect_snapshot_add_changed_file(&hash, root_path, files[i]);
+        if (!detect_snapshot_add_changed_file(srv, &hash, root_path, files[i])) {
+            complete = false;
+        }
     }
     if (impact) {
         for (int i = 0; i < impact->visited_count; i++) {
@@ -13601,6 +13646,7 @@ static void detect_snapshot_fingerprint(const char *root_path, const char *head_
         out[i * 2 + 1] = hex[digest[i] & 0x0f];
     }
     out[32] = '\0';
+    return complete;
 }
 
 static char *handle_detect_changes(cbm_mcp_server_t *srv, const char *args) {
@@ -14143,13 +14189,20 @@ static char *handle_detect_changes(cbm_mcp_server_t *srv, const char *args) {
     char generation[96] = "unknown";
     (void)cbm_store_generation(store, generation, sizeof(generation));
     char detect_snapshot[33];
-    detect_snapshot_fingerprint(root_path, head_oid, base_oid, merge_base, generation, files,
-                                file_count, &impact, modules, nmods, module_overflow,
-                                detect_snapshot);
+    bool detect_snapshot_complete = detect_snapshot_fingerprint(
+        srv, root_path, head_oid, base_oid, merge_base, generation, files, file_count, &impact,
+        modules, nmods, module_overflow, detect_snapshot);
 
     const char *cursor_error = NULL;
     detect_cursor_t decoded_cursor = {0};
-    if (changed_cursor_arg && changed_cursor_arg[0]) {
+    bool cursor_supplied = (changed_cursor_arg && changed_cursor_arg[0]) ||
+                           (impact_cursor_arg && impact_cursor_arg[0]) ||
+                           (module_cursor_arg && module_cursor_arg[0]);
+    if (cursor_supplied && !detect_snapshot_complete) {
+        cursor_error = "snapshot_unavailable: changed file bytes could not be fingerprinted — "
+                       "rerun without the cursor after the files are readable";
+    }
+    if (!cursor_error && changed_cursor_arg && changed_cursor_arg[0]) {
         if (changed_offset != 0) {
             cursor_error = "cursor_params_mismatch: changed_cursor cannot be combined with a "
                            "nonzero changed_offset";
@@ -14242,6 +14295,9 @@ render_detect_output:
         if (output_budget_floor_exceeded) {
             cbm_tree_scalar_bool(&sb, "output_budget_floor_exceeded", true);
         }
+        if (!detect_snapshot_complete) {
+            cbm_tree_scalar_bool(&sb, "snapshot_cursor_unavailable", true);
+        }
         /* Changed files are independently pageable: traversal still used every
          * file, so paging affects presentation only, never the graph answer. */
         cbm_tree_scalar_int(&sb, "changed_total", file_count);
@@ -14251,9 +14307,11 @@ render_detect_output:
         if (changed_has_more && changed_returned > 0) {
             cbm_tree_scalar_int(&sb, "changed_next_offset", changed_start + changed_returned);
             char cursor[80];
-            detect_cursor_encode('c', detect_snapshot, detect_qhash,
-                                 changed_start + changed_returned, cursor);
-            cbm_tree_scalar_str(&sb, "changed_next_cursor", cursor);
+            if (detect_snapshot_complete) {
+                detect_cursor_encode('c', detect_snapshot, detect_qhash,
+                                     changed_start + changed_returned, cursor);
+                cbm_tree_scalar_str(&sb, "changed_next_cursor", cursor);
+            }
         } else if (changed_has_more) {
             cbm_tree_scalar_bool(&sb,
                                  changed_limit == 0 ? "changed_continuation_requires_positive_limit"
@@ -14280,7 +14338,8 @@ render_detect_output:
         cbm_tree_scalar_int(&sb, "seed_symbols", seed_count);
         if (want_symbols) {
             detect_emit_impacted_tree(&sb, &impact, imp_start, imp_returned, truncated);
-            if (imp_start + imp_returned < impact.visited_count && imp_returned > 0) {
+            if (detect_snapshot_complete && imp_start + imp_returned < impact.visited_count &&
+                imp_returned > 0) {
                 char cursor[80];
                 detect_cursor_encode('i', detect_snapshot, detect_qhash, imp_start + imp_returned,
                                      cursor);
@@ -14296,9 +14355,11 @@ render_detect_output:
             if (module_has_more && module_returned > 0) {
                 cbm_tree_scalar_int(&sb, "module_next_offset", module_start + module_returned);
                 char cursor[80];
-                detect_cursor_encode('m', detect_snapshot, detect_qhash,
-                                     module_start + module_returned, cursor);
-                cbm_tree_scalar_str(&sb, "module_next_cursor", cursor);
+                if (detect_snapshot_complete) {
+                    detect_cursor_encode('m', detect_snapshot, detect_qhash,
+                                         module_start + module_returned, cursor);
+                    cbm_tree_scalar_str(&sb, "module_next_cursor", cursor);
+                }
             } else if (module_has_more) {
                 cbm_tree_scalar_bool(&sb,
                                      module_limit == 0
@@ -14356,6 +14417,9 @@ render_detect_output:
         if (output_budget_floor_exceeded) {
             yyjson_mut_obj_add_bool(doc, root_obj, "output_budget_floor_exceeded", true);
         }
+        if (!detect_snapshot_complete) {
+            yyjson_mut_obj_add_bool(doc, root_obj, "snapshot_cursor_unavailable", true);
+        }
         yyjson_mut_obj_add_int(doc, root_obj, "changed_total", file_count);
         yyjson_mut_obj_add_int(doc, root_obj, "changed_returned", changed_returned);
         bool changed_has_more = changed_start + changed_returned < file_count;
@@ -14364,9 +14428,11 @@ render_detect_output:
             yyjson_mut_obj_add_int(doc, root_obj, "changed_next_offset",
                                    changed_start + changed_returned);
             char cursor[80];
-            detect_cursor_encode('c', detect_snapshot, detect_qhash,
-                                 changed_start + changed_returned, cursor);
-            yyjson_mut_obj_add_strcpy(doc, root_obj, "changed_next_cursor", cursor);
+            if (detect_snapshot_complete) {
+                detect_cursor_encode('c', detect_snapshot, detect_qhash,
+                                     changed_start + changed_returned, cursor);
+                yyjson_mut_obj_add_strcpy(doc, root_obj, "changed_next_cursor", cursor);
+            }
         } else if (changed_has_more) {
             yyjson_mut_obj_add_bool(doc, root_obj,
                                     changed_limit == 0
@@ -14402,10 +14468,12 @@ render_detect_output:
         yyjson_mut_obj_add_bool(doc, root_obj, "impacted_has_more", impacted_has_more);
         if (impacted_has_more && imp_returned > 0) {
             yyjson_mut_obj_add_int(doc, root_obj, "impacted_next_offset", imp_start + imp_returned);
-            char cursor[80];
-            detect_cursor_encode('i', detect_snapshot, detect_qhash, imp_start + imp_returned,
-                                 cursor);
-            yyjson_mut_obj_add_strcpy(doc, root_obj, "impacted_next_cursor", cursor);
+            if (detect_snapshot_complete) {
+                char cursor[80];
+                detect_cursor_encode('i', detect_snapshot, detect_qhash, imp_start + imp_returned,
+                                     cursor);
+                yyjson_mut_obj_add_strcpy(doc, root_obj, "impacted_next_cursor", cursor);
+            }
         } else if (impacted_has_more) {
             yyjson_mut_obj_add_bool(doc, root_obj, "impacted_continuation_requires_higher_budget",
                                     true);
@@ -14421,10 +14489,12 @@ render_detect_output:
             if (module_has_more && module_returned > 0) {
                 yyjson_mut_obj_add_int(doc, root_obj, "module_next_offset",
                                        module_start + module_returned);
-                char cursor[80];
-                detect_cursor_encode('m', detect_snapshot, detect_qhash,
-                                     module_start + module_returned, cursor);
-                yyjson_mut_obj_add_strcpy(doc, root_obj, "module_next_cursor", cursor);
+                if (detect_snapshot_complete) {
+                    char cursor[80];
+                    detect_cursor_encode('m', detect_snapshot, detect_qhash,
+                                         module_start + module_returned, cursor);
+                    yyjson_mut_obj_add_strcpy(doc, root_obj, "module_next_cursor", cursor);
+                }
             } else if (module_has_more) {
                 yyjson_mut_obj_add_bool(doc, root_obj,
                                         module_limit == 0

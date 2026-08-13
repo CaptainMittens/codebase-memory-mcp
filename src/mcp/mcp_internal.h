@@ -50,6 +50,14 @@ bool cbm_detect_node_in_hunks(const cbm_node_t *node, const cbm_changed_hunk_t *
                               int hunk_count, const char *file);
 
 #ifdef CBM_ENABLE_TEST_SEAMS
+/* Reject opening one changed file while detect_changes fingerprints its live
+ * snapshot. This makes otherwise platform-specific permission/read races
+ * deterministic without changing production filesystem behavior. */
+typedef bool (*cbm_mcp_snapshot_read_test_hook_fn)(void *context, const char *absolute_path);
+void cbm_mcp_server_set_snapshot_read_test_hook(cbm_mcp_server_t *srv,
+                                                cbm_mcp_snapshot_read_test_hook_fn hook,
+                                                void *context);
+
 /* Filesystem PATH_MAX prevents a portable end-to-end fixture for multi-KiB
  * stored paths. This seam drives the normal search result ownership,
  * directory aggregation, and renderer pipeline with synthetic identities. */
