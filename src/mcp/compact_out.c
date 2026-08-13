@@ -529,17 +529,48 @@ static size_t tree_semantic_prefix_boundary(const char *text, size_t shared) {
     return boundary;
 }
 
-static bool tree_prefix_matches(const char *value, const tree_prefix_candidate_t *candidate) {
-    return value && !output_text_requires_encoding(value, strlen(value)) && !needs_quotes(value) &&
-           strlen(value) >= candidate->len && memcmp(value, candidate->text, candidate->len) == 0;
+/* Values are sorted once before candidate scoring.  Binary-searching the
+ * contiguous range that shares a prefix avoids rescanning every cell for
+ * every candidate (up to 512 * 8192 comparisons in the bounded worst case). */
+static size_t tree_sorted_prefix_count(const char *const *values, size_t count,
+                                       const tree_prefix_candidate_t *candidate) {
+    size_t lo = 0;
+    size_t hi = count;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (strncmp(values[mid], candidate->text, candidate->len) < 0) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    size_t first = lo;
+    hi = count;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (strncmp(values[mid], candidate->text, candidate->len) <= 0) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo - first;
 }
 
 static int tree_prefix_choice(const char *value, const tree_prefix_candidate_t *candidates,
                               int selected_count, bool active_only) {
+    if (!value) {
+        return -1;
+    }
+    size_t value_len = strlen(value);
+    if (output_text_requires_encoding(value, value_len) || needs_quotes(value)) {
+        return -1;
+    }
     int choice = -1;
     size_t longest = 0;
     for (int i = 0; i < selected_count; i++) {
-        if ((active_only && !candidates[i].active) || !tree_prefix_matches(value, &candidates[i])) {
+        if ((active_only && !candidates[i].active) || value_len < candidates[i].len ||
+            memcmp(value, candidates[i].text, candidates[i].len) != 0) {
             continue;
         }
         if (candidates[i].len > longest) {
@@ -651,22 +682,37 @@ static void tree_table_rows_impl(cbm_sb_t *sb, const char *key, int nrows, const
         return;
     }
 
+    const char **eligible_values = (const char **)malloc(sizeof(*eligible_values) * cell_count);
+    if (!eligible_values) {
+        tree_prefix_candidates_free(candidates, candidate_count);
+        free(candidates);
+        tree_render_table_direct(sb, key, nrows, cols, ncols, cells, string_cols);
+        return;
+    }
+    size_t eligible_count = 0;
+    for (size_t cell = 0; cell < cell_count; cell++) {
+        int col = (int)(cell % (size_t)ncols);
+        const char *value = cells[cell];
+        if (tree_column_is_prefixable(string_cols, prefix_cols, col) && value &&
+            strlen(value) >= TREE_PREFIX_MIN_LEN && !needs_quotes(value) &&
+            !output_text_requires_encoding(value, strlen(value))) {
+            eligible_values[eligible_count++] = value;
+        }
+    }
+    qsort(eligible_values, eligible_count, sizeof(*eligible_values), tree_string_ptr_compare);
+
     /* Score candidates independently first. The final byte-for-byte render
      * comparison below accounts for overlap and directory overhead exactly. */
     for (int i = 0; i < candidate_count; i++) {
-        for (size_t cell = 0; cell < cell_count; cell++) {
-            int col = (int)(cell % (size_t)ncols);
-            if (tree_column_is_prefixable(string_cols, prefix_cols, col) &&
-                tree_prefix_matches(cells[cell], &candidates[i])) {
-                candidates[i].uses++;
-            }
-        }
+        candidates[i].uses =
+            tree_sorted_prefix_count(eligible_values, eligible_count, &candidates[i]);
         if (candidates[i].uses >= TREE_PREFIX_MIN_USES && candidates[i].len > 5) {
             size_t gross = candidates[i].uses * (candidates[i].len - 5);
             size_t entry_cost = candidates[i].len + 12;
             candidates[i].score = gross > entry_cost ? gross - entry_cost : 0;
         }
     }
+    free(eligible_values);
     qsort(candidates, (size_t)candidate_count, sizeof(*candidates), tree_prefix_score_compare);
 
     int selected_count = 0;
@@ -681,19 +727,21 @@ static void tree_table_rows_impl(cbm_sb_t *sb, const char *key, int nrows, const
         return;
     }
 
+    size_t exclusive_uses[TREE_PREFIX_MAX_REFS] = {0};
+    for (size_t cell = 0; cell < cell_count; cell++) {
+        int col = (int)(cell % (size_t)ncols);
+        if (!tree_column_is_prefixable(string_cols, prefix_cols, col)) {
+            continue;
+        }
+        int choice = tree_prefix_choice(cells[cell], candidates, selected_count, false);
+        if (choice >= 0) {
+            exclusive_uses[choice]++;
+        }
+    }
+
     int active_count = 0;
     for (int i = 0; i < selected_count; i++) {
-        /* Recompute the exclusive longest-prefix assignment without another
-         * allocation; shorter overlapping candidates may become unused. */
-        size_t exclusive_uses = 0;
-        for (size_t cell = 0; cell < cell_count; cell++) {
-            int col = (int)(cell % (size_t)ncols);
-            if (tree_column_is_prefixable(string_cols, prefix_cols, col) &&
-                tree_prefix_choice(cells[cell], candidates, selected_count, false) == i) {
-                exclusive_uses++;
-            }
-        }
-        candidates[i].active = exclusive_uses >= TREE_PREFIX_MIN_USES;
+        candidates[i].active = exclusive_uses[i] >= TREE_PREFIX_MIN_USES;
         if (candidates[i].active) {
             candidates[i].id = active_count++;
         }
@@ -705,12 +753,28 @@ static void tree_table_rows_impl(cbm_sb_t *sb, const char *key, int nrows, const
         return;
     }
 
+    signed char *active_choices = (signed char *)malloc(cell_count);
+    if (!active_choices) {
+        tree_prefix_candidates_free(candidates, candidate_count);
+        free(candidates);
+        tree_render_table_direct(sb, key, nrows, cols, ncols, cells, string_cols);
+        return;
+    }
+    for (size_t cell = 0; cell < cell_count; cell++) {
+        int col = (int)(cell % (size_t)ncols);
+        int choice = tree_column_is_prefixable(string_cols, prefix_cols, col)
+                         ? tree_prefix_choice(cells[cell], candidates, selected_count, true)
+                         : -1;
+        active_choices[cell] = (signed char)choice;
+    }
+
     size_t key_len = strlen(key);
     char *refs_key = (char *)malloc(key_len + sizeof("_refs"));
     char *rule_key = (char *)malloc(key_len + sizeof("_ref_rule"));
     if (!refs_key || !rule_key) {
         free(refs_key);
         free(rule_key);
+        free(active_choices);
         tree_prefix_candidates_free(candidates, candidate_count);
         free(candidates);
         tree_render_table_direct(sb, key, nrows, cols, ncols, cells, string_cols);
@@ -751,9 +815,7 @@ static void tree_table_rows_impl(cbm_sb_t *sb, const char *key, int nrows, const
             }
             const char *value = cells[(size_t)row * (size_t)ncols + (size_t)col];
             bool string_cell = tree_column_is_string(string_cols, col);
-            int choice = tree_column_is_prefixable(string_cols, prefix_cols, col)
-                             ? tree_prefix_choice(value, candidates, selected_count, true)
-                             : -1;
+            int choice = active_choices[(size_t)row * (size_t)ncols + (size_t)col];
             if (choice >= 0) {
                 char ref[24];
                 snprintf(ref, sizeof(ref), "@%d+", candidates[choice].id);
@@ -789,6 +851,7 @@ static void tree_table_rows_impl(cbm_sb_t *sb, const char *key, int nrows, const
     free(compact_text);
     free(refs_key);
     free(rule_key);
+    free(active_choices);
     tree_prefix_candidates_free(candidates, candidate_count);
     free(candidates);
 }
