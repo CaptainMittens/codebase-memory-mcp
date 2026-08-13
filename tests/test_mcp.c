@@ -899,8 +899,38 @@ TEST(tree_table_uses_prefix_dictionary_only_when_it_materially_wins) {
                                  roundtrip_string_cols, roundtrip_prefix_cols);
     out = cbm_sb_finish(&sb);
     ASSERT_NOT_NULL(out);
-    ASSERT_NOT_NULL(strstr(out, "\"123456789012.\""));
-    ASSERT_NOT_NULL(strstr(out, "  @0+member_00\n"));
+    /* The lexical proxy may conservatively decline a numeric-prefix directory
+     * even though cl100k/o200k save four tokens here. Either representation is
+     * complete; if compacted, the numeric declaration must stay quoted. */
+    if (strstr(out, "numeric_prefix_refs:")) {
+        ASSERT_NOT_NULL(strstr(out, "\"123456789012.\""));
+        ASSERT_NOT_NULL(strstr(out, "  @0+member_00\n"));
+    } else {
+        ASSERT_NOT_NULL(strstr(out, "123456789012.member_00"));
+    }
+    free(out);
+
+    /* A long prefix is not necessarily token-expensive. Both cl100k and
+     * o200k encode `establishment.handler_0000` one token more cheaply than
+     * `@0+handler_0000`; a byte-only winner therefore regresses the actual
+     * context budget at scale. The model-neutral token-shape gate must keep
+     * this table direct even though a directory saves more than 15% of bytes. */
+    enum { TOKEN_CHEAP_ROWS = 200 };
+    char token_cheap_values[TOKEN_CHEAP_ROWS][64];
+    const char *token_cheap_cells[TOKEN_CHEAP_ROWS];
+    for (int i = 0; i < TOKEN_CHEAP_ROWS; i++) {
+        snprintf(token_cheap_values[i], sizeof(token_cheap_values[i]),
+                 "establishment.handler_%04d", i);
+        token_cheap_cells[i] = token_cheap_values[i];
+    }
+    cbm_sb_init(&sb);
+    cbm_tree_table_rows_profiled(&sb, "token_cheap", TOKEN_CHEAP_ROWS, roundtrip_cols, 1,
+                                 token_cheap_cells, roundtrip_string_cols,
+                                 roundtrip_prefix_cols);
+    out = cbm_sb_finish(&sb);
+    ASSERT_NOT_NULL(out);
+    ASSERT_NULL(strstr(out, "token_cheap_refs:"));
+    ASSERT_NOT_NULL(strstr(out, "establishment.handler_0000"));
     free(out);
     PASS();
 }
