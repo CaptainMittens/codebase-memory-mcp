@@ -71,6 +71,7 @@ enum {
 #include "foundation/log.h"
 #include "foundation/limits.h"
 #include "foundation/subprocess.h"
+#include "foundation/sha256.h"
 #include "mcp/index_supervisor.h"
 #include "mcp/compact_out.h"
 #include "foundation/str_util.h"
@@ -714,8 +715,7 @@ static const tool_def_t TOOLS[] = {
      "}"},
 
     {"detect_changes", "Detect changes",
-     "Map a Git diff to changed files and transitive graph impact. Sections page independently; "
-     "totals and continuations stay explicit.",
+     "Map a Git diff to files and impact. Page with snapshot cursors.",
      "{\"type\":\"object\",\"properties\":{\"project\":{\"type\":\"string\"},\"scope\":{\"type\":"
      "\"string\",\"enum\":[\"files\",\"impact\"]},"
      "\"direction\":{\"type\":\"string\",\"enum\":[\"inbound\",\"outbound\",\"both\"],\"default\":"
@@ -723,10 +723,13 @@ static const tool_def_t TOOLS[] = {
      "\"depth\":{\"type\":\"integer\",\"default\":2},"
      "\"limit\":{\"type\":\"integer\",\"default\":200,\"maximum\":5000},"
      "\"impact_offset\":{\"type\":\"integer\",\"default\":0,\"minimum\":0},"
+     "\"impact_cursor\":{\"type\":\"string\"},"
      "\"changed_limit\":{\"type\":\"integer\",\"default\":20,\"minimum\":0,\"maximum\":5000},"
      "\"changed_offset\":{\"type\":\"integer\",\"default\":0,\"minimum\":0},"
+     "\"changed_cursor\":{\"type\":\"string\"},"
      "\"module_limit\":{\"type\":\"integer\",\"default\":20,\"minimum\":0,\"maximum\":256},"
      "\"module_offset\":{\"type\":\"integer\",\"default\":0,\"minimum\":0},"
+     "\"module_cursor\":{\"type\":\"string\"},"
      "\"max_output_tokens\":{\"type\":\"integer\",\"default\":3200,\"minimum\":128,"
      "\"maximum\":1000000,\"description\":\"Approximate token sizing; deterministic ceiling "
      "is 4 UTF-8 bytes per requested token.\"},"
@@ -14420,6 +14423,193 @@ static bool detect_valid_object_id(const char *value) {
     return true;
 }
 
+typedef struct {
+    char stream;       /* c=changed files, i=impacted symbols, m=module rollup */
+    char snapshot[33]; /* first 128 bits of the SHA-256 live-state fingerprint */
+    uint64_t qhash;    /* semantic query identity; page sizing is deliberately excluded */
+    int offset;        /* next row in this independently pageable stream */
+} detect_cursor_t;
+
+static uint64_t detect_params_hash(const char *project, const char *base_branch, const char *scope,
+                                   const char *direction, int depth) {
+    uint64_t hash = 0xcbf29ce484222325ULL;
+    hash = cursor_fnv1a64(project ? project : "", hash);
+    hash = cursor_fnv1a64("|", hash);
+    hash = cursor_fnv1a64(base_branch ? base_branch : "", hash);
+    hash = cursor_fnv1a64("|", hash);
+    hash = cursor_fnv1a64(scope ? scope : "impact", hash);
+    hash = cursor_fnv1a64("|", hash);
+    hash = cursor_fnv1a64(direction ? direction : "inbound", hash);
+    char depth_text[32];
+    snprintf(depth_text, sizeof(depth_text), "|%d", depth);
+    return cursor_fnv1a64(depth_text, hash);
+}
+
+static void detect_cursor_encode(char stream, const char snapshot[33], uint64_t qhash, int offset,
+                                 char out[80]) {
+    snprintf(out, 80, "d1.%c.%s.%016llx.%d", stream, snapshot, (unsigned long long)qhash, offset);
+}
+
+static const char *detect_cursor_decode(const char *token, char expected_stream,
+                                        const char current_snapshot[33], uint64_t expected_qhash,
+                                        detect_cursor_t *out) {
+    memset(out, 0, sizeof(*out));
+    if (!token || strncmp(token, "d1.", 3) != 0 || token[3] != expected_stream || token[4] != '.') {
+        return "invalid_cursor: unrecognized detect_changes cursor — rerun without the cursor";
+    }
+    out->stream = token[3];
+    const char *snapshot_start = token + 5;
+    const char *snapshot_end = strchr(snapshot_start, '.');
+    if (!snapshot_end || snapshot_end - snapshot_start != 32) {
+        return "invalid_cursor: unrecognized detect_changes cursor — rerun without the cursor";
+    }
+    for (const char *digit = snapshot_start; digit < snapshot_end; digit++) {
+        if (!isxdigit((unsigned char)*digit)) {
+            return "invalid_cursor: unrecognized detect_changes cursor — rerun without the cursor";
+        }
+    }
+    memcpy(out->snapshot, snapshot_start, 32);
+    out->snapshot[32] = '\0';
+
+    const char *hash_start = snapshot_end + 1;
+    const char *hash_end = strchr(hash_start, '.');
+    if (!hash_end || hash_end - hash_start != 16) {
+        return "invalid_cursor: unrecognized detect_changes cursor — rerun without the cursor";
+    }
+    for (const char *digit = hash_start; digit < hash_end; digit++) {
+        if (!isxdigit((unsigned char)*digit)) {
+            return "invalid_cursor: unrecognized detect_changes cursor — rerun without the cursor";
+        }
+    }
+    errno = 0;
+    char *parsed_end = NULL;
+    unsigned long long parsed_hash = strtoull(hash_start, &parsed_end, 16);
+    if (errno == ERANGE || parsed_end != hash_end) {
+        return "invalid_cursor: unrecognized detect_changes cursor — rerun without the cursor";
+    }
+    errno = 0;
+    long parsed_offset = strtol(hash_end + 1, &parsed_end, 10);
+    if (errno == ERANGE || parsed_end == hash_end + 1 || *parsed_end != '\0' || parsed_offset < 1 ||
+        parsed_offset > INT_MAX) {
+        return "invalid_cursor: unrecognized detect_changes cursor — rerun without the cursor";
+    }
+    out->qhash = (uint64_t)parsed_hash;
+    out->offset = (int)parsed_offset;
+    if (out->qhash != expected_qhash) {
+        return "cursor_params_mismatch: detect_changes cursor belongs to different semantic "
+               "arguments — rerun without the cursor";
+    }
+    if (strcmp(out->snapshot, current_snapshot) != 0) {
+        return "snapshot_changed: commits, worktree, or graph changed since this cursor was issued "
+               "— rerun detect_changes without the cursor";
+    }
+    return NULL;
+}
+
+static void detect_snapshot_add_field(cbm_sha256_ctx *hash, const char *value) {
+    size_t length = value ? strlen(value) : 0;
+    char length_text[32];
+    int count = snprintf(length_text, sizeof(length_text), "%zu:", length);
+    cbm_sha256_update(hash, length_text, (size_t)count);
+    if (length > 0) {
+        cbm_sha256_update(hash, value, length);
+    }
+    cbm_sha256_update(hash, "|", 1);
+}
+
+static void detect_snapshot_add_changed_file(cbm_sha256_ctx *hash, const char *root_path,
+                                             const char *relative_path) {
+    detect_snapshot_add_field(hash, relative_path);
+    size_t root_len = strlen(root_path);
+    size_t relative_len = strlen(relative_path);
+    if (root_len > (size_t)-1 - relative_len - 2U) {
+        detect_snapshot_add_field(hash, "path_overflow");
+        return;
+    }
+    char *absolute = malloc(root_len + relative_len + 2U);
+    if (!absolute) {
+        detect_snapshot_add_field(hash, "path_oom");
+        return;
+    }
+    memcpy(absolute, root_path, root_len);
+    absolute[root_len] = '/';
+    memcpy(absolute + root_len + 1U, relative_path, relative_len + 1U);
+
+    cbm_path_info_t info = {0};
+    if (cbm_path_info_utf8(absolute, &info) != 0) {
+        detect_snapshot_add_field(hash, "absent");
+        free(absolute);
+        return;
+    }
+    char metadata[160];
+    snprintf(metadata, sizeof(metadata), "r%d:d%d:l%d:s%lld:m%lld", info.is_regular ? 1 : 0,
+             info.is_directory ? 1 : 0, info.is_symlink ? 1 : 0, (long long)info.size,
+             (long long)info.mtime_ns);
+    detect_snapshot_add_field(hash, metadata);
+    if (info.is_regular) {
+        FILE *file = cbm_fopen(absolute, "rb");
+        if (file) {
+            unsigned char buffer[64 * 1024];
+            size_t count;
+            while ((count = fread(buffer, 1, sizeof(buffer), file)) > 0) {
+                cbm_sha256_update(hash, buffer, count);
+            }
+            detect_snapshot_add_field(hash, ferror(file) ? "read_error" : "read_complete");
+            (void)fclose(file);
+        } else {
+            detect_snapshot_add_field(hash, "open_error");
+        }
+    }
+    free(absolute);
+}
+
+static void detect_snapshot_fingerprint(const char *root_path, const char *head_oid,
+                                        const char *base_oid, const char *merge_base,
+                                        const char *generation, char **files, int file_count,
+                                        const cbm_traverse_result_t *impact,
+                                        const detect_module_row_t *modules, int module_count,
+                                        int module_overflow, char out[33]) {
+    cbm_sha256_ctx hash;
+    cbm_sha256_init(&hash);
+    detect_snapshot_add_field(&hash, "detect_changes_snapshot_v1");
+    detect_snapshot_add_field(&hash, head_oid);
+    detect_snapshot_add_field(&hash, base_oid);
+    detect_snapshot_add_field(&hash, merge_base);
+    detect_snapshot_add_field(&hash, generation);
+    for (int i = 0; i < file_count; i++) {
+        detect_snapshot_add_changed_file(&hash, root_path, files[i]);
+    }
+    if (impact) {
+        for (int i = 0; i < impact->visited_count; i++) {
+            detect_snapshot_add_field(&hash, impact->visited[i].node.qualified_name);
+            detect_snapshot_add_field(&hash, impact->visited[i].node.label);
+            detect_snapshot_add_field(&hash, impact->visited[i].node.file_path);
+            char row_metadata[64];
+            snprintf(row_metadata, sizeof(row_metadata), "%d:%lld", impact->visited[i].hop,
+                     (long long)impact->visited[i].node.id);
+            detect_snapshot_add_field(&hash, row_metadata);
+        }
+    }
+    for (int i = 0; i < module_count; i++) {
+        detect_snapshot_add_field(&hash, modules[i].name);
+        char count_text[32];
+        snprintf(count_text, sizeof(count_text), "%d", modules[i].count);
+        detect_snapshot_add_field(&hash, count_text);
+    }
+    char overflow_text[32];
+    snprintf(overflow_text, sizeof(overflow_text), "%d", module_overflow);
+    detect_snapshot_add_field(&hash, overflow_text);
+
+    uint8_t digest[CBM_SHA256_DIGEST_LEN];
+    static const char hex[] = "0123456789abcdef";
+    cbm_sha256_final(&hash, digest);
+    for (int i = 0; i < 16; i++) {
+        out[i * 2] = hex[digest[i] >> 4];
+        out[i * 2 + 1] = hex[digest[i] & 0x0f];
+    }
+    out[32] = '\0';
+}
+
 static char *handle_detect_changes(cbm_mcp_server_t *srv, const char *args) {
     char *project = get_project_arg(args);
     char *base_branch = cbm_mcp_get_string_arg(args, "base_branch");
@@ -14846,6 +15036,11 @@ static char *handle_detect_changes(cbm_mcp_server_t *srv, const char *args) {
     } else if (max_output_tokens > 1000000) {
         max_output_tokens = 1000000;
     }
+    char *impact_cursor_arg = cbm_mcp_get_string_arg(args, "impact_cursor");
+    char *changed_cursor_arg = cbm_mcp_get_string_arg(args, "changed_cursor");
+    char *module_cursor_arg = cbm_mcp_get_string_arg(args, "module_cursor");
+    uint64_t detect_qhash = detect_params_hash(project, base_branch,
+                                               want_symbols ? "impact" : "files", direction, depth);
 
     /* Changed paths drive traversal seeds and both output encodings. */
     int64_t *seeds = NULL;
@@ -14939,12 +15134,6 @@ static char *handle_detect_changes(cbm_mcp_server_t *srv, const char *args) {
                                   MCP_BFS_LIMIT_MAX, &impact, &truncated);
     }
 
-    int changed_start = changed_offset < file_count ? changed_offset : file_count;
-    int changed_returned = file_count - changed_start;
-    if (changed_returned > changed_limit) {
-        changed_returned = changed_limit;
-    }
-
     detect_module_row_t *modules = NULL;
     int nmods = 0;
     int module_overflow = 0;
@@ -14958,6 +15147,76 @@ static char *handle_detect_changes(cbm_mcp_server_t *srv, const char *args) {
      * number of pageable rollup rows for the materialized impact set; its
      * relation becomes `gte` if traversal hit the engine ceiling. */
     int module_total = nmods + (module_overflow > 0 ? 1 : 0);
+    char generation[96] = "unknown";
+    (void)cbm_store_generation(store, generation, sizeof(generation));
+    char detect_snapshot[33];
+    detect_snapshot_fingerprint(root_path, head_oid, base_oid, merge_base, generation, files,
+                                file_count, &impact, modules, nmods, module_overflow,
+                                detect_snapshot);
+
+    const char *cursor_error = NULL;
+    detect_cursor_t decoded_cursor = {0};
+    if (changed_cursor_arg && changed_cursor_arg[0]) {
+        if (changed_offset != 0) {
+            cursor_error = "cursor_params_mismatch: changed_cursor cannot be combined with a "
+                           "nonzero changed_offset";
+        } else {
+            cursor_error = detect_cursor_decode(changed_cursor_arg, 'c', detect_snapshot,
+                                                detect_qhash, &decoded_cursor);
+            if (!cursor_error) {
+                changed_offset = decoded_cursor.offset;
+            }
+        }
+    }
+    if (!cursor_error && impact_cursor_arg && impact_cursor_arg[0]) {
+        if (impact_offset != 0) {
+            cursor_error = "cursor_params_mismatch: impact_cursor cannot be combined with a "
+                           "nonzero impact_offset";
+        } else {
+            cursor_error = detect_cursor_decode(impact_cursor_arg, 'i', detect_snapshot,
+                                                detect_qhash, &decoded_cursor);
+            if (!cursor_error) {
+                impact_offset = decoded_cursor.offset;
+            }
+        }
+    }
+    if (!cursor_error && module_cursor_arg && module_cursor_arg[0]) {
+        if (module_offset != 0) {
+            cursor_error = "cursor_params_mismatch: module_cursor cannot be combined with a "
+                           "nonzero module_offset";
+        } else {
+            cursor_error = detect_cursor_decode(module_cursor_arg, 'm', detect_snapshot,
+                                                detect_qhash, &decoded_cursor);
+            if (!cursor_error) {
+                module_offset = decoded_cursor.offset;
+            }
+        }
+    }
+    if (cursor_error) {
+        cbm_store_traverse_free(&impact);
+        detect_module_rollup_free(modules, nmods);
+        for (int i = 0; i < file_count; i++) {
+            free(files[i]);
+        }
+        free(files);
+        free(seeds);
+        free(hunks);
+        free(impact_cursor_arg);
+        free(changed_cursor_arg);
+        free(module_cursor_arg);
+        free(direction);
+        free(root_path);
+        free(project);
+        free(base_branch);
+        free(scope);
+        return cbm_mcp_text_result(cursor_error, true);
+    }
+
+    int changed_start = changed_offset < file_count ? changed_offset : file_count;
+    int changed_returned = file_count - changed_start;
+    if (changed_returned > changed_limit) {
+        changed_returned = changed_limit;
+    }
     int module_start = module_offset < module_total ? module_offset : module_total;
     int module_returned = module_total - module_start;
     if (module_returned > module_limit) {
@@ -14998,6 +15257,10 @@ render_detect_output:
         cbm_tree_scalar_bool(&sb, "changed_has_more", changed_has_more);
         if (changed_has_more && changed_returned > 0) {
             cbm_tree_scalar_int(&sb, "changed_next_offset", changed_start + changed_returned);
+            char cursor[80];
+            detect_cursor_encode('c', detect_snapshot, detect_qhash,
+                                 changed_start + changed_returned, cursor);
+            cbm_tree_scalar_str(&sb, "changed_next_cursor", cursor);
         } else if (changed_has_more) {
             cbm_tree_scalar_bool(&sb,
                                  changed_limit == 0 ? "changed_continuation_requires_positive_limit"
@@ -15024,6 +15287,12 @@ render_detect_output:
         cbm_tree_scalar_int(&sb, "seed_symbols", seed_count);
         if (want_symbols) {
             detect_emit_impacted_tree(&sb, &impact, imp_start, imp_returned, truncated);
+            if (imp_start + imp_returned < impact.visited_count && imp_returned > 0) {
+                char cursor[80];
+                detect_cursor_encode('i', detect_snapshot, detect_qhash, imp_start + imp_returned,
+                                     cursor);
+                cbm_tree_scalar_str(&sb, "impacted_next_cursor", cursor);
+            }
             /* module rollup: independently pageable, while counts are still
              * computed from the complete impact set. */
             cbm_tree_scalar_int(&sb, "module_total", module_total);
@@ -15033,6 +15302,10 @@ render_detect_output:
             cbm_tree_scalar_bool(&sb, "module_has_more", module_has_more);
             if (module_has_more && module_returned > 0) {
                 cbm_tree_scalar_int(&sb, "module_next_offset", module_start + module_returned);
+                char cursor[80];
+                detect_cursor_encode('m', detect_snapshot, detect_qhash,
+                                     module_start + module_returned, cursor);
+                cbm_tree_scalar_str(&sb, "module_next_cursor", cursor);
             } else if (module_has_more) {
                 cbm_tree_scalar_bool(&sb,
                                      module_limit == 0
@@ -15097,6 +15370,10 @@ render_detect_output:
         if (changed_has_more && changed_returned > 0) {
             yyjson_mut_obj_add_int(doc, root_obj, "changed_next_offset",
                                    changed_start + changed_returned);
+            char cursor[80];
+            detect_cursor_encode('c', detect_snapshot, detect_qhash,
+                                 changed_start + changed_returned, cursor);
+            yyjson_mut_obj_add_strcpy(doc, root_obj, "changed_next_cursor", cursor);
         } else if (changed_has_more) {
             yyjson_mut_obj_add_bool(doc, root_obj,
                                     changed_limit == 0
@@ -15132,6 +15409,10 @@ render_detect_output:
         yyjson_mut_obj_add_bool(doc, root_obj, "impacted_has_more", impacted_has_more);
         if (impacted_has_more && imp_returned > 0) {
             yyjson_mut_obj_add_int(doc, root_obj, "impacted_next_offset", imp_start + imp_returned);
+            char cursor[80];
+            detect_cursor_encode('i', detect_snapshot, detect_qhash, imp_start + imp_returned,
+                                 cursor);
+            yyjson_mut_obj_add_strcpy(doc, root_obj, "impacted_next_cursor", cursor);
         } else if (impacted_has_more) {
             yyjson_mut_obj_add_bool(doc, root_obj, "impacted_continuation_requires_higher_budget",
                                     true);
@@ -15147,6 +15428,10 @@ render_detect_output:
             if (module_has_more && module_returned > 0) {
                 yyjson_mut_obj_add_int(doc, root_obj, "module_next_offset",
                                        module_start + module_returned);
+                char cursor[80];
+                detect_cursor_encode('m', detect_snapshot, detect_qhash,
+                                     module_start + module_returned, cursor);
+                yyjson_mut_obj_add_strcpy(doc, root_obj, "module_next_cursor", cursor);
             } else if (module_has_more) {
                 yyjson_mut_obj_add_bool(doc, root_obj,
                                         module_limit == 0
@@ -15236,6 +15521,9 @@ detect_output_done:
     free(files);
     free(seeds);
     free(hunks);
+    free(impact_cursor_arg);
+    free(changed_cursor_arg);
+    free(module_cursor_arg);
     free(direction);
     free(root_path);
     free(project);
