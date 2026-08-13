@@ -7341,18 +7341,26 @@ TEST(search_code_preserves_valid_utf8_source) {
     PASS();
 }
 
-TEST(search_code_reports_scan_saturation) {
+TEST(search_code_scans_complete_stream_and_ranks_globally) {
     char tmp[256];
     snprintf(tmp, sizeof(tmp), "/tmp/cbm_srch_sat_XXXXXX");
     ASSERT_NOT_NULL(cbm_mkdtemp(tmp));
-    char src_path[512];
-    snprintf(src_path, sizeof(src_path), "%s/many.c", tmp);
-    FILE *fp = cbm_fopen(src_path, "wb");
+
+    char low_path[512];
+    char noise_path[512];
+    char high_path[512];
+    snprintf(low_path, sizeof(low_path), "%s/a_low.c", tmp);
+    snprintf(noise_path, sizeof(noise_path), "%s/b_noise.c", tmp);
+    snprintf(high_path, sizeof(high_path), "%s/z_high.c", tmp);
+    ASSERT_EQ(th_write_file(low_path, "int COMPLETE_SCAN_NEEDLE_low = 1;\n"), 0);
+    FILE *fp = cbm_fopen(noise_path, "wb");
     ASSERT_NOT_NULL(fp);
-    for (int i = 0; i < 501; i++) {
-        fprintf(fp, "int saturationneedle_%d = %d;\n", i, i);
+    for (int i = 1; i <= 500; i++) {
+        fprintf(fp, "int COMPLETE_SCAN_NEEDLE_noise_%d = %d;\n", i, i);
     }
+    fputs("int sentinel = 0;\n", fp);
     fclose(fp);
+    ASSERT_EQ(th_write_file(high_path, "int COMPLETE_SCAN_NEEDLE_high = 1;\n"), 0);
 
     cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
     ASSERT_NOT_NULL(srv);
@@ -7360,32 +7368,120 @@ TEST(search_code_reports_scan_saturation) {
     const char *project = "search-saturation";
     cbm_mcp_server_set_project(srv, project);
     ASSERT_EQ(cbm_store_upsert_project(store, project, tmp), CBM_STORE_OK);
-    cbm_node_t node = {.project = project,
-                       .label = "Function",
-                       .name = "many",
-                       .qualified_name = "search-saturation.many",
-                       .file_path = "many.c",
-                       .start_line = 1,
-                       .end_line = 501};
-    ASSERT_GT(cbm_store_upsert_node(store, &node), 0);
+    cbm_node_t nodes[] = {
+        {.project = project,
+         .label = "Function",
+         .name = "low",
+         .qualified_name = "search-saturation.low",
+         .file_path = "a_low.c",
+         .start_line = 1,
+         .end_line = 1},
+        /* Keep the noise file in the scoped file list without classifying its
+         * 500 matching lines to a graph node. */
+        {.project = project,
+         .label = "Variable",
+         .name = "sentinel",
+         .qualified_name = "search-saturation.sentinel",
+         .file_path = "b_noise.c",
+         .start_line = 501,
+         .end_line = 501},
+        {.project = project,
+         .label = "Route",
+         .name = "high",
+         .qualified_name = "search-saturation.high",
+         .file_path = "z_high.c",
+         .start_line = 1,
+         .end_line = 1},
+    };
+    for (size_t i = 0; i < sizeof(nodes) / sizeof(nodes[0]); i++) {
+        ASSERT_GT(cbm_store_upsert_node(store, &nodes[i]), 0);
+    }
 
-    char *resp = cbm_mcp_server_handle(
-        srv, "{\"jsonrpc\":\"2.0\",\"id\":97,\"method\":\"tools/call\","
-             "\"params\":{\"name\":\"search_code\",\"arguments\":{"
-             "\"pattern\":\"saturationneedle\",\"project\":\"search-saturation\","
-             "\"format\":\"json\"}}}");
-    ASSERT_NOT_NULL(resp);
+    for (int attempt = 0; attempt < 3; attempt++) {
+        char *resp = cbm_mcp_handle_tool(
+            srv, "search_code",
+            "{\"pattern\":\"COMPLETE_SCAN_NEEDLE\",\"project\":\"search-saturation\","
+            "\"result_limit\":1,\"raw_limit\":1,\"max_output_tokens\":10000,"
+            "\"format\":\"json\"}");
+        char *inner = extract_text_content(resp);
+        yyjson_doc *doc = inner ? yyjson_read(inner, strlen(inner), 0) : NULL;
+        yyjson_val *root = doc ? yyjson_doc_get_root(doc) : NULL;
+        yyjson_val *rows = root ? yyjson_obj_get(root, "rows") : NULL;
+        yyjson_val *first = rows ? yyjson_arr_get(rows, 0) : NULL;
+        bool complete_and_globally_ranked =
+            root && first &&
+            yyjson_get_int(yyjson_obj_get(root, "total_grep_matches")) == 502 &&
+            strcmp(yyjson_get_str(yyjson_obj_get(root, "total_relation")), "eq") == 0 &&
+            yyjson_obj_get(root, "scan_saturated") == NULL &&
+            yyjson_get_int(yyjson_obj_get(root, "total_results")) == 2 &&
+            strcmp(yyjson_get_str(yyjson_arr_get(first, 0)), "search-saturation.high") == 0 &&
+            yyjson_get_int(yyjson_obj_get(root, "raw_match_count")) == 500 &&
+            yyjson_get_int(yyjson_obj_get(root, "raw_next_offset")) == 1;
+        yyjson_doc_free(doc);
+        free(inner);
+        free(resp);
+        ASSERT_TRUE(complete_and_globally_ranked);
+    }
+
+    char *resp = cbm_mcp_handle_tool(
+        srv, "search_code",
+        "{\"pattern\":\"COMPLETE_SCAN_NEEDLE\",\"project\":\"search-saturation\","
+        "\"result_limit\":1,\"raw_limit\":1,\"raw_offset\":499,"
+        "\"max_output_tokens\":10000,\"format\":\"json\"}");
     char *inner = extract_text_content(resp);
-    ASSERT_NOT_NULL(inner);
-    ASSERT_NOT_NULL(strstr(inner, "\"total_grep_matches\":500"));
-    ASSERT_NOT_NULL(strstr(inner, "\"total_relation\":\"gte\""));
-    ASSERT_NOT_NULL(strstr(inner, "\"scan_saturated\":true"));
-    ASSERT_NOT_NULL(strstr(inner, "\"truncated\":true"));
+    yyjson_doc *doc = inner ? yyjson_read(inner, strlen(inner), 0) : NULL;
+    yyjson_val *root = doc ? yyjson_doc_get_root(doc) : NULL;
+    yyjson_val *raw_object = root ? yyjson_obj_get(root, "raw_matches") : NULL;
+    yyjson_val *raw_rows = raw_object ? yyjson_obj_get(raw_object, "rows") : NULL;
+    yyjson_val *last_raw = raw_rows ? yyjson_arr_get(raw_rows, 0) : NULL;
+    bool last_raw_reachable =
+        root && last_raw && strcmp(yyjson_get_str(yyjson_arr_get(last_raw, 0)), "b_noise.c") == 0 &&
+        yyjson_get_int(yyjson_arr_get(last_raw, 1)) == 500 &&
+        !yyjson_get_bool(yyjson_obj_get(root, "raw_has_more"));
+    yyjson_doc_free(doc);
     free(inner);
     free(resp);
     cbm_mcp_server_free(srv);
-    cbm_unlink(src_path);
-    cbm_rmdir(tmp);
+    ASSERT_EQ(th_rmtree(tmp), 0);
+    ASSERT_TRUE(last_raw_reachable);
+    PASS();
+}
+
+TEST(search_code_fails_closed_when_complete_scan_is_impossible) {
+    char tmp[256];
+    snprintf(tmp, sizeof(tmp), "%s/cbm_srch_incomplete_XXXXXX", cbm_tmpdir());
+    ASSERT_NOT_NULL(cbm_mkdtemp(tmp));
+
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    ASSERT_NOT_NULL(srv);
+    cbm_store_t *store = cbm_mcp_server_store(srv);
+    ASSERT_NOT_NULL(store);
+    const char *project = "search-incomplete";
+    cbm_mcp_server_set_project(srv, project);
+    ASSERT_EQ(cbm_store_upsert_project(store, project, tmp), CBM_STORE_OK);
+
+    /* The graph snapshot names a file that is no longer readable by grep.
+     * Returning zero exact matches would be a false completeness claim. */
+    cbm_node_t missing = {.project = project,
+                          .label = "Function",
+                          .name = "missing",
+                          .qualified_name = "search-incomplete.missing",
+                          .file_path = "missing.c",
+                          .start_line = 1,
+                          .end_line = 1};
+    ASSERT_GT(cbm_store_upsert_node(store, &missing), 0);
+
+    char *response = cbm_mcp_handle_tool(
+        srv, "search_code",
+        "{\"pattern\":\"NEVER_SCANNED\",\"project\":\"search-incomplete\","
+        "\"format\":\"json\"}");
+    ASSERT_NOT_NULL(response);
+    ASSERT_NOT_NULL(strstr(response, "\"isError\":true"));
+    ASSERT_NOT_NULL(strstr(response, "complete result set was scanned"));
+
+    free(response);
+    cbm_mcp_server_free(srv);
+    ASSERT_EQ(th_rmtree(tmp), 0);
     PASS();
 }
 
@@ -7473,18 +7569,24 @@ TEST(search_code_raw_and_directory_remainders_are_independently_pageable) {
     cbm_mcp_server_set_project(srv, project);
     ASSERT_EQ(cbm_store_upsert_project(store, project, tmp), CBM_STORE_OK);
 
+    char route_qn[1200];
+    char function_qn[1200];
+    memset(route_qn, 'r', sizeof(route_qn) - 1U);
+    memset(function_qn, 'f', sizeof(function_qn) - 1U);
+    route_qn[sizeof(route_qn) - 1U] = '\0';
+    function_qn[sizeof(function_qn) - 1U] = '\0';
     cbm_node_t nodes[] = {
         {.project = project,
          .label = "Route",
          .name = "route_hit",
-         .qualified_name = "fixture.route_hit",
+         .qualified_name = route_qn,
          .file_path = "graph-a/route.c",
          .start_line = 1,
          .end_line = 1},
         {.project = project,
          .label = "Function",
          .name = "function_hit",
-         .qualified_name = "fixture.function_hit",
+         .qualified_name = function_qn,
          .file_path = "graph-b/function.c",
          .start_line = 1,
          .end_line = 1},
@@ -7553,6 +7655,45 @@ TEST(search_code_raw_and_directory_remainders_are_independently_pageable) {
         !yyjson_get_bool(yyjson_obj_get(second_root, "raw_has_more")) &&
         !yyjson_get_bool(yyjson_obj_get(second_root, "directories_has_more"));
 
+    char *floor_response = cbm_mcp_handle_tool(
+        srv, "search_code",
+        "{\"pattern\":\"PAGE_NEEDLE\",\"project\":\"search-section-pages\","
+        "\"result_limit\":1,\"raw_limit\":1,\"directory_limit\":1,"
+        "\"max_output_tokens\":128,\"format\":\"json\"}");
+    char *floor_inner = extract_text_content(floor_response);
+    yyjson_doc *floor_doc =
+        floor_inner ? yyjson_read(floor_inner, strlen(floor_inner), 0) : NULL;
+    yyjson_val *floor_root = floor_doc ? yyjson_doc_get_root(floor_doc) : NULL;
+    bool json_floor_is_bounded_and_resumable =
+        floor_root && strlen(floor_inner) <= 128U * 4U &&
+        yyjson_get_int(yyjson_obj_get(floor_root, "total_results")) == 2 &&
+        yyjson_get_int(yyjson_obj_get(floor_root, "raw_match_count")) == 2 &&
+        yyjson_get_int(yyjson_obj_get(floor_root, "directories_total")) == 2 &&
+        yyjson_get_int(yyjson_obj_get(floor_root, "results_returned")) == 0 &&
+        yyjson_get_int(yyjson_obj_get(floor_root, "raw_returned")) == 0 &&
+        yyjson_get_int(yyjson_obj_get(floor_root, "directories_returned")) == 0 &&
+        yyjson_get_bool(yyjson_obj_get(floor_root, "has_more")) &&
+        yyjson_get_bool(yyjson_obj_get(floor_root, "raw_has_more")) &&
+        yyjson_get_bool(yyjson_obj_get(floor_root, "directories_has_more"));
+    yyjson_doc_free(floor_doc);
+    free(floor_inner);
+    free(floor_response);
+
+    floor_response = cbm_mcp_handle_tool(
+        srv, "search_code",
+        "{\"pattern\":\"PAGE_NEEDLE\",\"project\":\"search-section-pages\","
+        "\"result_limit\":1,\"raw_limit\":1,\"directory_limit\":1,"
+        "\"max_output_tokens\":128}");
+    floor_inner = extract_text_content(floor_response);
+    bool compact_floor_is_bounded_and_resumable =
+        floor_inner && strlen(floor_inner) <= 128U * 4U &&
+        strstr(floor_inner, "results_returned: 0") && strstr(floor_inner, "has_more: true") &&
+        strstr(floor_inner, "raw_returned: 0") && strstr(floor_inner, "raw_has_more: true") &&
+        strstr(floor_inner, "directories_returned: 0") &&
+        strstr(floor_inner, "directories_has_more: true");
+    free(floor_inner);
+    free(floor_response);
+
     yyjson_doc_free(second_doc);
     free(second_inner);
     free(second_response);
@@ -7564,6 +7705,8 @@ TEST(search_code_raw_and_directory_remainders_are_independently_pageable) {
 
     ASSERT_TRUE(first_page_bound);
     ASSERT_TRUE(remainders_reachable);
+    ASSERT_TRUE(json_floor_is_bounded_and_resumable);
+    ASSERT_TRUE(compact_floor_is_bounded_and_resumable);
     PASS();
 }
 
@@ -8084,7 +8227,7 @@ TEST(search_code_match_locations_are_explicitly_bounded_and_expandable) {
     snprintf(source_path, sizeof(source_path), "%s/many.c", tmp);
     FILE *source = cbm_fopen(source_path, "wb");
     ASSERT_NOT_NULL(source);
-    for (int line = 1; line <= 100; line++) {
+    for (int line = 1; line <= 601; line++) {
         fprintf(source, "MATCH_LOCATION_%03d\n", line);
     }
     fclose(source);
@@ -8101,7 +8244,7 @@ TEST(search_code_match_locations_are_explicitly_bounded_and_expandable) {
                        .qualified_name = "search_match_locations.many_matches",
                        .file_path = "many.c",
                        .start_line = 1,
-                       .end_line = 100};
+                       .end_line = 601};
     ASSERT_GT(cbm_store_upsert_node(store, &node), 0);
 
     char *response = cbm_mcp_handle_tool(
@@ -8117,7 +8260,8 @@ TEST(search_code_match_locations_are_explicitly_bounded_and_expandable) {
     ASSERT_EQ((int)yyjson_arr_size(rows), 1);
     yyjson_val *row = yyjson_arr_get(rows, 0);
     ASSERT_EQ((int)yyjson_arr_size(yyjson_arr_get(row, 4)), 8);
-    ASSERT_EQ((int)yyjson_get_int(yyjson_arr_get(row, 5)), 92);
+    ASSERT_EQ((int)yyjson_get_int(yyjson_arr_get(row, 5)), 593);
+    ASSERT_EQ((int)yyjson_get_int(yyjson_obj_get(root, "total_grep_matches")), 601);
     yyjson_doc_free(doc);
     free(inner);
     free(response);
@@ -8129,7 +8273,7 @@ TEST(search_code_match_locations_are_explicitly_bounded_and_expandable) {
     inner = extract_text_content(response);
     ASSERT_NOT_NULL(inner);
     ASSERT_NOT_NULL(strstr(inner, "matches_omitted"));
-    ASSERT_NOT_NULL(strstr(inner, "1;2;3;4;5;6;7;8 92"));
+    ASSERT_NOT_NULL(strstr(inner, "1;2;3;4;5;6;7;8 593"));
     free(inner);
     free(response);
 
@@ -8143,8 +8287,8 @@ TEST(search_code_match_locations_are_explicitly_bounded_and_expandable) {
     ASSERT_NOT_NULL(doc);
     root = yyjson_doc_get_root(doc);
     row = yyjson_arr_get(yyjson_obj_get(root, "rows"), 0);
-    ASSERT_EQ((int)yyjson_arr_size(yyjson_arr_get(row, 4)), 100);
-    ASSERT_EQ((int)yyjson_get_int(yyjson_arr_get(row, 5)), 0);
+    ASSERT_EQ((int)yyjson_arr_size(yyjson_arr_get(row, 4)), 500);
+    ASSERT_EQ((int)yyjson_get_int(yyjson_arr_get(row, 5)), 101);
     yyjson_doc_free(doc);
     free(inner);
     free(response);
@@ -15689,7 +15833,8 @@ SUITE(mcp) {
     RUN_TEST(tool_search_code_no_project);
     RUN_TEST(search_code_multi_word);
     RUN_TEST(search_code_preserves_valid_utf8_source);
-    RUN_TEST(search_code_reports_scan_saturation);
+    RUN_TEST(search_code_scans_complete_stream_and_ranks_globally);
+    RUN_TEST(search_code_fails_closed_when_complete_scan_is_impossible);
     RUN_TEST(search_code_default_budget_limits_raw_rows_before_graph_results);
     RUN_TEST(search_code_raw_and_directory_remainders_are_independently_pageable);
     RUN_TEST(search_code_ranked_results_have_lossless_second_page);

@@ -3364,7 +3364,8 @@ int cbm_store_list_files(cbm_store_t *s, const char *project, char ***out, int *
     }
 
     const char *sql = "SELECT DISTINCT file_path FROM nodes "
-                      "WHERE project = ?1 AND file_path IS NOT NULL AND file_path != ''";
+                      "WHERE project = ?1 AND file_path IS NOT NULL AND file_path != '' "
+                      "ORDER BY file_path";
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(s->db, sql, CBM_NOT_FOUND, &stmt, NULL) != SQLITE_OK) {
         return CBM_STORE_ERR;
