@@ -216,6 +216,19 @@ static void append_value(cbm_sb_t *sb, const char *s) {
     }
 }
 
+/* Object keys and table column names share the compact tree's structural
+ * line. Keep common identifier-like names bare, but quote anything that can
+ * be confused with a delimiter or escape sequence. Unlike a value cell, an
+ * empty key must remain the lossless string "" rather than the missing-value
+ * placeholder "-". */
+static void append_key(cbm_sb_t *sb, const char *s) {
+    if (!s || !*s || needs_quotes(s) || strpbrk(s, ":()\\")) {
+        append_quoted(sb, s ? s : "");
+    } else {
+        cbm_sb_append(sb, s);
+    }
+}
+
 /* ── Scalars ────────────────────────────────────────────────────── */
 
 void cbm_tree_scalar_str(cbm_sb_t *sb, const char *key, const char *val) {
@@ -802,7 +815,7 @@ static void json_tree_object_table(cbm_sb_t *sb, const char *key_name, yyjson_va
         return;
     }
     json_tree_indent(sb, depth);
-    cbm_sb_append(sb, key_name);
+    append_key(sb, key_name);
     char count[48];
     snprintf(count, sizeof(count), ": %zu  (cols:", yyjson_arr_size(array));
     cbm_sb_append(sb, count);
@@ -813,7 +826,7 @@ static void json_tree_object_table(cbm_sb_t *sb, const char *key_name, yyjson_va
     yyjson_val *unused;
     yyjson_obj_foreach(first, key_index, key_maximum, column, unused) {
         cbm_sb_append_n(sb, " ", 1);
-        cbm_sb_append(sb, yyjson_get_str(column));
+        append_key(sb, yyjson_get_str(column));
     }
     cbm_sb_append_n(sb, ")\n", 2);
 
@@ -843,7 +856,7 @@ static void json_tree_array(cbm_sb_t *sb, const char *key_name, yyjson_val *arra
     }
 
     json_tree_indent(sb, depth);
-    cbm_sb_append(sb, key_name);
+    append_key(sb, key_name);
     char count[48];
     snprintf(count, sizeof(count), ": %zu\n", yyjson_arr_size(array));
     cbm_sb_append(sb, count);
@@ -875,7 +888,7 @@ static void json_tree_array(cbm_sb_t *sb, const char *key_name, yyjson_val *arra
 static void json_tree_value(cbm_sb_t *sb, const char *key_name, yyjson_val *value, int depth) {
     if (depth >= JSON_TREE_MAX_DEPTH) {
         json_tree_indent(sb, depth);
-        cbm_sb_append(sb, key_name);
+        append_key(sb, key_name);
         cbm_sb_append(sb, ": ");
         char *encoded = yyjson_val_write(value, 0, NULL);
         append_value(sb, encoded ? encoded : "null");
@@ -885,7 +898,7 @@ static void json_tree_value(cbm_sb_t *sb, const char *key_name, yyjson_val *valu
     }
     if (yyjson_is_obj(value)) {
         json_tree_indent(sb, depth);
-        cbm_sb_append(sb, key_name);
+        append_key(sb, key_name);
         cbm_sb_append(sb, ":\n");
         size_t index;
         size_t maximum;
@@ -899,12 +912,12 @@ static void json_tree_value(cbm_sb_t *sb, const char *key_name, yyjson_val *valu
     } else if (yyjson_is_str(value) &&
                (strchr(yyjson_get_str(value), '\n') || strchr(yyjson_get_str(value), '\r'))) {
         json_tree_indent(sb, depth);
-        cbm_sb_append(sb, key_name);
+        append_key(sb, key_name);
         cbm_sb_append(sb, ": ");
         json_tree_block_string(sb, yyjson_get_str(value), depth);
     } else {
         json_tree_indent(sb, depth);
-        cbm_sb_append(sb, key_name);
+        append_key(sb, key_name);
         cbm_sb_append(sb, ": ");
         json_tree_scalar(sb, value);
         cbm_sb_append_n(sb, "\n", 1);

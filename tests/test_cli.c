@@ -147,6 +147,28 @@ TEST(cli_progress_sink_suppresses_noise_and_preserves_failures) {
     PASS();
 }
 
+TEST(cli_progress_sink_preserves_explicit_verbose_diagnostics) {
+    FILE *out = tmpfile();
+    ASSERT_NOT_NULL(out);
+    CBMLogLevel previous_level = cbm_log_get_level();
+    cbm_log_set_level(CBM_LOG_DEBUG);
+
+    cbm_progress_sink_init(out);
+    cbm_log_info("cli.daemon.spawned", "hint", "keep-info");
+    cbm_log_debug("cli.detail", "value", "keep-debug");
+    cbm_progress_sink_fini();
+    cbm_log_set_level(previous_level);
+
+    ASSERT_EQ(fseek(out, 0, SEEK_SET), 0);
+    char rendered[1024] = {0};
+    size_t rendered_size = fread(rendered, 1, sizeof(rendered) - 1, out);
+    (void)fclose(out);
+    ASSERT_TRUE(rendered_size > 0);
+    ASSERT_NOT_NULL(strstr(rendered, "msg=cli.daemon.spawned"));
+    ASSERT_NOT_NULL(strstr(rendered, "msg=cli.detail"));
+    PASS();
+}
+
 enum { CLI_PROGRESS_RACE_THREADS = 4, CLI_PROGRESS_RACE_ROUNDS = 32 };
 
 typedef struct {
@@ -12563,6 +12585,7 @@ SUITE(cli) {
     RUN_TEST(cli_progress_sink_accepts_worker_json_logs);
     RUN_TEST(cli_progress_sink_enables_lifecycle_info_then_restores_quiet_default);
     RUN_TEST(cli_progress_sink_suppresses_noise_and_preserves_failures);
+    RUN_TEST(cli_progress_sink_preserves_explicit_verbose_diagnostics);
     RUN_TEST(cli_progress_sink_serializes_concurrent_callbacks);
     RUN_TEST(cli_sha256_file_matches_known_vector);
     RUN_TEST(cli_checksum_manifest_requires_exact_filename_and_accepts_star);

@@ -636,6 +636,21 @@ TEST(json_to_tree_keeps_multiline_source_readable) {
     PASS();
 }
 
+TEST(json_to_tree_quotes_dynamic_keys_without_line_injection) {
+    const char *json =
+        "{\"bad\\nkey\":{\"colon:key\":1,\"\":2},"
+        "\"rows\":[{\"col\\tname\":\"x\",\"close)\":\"y\"}]}";
+    char *tree = cbm_json_to_tree(json);
+    ASSERT_NOT_NULL(tree);
+    ASSERT_STR_EQ(tree, "\"bad\\nkey\":\n"
+                        "  \"colon:key\": 1\n"
+                        "  \"\": 2\n"
+                        "rows: 1  (cols: \"col\\u0009name\" \"close)\")\n"
+                        "  x y\n");
+    free(tree);
+    PASS();
+}
+
 /* Decode the intentionally tiny one-column subset used by the prefix-directory
  * round-trip test. Its values need no tree quoting, so any mismatch is an
  * encoder/reference bug rather than a second parser implementation. */
@@ -14420,6 +14435,7 @@ SUITE(mcp) {
     RUN_TEST(tree_cell_sanitizes_control_and_invalid_utf8);
     RUN_TEST(json_to_tree_uses_header_once_rows_without_losing_metadata);
     RUN_TEST(json_to_tree_keeps_multiline_source_readable);
+    RUN_TEST(json_to_tree_quotes_dynamic_keys_without_line_injection);
     RUN_TEST(tree_table_uses_prefix_dictionary_only_when_it_materially_wins);
     RUN_TEST(jsonrpc_parse_tools_call);
     RUN_TEST(jsonrpc_parse_string_id_issue253);

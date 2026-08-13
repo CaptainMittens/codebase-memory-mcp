@@ -33,6 +33,7 @@ static int s_gbuf_nodes = NOT_SET;
 static int s_gbuf_edges = NOT_SET;
 static CBMLogLevel s_previous_log_level = CBM_LOG_WARN;
 static bool s_raised_log_level;
+static bool s_preserve_details;
 static cbm_mutex_t s_sink_mutex;
 static atomic_int s_sink_mutex_state = ATOMIC_VAR_INIT(LOCK_UNINITIALIZED);
 
@@ -187,6 +188,7 @@ void cbm_progress_sink_init(FILE *out) {
     s_gbuf_nodes = NOT_SET;
     s_gbuf_edges = NOT_SET;
     s_previous_log_level = cbm_log_get_level();
+    s_preserve_details = s_previous_log_level <= CBM_LOG_INFO;
     s_raised_log_level = s_previous_log_level > CBM_LOG_INFO;
     if (s_raised_log_level) {
         /* Progress is an explicit INFO opt-in. The replacement sink below
@@ -210,6 +212,7 @@ void cbm_progress_sink_fini(void) {
         cbm_log_set_level(s_previous_log_level);
         s_raised_log_level = false;
     }
+    s_preserve_details = false;
     cbm_mutex_unlock(&s_sink_mutex);
 }
 
@@ -352,9 +355,10 @@ static const event_handler_t handlers[] = {
 enum { HANDLER_COUNT = sizeof(handlers) / sizeof(handlers[0]) };
 
 /* The progress sink replaces normal logger output. Preserve actionable
- * failures verbatim, but keep routine worker chatter out of the human progress
- * view. Logger callbacks do not include a trailing newline. */
-static void passthrough_failure(const char *line) {
+ * failures verbatim and, when INFO/DEBUG was already selected before progress
+ * initialization, preserve unrecognized diagnostic lines as well. Logger
+ * callbacks do not include a trailing newline. */
+static void passthrough_line(const char *line) {
     flush_carriage();
     (void)fputs(line, s_out);
     size_t line_len = strlen(line);
@@ -377,7 +381,14 @@ void cbm_progress_sink_fn(const char *line) {
         return;
     }
     if (strcmp(level, "warn") == 0 || strcmp(level, "error") == 0) {
-        passthrough_failure(line);
+        passthrough_line(line);
+        cbm_mutex_unlock(&s_sink_mutex);
+        return;
+    }
+    if (strcmp(level, "debug") == 0) {
+        if (s_preserve_details) {
+            passthrough_line(line);
+        }
         cbm_mutex_unlock(&s_sink_mutex);
         return;
     }
@@ -397,6 +408,9 @@ void cbm_progress_sink_fn(const char *line) {
             cbm_mutex_unlock(&s_sink_mutex);
             return;
         }
+    }
+    if (s_preserve_details) {
+        passthrough_line(line);
     }
     cbm_mutex_unlock(&s_sink_mutex);
 }
