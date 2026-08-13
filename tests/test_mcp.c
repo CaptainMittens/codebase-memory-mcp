@@ -7851,6 +7851,86 @@ TEST(search_code_scoped_scan_uses_canonical_file_nodes) {
     PASS();
 }
 
+TEST(search_code_scoped_file_pattern_is_busybox_portable) {
+#ifdef _WIN32
+    SKIP_PLATFORM("POSIX BusyBox-compatible grep contract");
+#else
+    char tmp[CBM_SZ_512];
+    snprintf(tmp, sizeof(tmp), "%s/cbm-search-busybox-XXXXXX", cbm_tmpdir());
+    ASSERT_NOT_NULL(cbm_mkdtemp(tmp));
+
+    char bin_dir[CBM_SZ_1K];
+    char fake_grep[CBM_SZ_1K];
+    char source_path[CBM_SZ_1K];
+    snprintf(bin_dir, sizeof(bin_dir), "%s/bin", tmp);
+    snprintf(fake_grep, sizeof(fake_grep), "%s/grep", bin_dir);
+    snprintf(source_path, sizeof(source_path), "%s/R&D-main.c", tmp);
+    ASSERT_EQ(cbm_mkdir(bin_dir), 0);
+    ASSERT_EQ(th_write_file(fake_grep,
+                            "#!/bin/sh\n"
+                            "for arg in \"$@\"; do\n"
+                            "  case \"$arg\" in --include*) exit 97 ;; esac\n"
+                            "done\n"
+                            "if [ -x /usr/bin/grep ]; then exec /usr/bin/grep \"$@\"; fi\n"
+                            "exec /bin/grep \"$@\"\n"),
+              0);
+    ASSERT_EQ(chmod(fake_grep, 0700), 0);
+    ASSERT_EQ(th_write_file(source_path, "int BUSYBOX_GREP_NEEDLE = 1;\n"), 0);
+
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    ASSERT_NOT_NULL(srv);
+    cbm_store_t *store = cbm_mcp_server_store(srv);
+    ASSERT_NOT_NULL(store);
+    const char *project = "search-busybox";
+    cbm_mcp_server_set_project(srv, project);
+    ASSERT_EQ(cbm_store_upsert_project(store, project, tmp), CBM_STORE_OK);
+    cbm_node_t file = {.project = project,
+                       .label = "File",
+                       .name = "R&D-main.c",
+                       .qualified_name = "search-busybox.R&D-main.c",
+                       .file_path = "R&D-main.c"};
+    cbm_node_t symbol = {.project = project,
+                         .label = "Variable",
+                         .name = "BUSYBOX_GREP_NEEDLE",
+                         .qualified_name = "search-busybox.BUSYBOX_GREP_NEEDLE",
+                         .file_path = "R&D-main.c",
+                         .start_line = 1,
+                         .end_line = 1};
+    ASSERT_GT(cbm_store_upsert_node(store, &file), 0);
+    ASSERT_GT(cbm_store_upsert_node(store, &symbol), 0);
+
+    mcp_test_env_backup_t path_backup = {.name = "PATH"};
+    const char *path = getenv(path_backup.name);
+    path_backup.present = path != NULL;
+    path_backup.value = path ? strdup(path) : NULL;
+    ASSERT_TRUE(!path || path_backup.value != NULL);
+    char forced_path[CBM_SZ_2K];
+    int forced_length = snprintf(forced_path, sizeof(forced_path), "%s:/usr/bin:/bin", bin_dir);
+    ASSERT_TRUE(forced_length > 0 && (size_t)forced_length < sizeof(forced_path));
+    ASSERT_EQ(cbm_setenv("PATH", forced_path, 1), 0);
+
+    char *response = cbm_mcp_handle_tool(
+        srv, "search_code",
+        "{\"pattern\":\"BUSYBOX_GREP_NEEDLE\",\"project\":\"search-busybox\","
+        "\"file_pattern\":\"*R&D*.c\",\"format\":\"json\"}");
+    mcp_test_restore_env(&path_backup, 1U);
+    char *inner = extract_text_content(response);
+    bool portable_success = response && !strstr(response, "\"isError\":true") && inner &&
+                            strstr(inner, "\"total_grep_matches\":1") &&
+                            strstr(inner, "search-busybox.BUSYBOX_GREP_NEEDLE");
+
+    free(inner);
+    free(response);
+    cbm_mcp_server_free(srv);
+    cbm_unlink(source_path);
+    cbm_unlink(fake_grep);
+    cbm_rmdir(bin_dir);
+    cbm_rmdir(tmp);
+    ASSERT_TRUE(portable_success);
+    PASS();
+#endif
+}
+
 TEST(search_code_recursive_fallback_propagates_discovery_failures) {
 #ifdef _WIN32
     SKIP_PLATFORM("POSIX find/sort/xargs fallback contract");
@@ -16332,6 +16412,7 @@ SUITE(mcp) {
     RUN_TEST(search_code_scans_complete_stream_and_ranks_globally);
     RUN_TEST(search_code_fails_closed_when_complete_scan_is_impossible);
     RUN_TEST(search_code_scoped_scan_uses_canonical_file_nodes);
+    RUN_TEST(search_code_scoped_file_pattern_is_busybox_portable);
     RUN_TEST(search_code_recursive_fallback_propagates_discovery_failures);
     RUN_TEST(search_code_default_budget_limits_raw_rows_before_graph_results);
     RUN_TEST(search_code_raw_and_directory_remainders_are_independently_pageable);
