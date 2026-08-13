@@ -58,6 +58,20 @@ int cbm_cli_build_yaml_stdio_mcp_block_for_test(const char *binary_path, bool go
                                                 char *block, size_t block_size);
 bool cbm_cli_stdin_allowed_for_schema_for_test(const char *schema_str);
 
+/* CLI config lifecycle tests exercise the real activation guard on POSIX. Keep
+ * that protocol coverage, but bind it to this suite's private endpoint so an
+ * editor using the developer's installed CBM cannot make an unrelated cleanup
+ * assertion fail. One focused activation-order test temporarily overrides this
+ * parent and restores it before the remaining suite continues. */
+static char g_cli_suite_runtime_parent[512];
+
+TEST(cli_suite_uses_private_activation_runtime) {
+    const char *runtime_parent = cbm_cli_activation_runtime_parent_for_test();
+    ASSERT_NOT_NULL(runtime_parent);
+    ASSERT_STR_EQ(runtime_parent, g_cli_suite_runtime_parent);
+    PASS();
+}
+
 TEST(cli_progress_visibility_policy) {
     ASSERT_TRUE(cbm_cli_progress_enabled(true, false, false));
     ASSERT_TRUE(cbm_cli_progress_enabled(false, false, true));
@@ -1286,7 +1300,7 @@ TEST(cli_activation_quiesce_does_not_wait_on_bootstrap_startup) {
     snprintf(dir_arg, sizeof(dir_arg), "--dir=%s", install_dir);
     char *install_argv[] = {"--force", "--skip-config", "--yes", dir_arg};
     int install_rc = child_ready ? cli_test_cmd_install(4, install_argv) : -1;
-    cbm_cli_set_activation_runtime_parent_for_test(NULL);
+    cbm_cli_set_activation_runtime_parent_for_test(g_cli_suite_runtime_parent);
     cbm_set_auto_answer_for_test(0);
 
     int child_status = 0;
@@ -14332,6 +14346,16 @@ TEST(cli_update_only_names_an_installer_that_exists_issue1632) {
 }
 
 SUITE(cli) {
+    if (!th_secure_runtime_parent_new(g_cli_suite_runtime_parent,
+                                      sizeof(g_cli_suite_runtime_parent), "cli-suite")) {
+        printf("  %sFAIL%s: could not create private CLI activation runtime\n", tf_red(),
+               tf_reset());
+        tf_fail_count++;
+        return;
+    }
+    cbm_cli_set_activation_runtime_parent_for_test(g_cli_suite_runtime_parent);
+
+    RUN_TEST(cli_suite_uses_private_activation_runtime);
     RUN_TEST(cli_update_only_names_an_installer_that_exists_issue1632);
 #ifndef _WIN32
     RUN_TEST(cli_hook_deadline_ignores_an_unreadable_value);
@@ -14735,4 +14759,7 @@ SUITE(cli) {
     /* Stdin argument gate (#1359) */
     RUN_TEST(cli_zero_argument_tool_never_reads_stdin_issue1359);
     RUN_TEST(cli_stdin_args_gate_tracks_tool_schema_issue1359);
+    cbm_cli_set_activation_runtime_parent_for_test(NULL);
+    test_rmdir_r(g_cli_suite_runtime_parent);
+    g_cli_suite_runtime_parent[0] = '\0';
 }

@@ -322,6 +322,10 @@ void cbm_cli_set_activation_runtime_parent_for_test(const char *runtime_parent) 
     g_cli_activation_runtime_parent_for_test = runtime_parent;
 }
 
+const char *cbm_cli_activation_runtime_parent_for_test(void) {
+    return g_cli_activation_runtime_parent_for_test;
+}
+
 static const char *cli_activation_action_text(cbm_daemon_runtime_activation_action_t action) {
     switch (action) {
     case CBM_DAEMON_RUNTIME_ACTIVATION_INSTALL:
