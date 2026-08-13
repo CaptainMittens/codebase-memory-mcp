@@ -7416,6 +7416,40 @@ TEST(tool_search_code_limit_declares_a_minimum_issue1511) {
     PASS();
 }
 
+TEST(tool_search_code_declares_independent_result_and_raw_content_paging) {
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    char *resp = cbm_mcp_server_handle(
+        srv, "{\"jsonrpc\":\"2.0\",\"id\":37,\"method\":\"tools/list\",\"params\":{}}");
+    ASSERT_NOT_NULL(resp);
+
+    yyjson_doc *doc = yyjson_read(resp, strlen(resp), 0);
+    yyjson_val *root = doc ? yyjson_doc_get_root(doc) : NULL;
+    yyjson_val *result = root ? yyjson_obj_get(root, "result") : NULL;
+    yyjson_val *tools = result ? yyjson_obj_get(result, "tools") : NULL;
+    yyjson_val *props = NULL;
+    if (tools && yyjson_is_arr(tools)) {
+        size_t index, max;
+        yyjson_val *tool;
+        yyjson_arr_foreach(tools, index, max, tool) {
+            yyjson_val *name = yyjson_obj_get(tool, "name");
+            if (name && yyjson_is_str(name) && strcmp(yyjson_get_str(name), "search_code") == 0) {
+                yyjson_val *schema = yyjson_obj_get(tool, "inputSchema");
+                props = schema ? yyjson_obj_get(schema, "properties") : NULL;
+                break;
+            }
+        }
+    }
+    bool declared = props && yyjson_obj_get(props, "result_limit") &&
+                    yyjson_obj_get(props, "result_offset") &&
+                    yyjson_obj_get(props, "raw_content_offset");
+    yyjson_doc_free(doc);
+    free(resp);
+    cbm_mcp_server_free(srv);
+
+    ASSERT_TRUE(declared);
+    PASS();
+}
+
 TEST(tool_search_code_no_project) {
     cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
 
@@ -7734,6 +7768,99 @@ TEST(search_code_raw_and_directory_remainders_are_independently_pageable) {
     PASS();
 }
 
+TEST(search_code_ranked_results_have_lossless_second_page) {
+    char tmp[256];
+    snprintf(tmp, sizeof(tmp), "%s/cbm_srch_result_pages_XXXXXX", cbm_tmpdir());
+    ASSERT_NOT_NULL(cbm_mkdtemp(tmp));
+
+    const char *relative_paths[] = {"alpha.c", "beta.c", "gamma.c"};
+    const char *qualified_names[] = {"fixture.alpha", "fixture.beta", "fixture.gamma"};
+    for (size_t i = 0; i < sizeof(relative_paths) / sizeof(relative_paths[0]); i++) {
+        char path[CBM_SZ_4K];
+        snprintf(path, sizeof(path), "%s/%s", tmp, relative_paths[i]);
+        ASSERT_EQ(th_write_file(path, "int RESULT_PAGE_NEEDLE = 1;\n"), 0);
+    }
+
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    ASSERT_NOT_NULL(srv);
+    cbm_store_t *store = cbm_mcp_server_store(srv);
+    ASSERT_NOT_NULL(store);
+    const char *project = "search-result-pages";
+    cbm_mcp_server_set_project(srv, project);
+    ASSERT_EQ(cbm_store_upsert_project(store, project, tmp), CBM_STORE_OK);
+    for (size_t i = 0; i < sizeof(relative_paths) / sizeof(relative_paths[0]); i++) {
+        cbm_node_t node = {.project = project,
+                           .label = "Function",
+                           .name = qualified_names[i],
+                           .qualified_name = qualified_names[i],
+                           .file_path = relative_paths[i],
+                           .start_line = 1,
+                           .end_line = 1};
+        ASSERT_GT(cbm_store_upsert_node(store, &node), 0);
+    }
+
+    const char *page_args =
+        "{\"pattern\":\"RESULT_PAGE_NEEDLE\",\"project\":\"search-result-pages\","
+        "\"result_limit\":1,\"result_offset\":1,\"raw_limit\":0,\"directory_limit\":0,"
+        "\"max_output_tokens\":10000,\"format\":\"json\"}";
+    char *response = cbm_mcp_handle_tool(srv, "search_code", page_args);
+    char *inner = extract_text_content(response);
+    yyjson_doc *doc = inner ? yyjson_read(inner, strlen(inner), 0) : NULL;
+    yyjson_val *root = doc ? yyjson_doc_get_root(doc) : NULL;
+    yyjson_val *rows = root ? yyjson_obj_get(root, "rows") : NULL;
+    yyjson_val *row = rows ? yyjson_arr_get(rows, 0) : NULL;
+    bool json_page_is_exact =
+        root && row && yyjson_arr_size(rows) == 1 &&
+        strcmp(yyjson_get_str(yyjson_arr_get(row, 0)), "fixture.beta") == 0 &&
+        yyjson_get_int(yyjson_obj_get(root, "total_results")) == 3 &&
+        strcmp(yyjson_get_str(yyjson_obj_get(root, "total_relation")), "eq") == 0 &&
+        yyjson_get_int(yyjson_obj_get(root, "results_returned")) == 1 &&
+        yyjson_get_bool(yyjson_obj_get(root, "has_more")) &&
+        yyjson_get_int(yyjson_obj_get(root, "next_offset")) == 2;
+    yyjson_doc_free(doc);
+    free(inner);
+    free(response);
+
+    response = cbm_mcp_handle_tool(
+        srv, "search_code",
+        "{\"pattern\":\"RESULT_PAGE_NEEDLE\",\"project\":\"search-result-pages\","
+        "\"result_limit\":1,\"result_offset\":1,\"raw_limit\":0,\"directory_limit\":0,"
+        "\"max_output_tokens\":10000}");
+    inner = extract_text_content(response);
+    bool compact_page_is_exact =
+        inner && strstr(inner, "fixture.beta") && !strstr(inner, "fixture.alpha") &&
+        !strstr(inner, "fixture.gamma") && strstr(inner, "total_results: 3") &&
+        strstr(inner, "total_relation: eq") && strstr(inner, "results_returned: 1") &&
+        strstr(inner, "has_more: true") && strstr(inner, "next_offset: 2");
+    free(inner);
+    free(response);
+
+    response = cbm_mcp_handle_tool(
+        srv, "search_code",
+        "{\"pattern\":\"RESULT_PAGE_NEEDLE\",\"project\":\"search-result-pages\","
+        "\"result_limit\":1,\"result_offset\":2,\"raw_limit\":0,\"directory_limit\":0,"
+        "\"max_output_tokens\":10000,\"format\":\"json\"}");
+    inner = extract_text_content(response);
+    doc = inner ? yyjson_read(inner, strlen(inner), 0) : NULL;
+    root = doc ? yyjson_doc_get_root(doc) : NULL;
+    rows = root ? yyjson_obj_get(root, "rows") : NULL;
+    row = rows ? yyjson_arr_get(rows, 0) : NULL;
+    bool final_page_terminates =
+        root && row && strcmp(yyjson_get_str(yyjson_arr_get(row, 0)), "fixture.gamma") == 0 &&
+        !yyjson_get_bool(yyjson_obj_get(root, "has_more")) &&
+        yyjson_obj_get(root, "next_offset") == NULL;
+    yyjson_doc_free(doc);
+    free(inner);
+    free(response);
+
+    cbm_mcp_server_free(srv);
+    ASSERT_EQ(th_rmtree(tmp), 0);
+    ASSERT_TRUE(json_page_is_exact);
+    ASSERT_TRUE(compact_page_is_exact);
+    ASSERT_TRUE(final_page_terminates);
+    PASS();
+}
+
 static char *search_code_long_identity(char fill, bool path) {
     enum { LONG_IDENTITY_LENGTH = 2304, FIRST_DIRECTORY_LENGTH = 200 };
     char *value = malloc(LONG_IDENTITY_LENGTH + 1U);
@@ -7756,6 +7883,109 @@ static char *search_code_long_identity(char fill, bool path) {
     }
     value[LONG_IDENTITY_LENGTH] = '\0';
     return value;
+}
+
+TEST(search_code_ranked_budget_omission_has_lossless_continuation) {
+    char tmp[256];
+    snprintf(tmp, sizeof(tmp), "%s/cbm_srch_result_budget_XXXXXX", cbm_tmpdir());
+    ASSERT_NOT_NULL(cbm_mkdtemp(tmp));
+    const char *paths[] = {"one.c", "two.c", "three.c"};
+    char *qualified_names[] = {search_code_long_identity('x', false),
+                               search_code_long_identity('y', false),
+                               search_code_long_identity('z', false)};
+    ASSERT_NOT_NULL(qualified_names[0]);
+    ASSERT_NOT_NULL(qualified_names[1]);
+    ASSERT_NOT_NULL(qualified_names[2]);
+
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    ASSERT_NOT_NULL(srv);
+    cbm_store_t *store = cbm_mcp_server_store(srv);
+    ASSERT_NOT_NULL(store);
+    const char *project = "search-result-budget";
+    cbm_mcp_server_set_project(srv, project);
+    ASSERT_EQ(cbm_store_upsert_project(store, project, tmp), CBM_STORE_OK);
+    for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+        char path[CBM_SZ_4K];
+        snprintf(path, sizeof(path), "%s/%s", tmp, paths[i]);
+        ASSERT_EQ(th_write_file(path, "int RESULT_BUDGET_NEEDLE = 1;\n"), 0);
+        cbm_node_t node = {.project = project,
+                           .label = "Function",
+                           .name = "budget_hit",
+                           .qualified_name = qualified_names[i],
+                           .file_path = paths[i],
+                           .start_line = 1,
+                           .end_line = 1};
+        ASSERT_GT(cbm_store_upsert_node(store, &node), 0);
+    }
+
+    char *response = cbm_mcp_handle_tool(
+        srv, "search_code",
+        "{\"pattern\":\"RESULT_BUDGET_NEEDLE\",\"project\":\"search-result-budget\","
+        "\"result_limit\":3,\"result_offset\":0,\"raw_limit\":0,\"directory_limit\":0,"
+        "\"max_output_tokens\":800,\"format\":\"json\"}");
+    char *inner = extract_text_content(response);
+    yyjson_doc *doc = inner ? yyjson_read(inner, strlen(inner), 0) : NULL;
+    yyjson_val *root = doc ? yyjson_doc_get_root(doc) : NULL;
+    yyjson_val *rows = root ? yyjson_obj_get(root, "rows") : NULL;
+    yyjson_val *row = rows ? yyjson_arr_get(rows, 0) : NULL;
+    bool first_page_advances =
+        root && row && yyjson_arr_size(rows) == 1 &&
+        strcmp(yyjson_get_str(yyjson_arr_get(row, 0)), qualified_names[0]) == 0 &&
+        yyjson_get_int(yyjson_obj_get(root, "total_results")) == 3 &&
+        yyjson_get_int(yyjson_obj_get(root, "results_returned")) == 1 &&
+        yyjson_get_bool(yyjson_obj_get(root, "has_more")) &&
+        yyjson_get_int(yyjson_obj_get(root, "next_offset")) == 1 &&
+        strcmp(yyjson_get_str(yyjson_obj_get(root, "truncation_reason")), "output_budget") == 0;
+    yyjson_doc_free(doc);
+    free(inner);
+    free(response);
+
+    response = cbm_mcp_handle_tool(
+        srv, "search_code",
+        "{\"pattern\":\"RESULT_BUDGET_NEEDLE\",\"project\":\"search-result-budget\","
+        "\"result_limit\":3,\"result_offset\":1,\"raw_limit\":0,\"directory_limit\":0,"
+        "\"max_output_tokens\":800,\"format\":\"json\"}");
+    inner = extract_text_content(response);
+    doc = inner ? yyjson_read(inner, strlen(inner), 0) : NULL;
+    root = doc ? yyjson_doc_get_root(doc) : NULL;
+    rows = root ? yyjson_obj_get(root, "rows") : NULL;
+    row = rows ? yyjson_arr_get(rows, 0) : NULL;
+    bool second_page_advances =
+        root && row && yyjson_arr_size(rows) == 1 &&
+        strcmp(yyjson_get_str(yyjson_arr_get(row, 0)), qualified_names[1]) == 0 &&
+        yyjson_get_int(yyjson_obj_get(root, "next_offset")) == 2;
+    yyjson_doc_free(doc);
+    free(inner);
+    free(response);
+
+    response = cbm_mcp_handle_tool(
+        srv, "search_code",
+        "{\"pattern\":\"RESULT_BUDGET_NEEDLE\",\"project\":\"search-result-budget\","
+        "\"result_limit\":1,\"result_offset\":0,\"raw_limit\":0,\"directory_limit\":0,"
+        "\"max_output_tokens\":128,\"format\":\"json\"}");
+    inner = extract_text_content(response);
+    doc = inner ? yyjson_read(inner, strlen(inner), 0) : NULL;
+    root = doc ? yyjson_doc_get_root(doc) : NULL;
+    bool floor_is_truthful =
+        root && inner && strlen(inner) <= 128U * 4U &&
+        yyjson_get_int(yyjson_obj_get(root, "total_results")) == 3 &&
+        yyjson_get_int(yyjson_obj_get(root, "results_returned")) == 0 &&
+        yyjson_get_bool(yyjson_obj_get(root, "has_more")) &&
+        yyjson_obj_get(root, "next_offset") == NULL &&
+        yyjson_get_bool(yyjson_obj_get(root, "result_continuation_requires_higher_budget"));
+    yyjson_doc_free(doc);
+    free(inner);
+    free(response);
+
+    cbm_mcp_server_free(srv);
+    ASSERT_EQ(th_rmtree(tmp), 0);
+    for (size_t i = 0; i < sizeof(qualified_names) / sizeof(qualified_names[0]); i++) {
+        free(qualified_names[i]);
+    }
+    ASSERT_TRUE(first_page_advances);
+    ASSERT_TRUE(second_page_advances);
+    ASSERT_TRUE(floor_is_truthful);
+    PASS();
 }
 
 TEST(search_code_preserves_multi_kib_identities_and_distinct_long_directories) {
@@ -7864,6 +8094,119 @@ TEST(search_code_long_raw_line_is_one_truthfully_truncated_match) {
     cbm_mcp_server_free(srv);
     cbm_unlink(source_path);
     cbm_rmdir(tmp);
+    PASS();
+}
+
+TEST(search_code_raw_preview_centers_late_match_and_pages_content_bytes) {
+    enum { PREFIX_GLYPHS = 467, PREFIX_BYTES = PREFIX_GLYPHS * 3, SUFFIX_BYTES = 1400 };
+    static const char needle[] = "LATE_RAW_NEEDLE";
+    static const char prefix_glyph[] = "\xE7\x95\x8C"; /* U+754C, three UTF-8 bytes */
+    char tmp[256];
+    snprintf(tmp, sizeof(tmp), "%s/cbm_srch_late_raw_XXXXXX", cbm_tmpdir());
+    ASSERT_NOT_NULL(cbm_mkdtemp(tmp));
+    char source_path[CBM_SZ_4K];
+    snprintf(source_path, sizeof(source_path), "%s/late.txt", tmp);
+    FILE *source = cbm_fopen(source_path, "wb");
+    ASSERT_NOT_NULL(source);
+    for (int i = 0; i < PREFIX_GLYPHS; i++) {
+        fputs(prefix_glyph, source);
+    }
+    fputs(needle, source);
+    for (int i = 0; i < SUFFIX_BYTES; i++) {
+        fputc('s', source);
+    }
+    fputs("\nsentinel\n", source);
+    fclose(source);
+
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    ASSERT_NOT_NULL(srv);
+    cbm_store_t *store = cbm_mcp_server_store(srv);
+    ASSERT_NOT_NULL(store);
+    const char *project = "search-late-raw";
+    cbm_mcp_server_set_project(srv, project);
+    ASSERT_EQ(cbm_store_upsert_project(store, project, tmp), CBM_STORE_OK);
+    cbm_node_t sentinel = {.project = project,
+                           .label = "Variable",
+                           .name = "sentinel",
+                           .qualified_name = "fixture.sentinel",
+                           .file_path = "late.txt",
+                           .start_line = 2,
+                           .end_line = 2};
+    ASSERT_GT(cbm_store_upsert_node(store, &sentinel), 0);
+
+    char *response = cbm_mcp_handle_tool(
+        srv, "search_code",
+        "{\"pattern\":\"LATE_RAW_NEEDLE\",\"project\":\"search-late-raw\","
+        "\"result_limit\":1,\"raw_limit\":1,\"raw_offset\":0,\"directory_offset\":0,"
+        "\"max_output_tokens\":10000,\"format\":\"json\"}");
+    char *inner = extract_text_content(response);
+    yyjson_doc *doc = inner ? yyjson_read(inner, strlen(inner), 0) : NULL;
+    yyjson_val *root = doc ? yyjson_doc_get_root(doc) : NULL;
+    yyjson_val *raw = root ? yyjson_obj_get(root, "raw_matches") : NULL;
+    yyjson_val *cols = raw ? yyjson_obj_get(raw, "cols") : NULL;
+    yyjson_val *rows = raw ? yyjson_obj_get(raw, "rows") : NULL;
+    yyjson_val *row = rows ? yyjson_arr_get(rows, 0) : NULL;
+    const char *content = row ? yyjson_get_str(yyjson_arr_get(row, 2)) : NULL;
+    size_t content_start = row ? (size_t)yyjson_get_uint(yyjson_arr_get(row, 3)) : 0U;
+    size_t content_returned = row ? (size_t)yyjson_get_uint(yyjson_arr_get(row, 4)) : 0U;
+    size_t content_total = row ? (size_t)yyjson_get_uint(yyjson_arr_get(row, 5)) : 0U;
+    size_t match_start = row ? (size_t)yyjson_get_uint(yyjson_arr_get(row, 6)) : 0U;
+    size_t match_end = row ? (size_t)yyjson_get_uint(yyjson_arr_get(row, 7)) : 0U;
+    bool centered_preview =
+        cols && yyjson_arr_size(cols) >= 11 && row && content && strstr(content, needle) &&
+        content_start > 0 && content_returned == strlen(content) &&
+        content_returned <= CBM_SZ_1K - 1U &&
+        content_total == PREFIX_BYTES + strlen(needle) + SUFFIX_BYTES &&
+        match_start == PREFIX_BYTES && match_end == PREFIX_BYTES + strlen(needle) &&
+        content_start <= match_start && content_start + content_returned >= match_end &&
+        yyjson_get_bool(yyjson_arr_get(row, 8)) &&
+        yyjson_get_uint(yyjson_arr_get(row, 9)) > content_start &&
+        yyjson_get_bool(yyjson_arr_get(row, 10));
+    yyjson_doc_free(doc);
+    free(inner);
+    free(response);
+
+    response = cbm_mcp_handle_tool(
+        srv, "search_code",
+        "{\"pattern\":\"LATE_RAW_NEEDLE\",\"project\":\"search-late-raw\","
+        "\"result_limit\":1,\"raw_limit\":1,\"raw_offset\":0,\"raw_content_offset\":1,"
+        "\"directory_offset\":0,\"max_output_tokens\":10000,\"format\":\"json\"}");
+    inner = extract_text_content(response);
+    doc = inner ? yyjson_read(inner, strlen(inner), 0) : NULL;
+    root = doc ? yyjson_doc_get_root(doc) : NULL;
+    raw = root ? yyjson_obj_get(root, "raw_matches") : NULL;
+    rows = raw ? yyjson_obj_get(raw, "rows") : NULL;
+    row = rows ? yyjson_arr_get(rows, 0) : NULL;
+    content = row ? yyjson_get_str(yyjson_arr_get(row, 2)) : NULL;
+    bool explicit_content_page = row && content && yyjson_get_uint(yyjson_arr_get(row, 3)) == 3 &&
+                                 strlen(content) == yyjson_get_uint(yyjson_arr_get(row, 4)) &&
+                                 !strstr(content, needle) &&
+                                 yyjson_get_uint(yyjson_arr_get(row, 5)) == content_total &&
+                                 yyjson_get_uint(yyjson_arr_get(row, 6)) == PREFIX_BYTES &&
+                                 yyjson_get_uint(yyjson_arr_get(row, 9)) == 3U + strlen(content) &&
+                                 yyjson_get_int(yyjson_obj_get(root, "raw_returned")) == 1;
+    yyjson_doc_free(doc);
+    free(inner);
+    free(response);
+
+    response = cbm_mcp_handle_tool(
+        srv, "search_code",
+        "{\"pattern\":\"LATE_RAW_NEEDLE\",\"project\":\"search-late-raw\","
+        "\"result_limit\":1,\"raw_limit\":1,\"raw_offset\":0,\"directory_offset\":0,"
+        "\"max_output_tokens\":10000}");
+    inner = extract_text_content(response);
+    bool compact_parity = inner && strstr(inner, needle) && strstr(inner, "content_start_byte") &&
+                          strstr(inner, "content_returned_bytes") &&
+                          strstr(inner, "content_total_bytes") &&
+                          strstr(inner, "match_start_byte") && strstr(inner, "match_end_byte");
+    free(inner);
+    free(response);
+
+    cbm_mcp_server_free(srv);
+    ASSERT_EQ(th_rmtree(tmp), 0);
+    ASSERT_TRUE(centered_preview);
+    ASSERT_TRUE(explicit_content_page);
+    ASSERT_TRUE(compact_parity);
     PASS();
 }
 
@@ -18100,6 +18443,7 @@ SUITE(mcp) {
     RUN_TEST(tool_search_code_missing_pattern);
     RUN_TEST(tool_search_code_negative_limit_is_not_echoed_issue1511);
     RUN_TEST(tool_search_code_limit_declares_a_minimum_issue1511);
+    RUN_TEST(tool_search_code_declares_independent_result_and_raw_content_paging);
     RUN_TEST(tool_search_code_no_project);
     RUN_TEST(search_code_multi_word);
     RUN_TEST(search_code_full_preserves_utf8_source);
@@ -18110,8 +18454,11 @@ SUITE(mcp) {
     RUN_TEST(search_code_reports_scan_saturation);
     RUN_TEST(search_code_default_budget_limits_raw_rows_before_graph_results);
     RUN_TEST(search_code_raw_and_directory_remainders_are_independently_pageable);
+    RUN_TEST(search_code_ranked_results_have_lossless_second_page);
+    RUN_TEST(search_code_ranked_budget_omission_has_lossless_continuation);
     RUN_TEST(search_code_preserves_multi_kib_identities_and_distinct_long_directories);
     RUN_TEST(search_code_long_raw_line_is_one_truthfully_truncated_match);
+    RUN_TEST(search_code_raw_preview_centers_late_match_and_pages_content_bytes);
     RUN_TEST(search_code_match_locations_are_explicitly_bounded_and_expandable);
     RUN_TEST(search_code_scoped_path_with_spaces_issue687);
 #ifdef _WIN32
