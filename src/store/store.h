@@ -444,9 +444,17 @@ int cbm_store_checkpoint(cbm_store_t *s);
  * connection, in bytes; -1 = unlimited (SQLite default / pre-fix). */
 int64_t cbm_store_journal_size_limit(cbm_store_t *s);
 
+/* Advance the pagination-cursor generation atomically. Seeds a genuinely
+ * legacy database with a fresh per-file uid, preserves that uid thereafter,
+ * and increments its canonical uint64 mutation counter. Safe inside an
+ * existing transaction (implemented with a nested savepoint); malformed or
+ * partial metadata fails closed without committing a partial advance. */
+int cbm_store_generation_advance(cbm_store_t *s);
+
 /* Opaque store generation for pagination-cursor staleness detection:
- * "u<db_uid>g<mutation_gen>" — db_uid is minted per DB file, mutation_gen
- * bumps on every index run. "legacy" for DBs predating store_meta. */
+ * "u<16-lower-hex-db_uid>g<canonical-uint64-mutation_gen>". Returns "legacy"
+ * only when store_meta is genuinely absent; malformed or missing metadata is
+ * an error. */
 int cbm_store_generation(cbm_store_t *s, char *buf, size_t bufsz);
 
 /* Seal a fully-written staging database before atomic publication.
