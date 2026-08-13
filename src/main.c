@@ -2545,8 +2545,7 @@ int main(int argc, char **argv) {
      * CLI output before argv is classified. Detached daemons retain INFO
      * lifecycle records; physical workers require INFO because those records
      * are their supervisor's quiet-timeout heartbeat. */
-    bool quiet_log_default =
-        role != CBM_DAEMON_PROCESS_DAEMON && role != CBM_DAEMON_PROCESS_WORKER;
+    bool quiet_log_default = role != CBM_DAEMON_PROCESS_DAEMON && role != CBM_DAEMON_PROCESS_WORKER;
     cbm_log_init_for_process(quiet_log_default, role == CBM_DAEMON_PROCESS_WORKER);
 
     cbm_mcp_tool_profile_t tool_profile = CBM_MCP_TOOL_PROFILE_ALL;
