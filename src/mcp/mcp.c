@@ -11056,33 +11056,51 @@ static void build_grep_cmd(char *cmd, size_t cmd_sz, bool use_regex, bool scoped
              * written by write_scoped_filelist. */
             snprintf(
                 cmd, cmd_sz,
-                "xargs -0 sh -c 'pat=$1; shift; grep -Hn %s --include=\"%s\" -f \"$pat\" "
-                "-- \"$@\"; rc=$?; if [ \"$rc\" -eq 1 ]; then exit 0; fi; if [ \"$rc\" "
-                "-ne 0 ]; then exit 255; fi; exit 0' sh '%s' < '%s' 2>/dev/null",
+                "xargs -0 sh -c 'pat=$1; shift; if [ \"$#\" -eq 0 ]; then exit 0; fi; "
+                "grep -Hn %s --include=\"%s\" -f \"$pat\" -- \"$@\"; rc=$?; if [ \"$rc\" "
+                "-eq 1 ]; then exit 0; fi; if [ \"$rc\" -ne 0 ]; then exit 255; fi; "
+                "exit 0' sh '%s' < '%s' 2>/dev/null",
                 flag, file_pattern, tmpfile, filelist);
         } else {
             snprintf(
                 cmd, cmd_sz,
-                "xargs -0 sh -c 'pat=$1; shift; grep -Hn %s -f \"$pat\" -- \"$@\"; rc=$?; "
-                "if [ \"$rc\" -eq 1 ]; then exit 0; fi; if [ \"$rc\" -ne 0 ]; then exit 255; "
-                "fi; exit 0' sh '%s' < '%s' 2>/dev/null",
+                "xargs -0 sh -c 'pat=$1; shift; if [ \"$#\" -eq 0 ]; then exit 0; fi; "
+                "grep -Hn %s -f \"$pat\" -- \"$@\"; rc=$?; if [ \"$rc\" -eq 1 ]; then "
+                "exit 0; fi; if [ \"$rc\" -ne 0 ]; then exit 255; fi; exit 0' sh '%s' "
+                "< '%s' 2>/dev/null",
                 flag, tmpfile, filelist);
         }
     } else {
+        /* Do not pipe discovery directly into sort/xargs: POSIX sh reports only
+         * the final pipeline command, which can hide a partial find or failed
+         * sort behind a successful grep. Materialize the NUL list in the
+         * request-private scratch file and check each producer before scanning.
+         * The xargs wrapper's zero-argument guard also makes empty discovery
+         * succeed on both GNU (runs once) and BSD (runs zero times) xargs. */
         if (file_pattern) {
-            snprintf(cmd, cmd_sz,
-                     "find '%s' -type f -name '%s' -print0 2>/dev/null | LC_ALL=C sort -z | "
-                     "xargs -0 sh -c 'pat=$1; shift; grep -Hn %s -f \"$pat\" -- \"$@\"; "
-                     "rc=$?; if [ \"$rc\" -eq 1 ]; then exit 0; fi; if [ \"$rc\" -ne 0 ]; "
-                     "then exit 255; fi; exit 0' sh '%s' 2>/dev/null",
-                     root_path, file_pattern, flag, tmpfile);
+            snprintf(
+                cmd, cmd_sz,
+                "fl='%s'; find '%s' -type f -name '%s' -print0 > \"$fl\" 2>/dev/null; "
+                "rc=$?; if [ \"$rc\" -ne 0 ]; then exit \"$rc\"; fi; "
+                "LC_ALL=C sort -z -o \"$fl\" \"$fl\" 2>/dev/null; rc=$?; "
+                "if [ \"$rc\" -ne 0 ]; then exit \"$rc\"; fi; "
+                "xargs -0 sh -c 'pat=$1; shift; if [ \"$#\" -eq 0 ]; then exit 0; fi; "
+                "grep -Hn %s -f \"$pat\" -- \"$@\"; rc=$?; if [ \"$rc\" -eq 1 ]; then "
+                "exit 0; fi; if [ \"$rc\" -ne 0 ]; then exit 255; fi; exit 0' sh '%s' "
+                "< \"$fl\" 2>/dev/null",
+                filelist, root_path, file_pattern, flag, tmpfile);
         } else {
-            snprintf(cmd, cmd_sz,
-                     "find '%s' -type f -print0 2>/dev/null | LC_ALL=C sort -z | "
-                     "xargs -0 sh -c 'pat=$1; shift; grep -Hn %s -f \"$pat\" -- \"$@\"; "
-                     "rc=$?; if [ \"$rc\" -eq 1 ]; then exit 0; fi; if [ \"$rc\" -ne 0 ]; "
-                     "then exit 255; fi; exit 0' sh '%s' 2>/dev/null",
-                     root_path, flag, tmpfile);
+            snprintf(
+                cmd, cmd_sz,
+                "fl='%s'; find '%s' -type f -print0 > \"$fl\" 2>/dev/null; rc=$?; "
+                "if [ \"$rc\" -ne 0 ]; then exit \"$rc\"; fi; "
+                "LC_ALL=C sort -z -o \"$fl\" \"$fl\" 2>/dev/null; rc=$?; "
+                "if [ \"$rc\" -ne 0 ]; then exit \"$rc\"; fi; "
+                "xargs -0 sh -c 'pat=$1; shift; if [ \"$#\" -eq 0 ]; then exit 0; fi; "
+                "grep -Hn %s -f \"$pat\" -- \"$@\"; rc=$?; if [ \"$rc\" -eq 1 ]; then "
+                "exit 0; fi; if [ \"$rc\" -ne 0 ]; then exit 255; fi; exit 0' sh '%s' "
+                "< \"$fl\" 2>/dev/null",
+                filelist, root_path, flag, tmpfile);
         }
     }
 #endif
