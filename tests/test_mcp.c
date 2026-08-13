@@ -8203,6 +8203,113 @@ TEST(search_code_fails_closed_when_complete_scan_is_impossible) {
     PASS();
 }
 
+TEST(search_code_recursive_fallback_propagates_discovery_failures) {
+#ifdef _WIN32
+    SKIP_PLATFORM("POSIX find/sort/xargs fallback contract");
+#else
+    char tmp[CBM_SZ_512];
+    snprintf(tmp, sizeof(tmp), "%s/cbm-search-find-status-XXXXXX", cbm_tmpdir());
+    ASSERT_NOT_NULL(cbm_mkdtemp(tmp));
+
+    char bin_dir[CBM_SZ_1K];
+    char sort_bin_dir[CBM_SZ_1K];
+    char fake_find[CBM_SZ_1K];
+    char fake_sort[CBM_SZ_1K];
+    char victim[CBM_SZ_1K];
+    snprintf(bin_dir, sizeof(bin_dir), "%s/bin", tmp);
+    snprintf(sort_bin_dir, sizeof(sort_bin_dir), "%s/sort-bin", tmp);
+    snprintf(fake_find, sizeof(fake_find), "%s/find", bin_dir);
+    snprintf(fake_sort, sizeof(fake_sort), "%s/sort", sort_bin_dir);
+    snprintf(victim, sizeof(victim), "%s/victim.c", tmp);
+    ASSERT_EQ(cbm_mkdir(bin_dir), 0);
+    ASSERT_EQ(cbm_mkdir(sort_bin_dir), 0);
+    ASSERT_EQ(th_write_file(fake_find,
+                            "#!/bin/sh\n"
+                            "printf '%s\\000' \"$1/victim.c\"\n"
+                            "exit 73\n"),
+              0);
+    ASSERT_EQ(chmod(fake_find, 0700), 0);
+    ASSERT_EQ(th_write_file(fake_sort, "#!/bin/sh\nexit 74\n"), 0);
+    ASSERT_EQ(chmod(fake_sort, 0700), 0);
+    ASSERT_EQ(th_write_file(victim, "int FALLBACK_STATUS_NEEDLE = 1;\n"), 0);
+
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    ASSERT_NOT_NULL(srv);
+    cbm_store_t *store = cbm_mcp_server_store(srv);
+    ASSERT_NOT_NULL(store);
+    const char *project = "search-find-status";
+    cbm_mcp_server_set_project(srv, project);
+    ASSERT_EQ(cbm_store_upsert_project(store, project, tmp), CBM_STORE_OK);
+
+    mcp_test_env_backup_t path_backup = {.name = "PATH"};
+    const char *path = getenv(path_backup.name);
+    path_backup.present = path != NULL;
+    path_backup.value = path ? strdup(path) : NULL;
+    ASSERT_TRUE(!path || path_backup.value != NULL);
+    char forced_path[CBM_SZ_2K];
+    int forced_length =
+        snprintf(forced_path, sizeof(forced_path), "%s:/usr/bin:/bin", bin_dir);
+    ASSERT_TRUE(forced_length > 0 && (size_t)forced_length < sizeof(forced_path));
+    ASSERT_EQ(cbm_setenv("PATH", forced_path, 1), 0);
+
+    char *failed_response = cbm_mcp_handle_tool(
+        srv, "search_code",
+        "{\"pattern\":\"FALLBACK_STATUS_NEEDLE\",\"project\":\"search-find-status\","
+        "\"file_pattern\":\"*.c\",\"format\":\"json\"}");
+    bool discovery_failure_propagated =
+        failed_response && strstr(failed_response, "\"isError\":true") &&
+        strstr(failed_response, "complete result set was scanned");
+    free(failed_response);
+
+    int forced_sort_length =
+        snprintf(forced_path, sizeof(forced_path), "%s:/usr/bin:/bin", sort_bin_dir);
+    ASSERT_TRUE(forced_sort_length > 0 && (size_t)forced_sort_length < sizeof(forced_path));
+    ASSERT_EQ(cbm_setenv("PATH", forced_path, 1), 0);
+    char *sort_failed_response = cbm_mcp_handle_tool(
+        srv, "search_code",
+        "{\"pattern\":\"FALLBACK_STATUS_NEEDLE\",\"project\":\"search-find-status\","
+        "\"file_pattern\":\"*.c\",\"format\":\"json\"}");
+    bool sort_failure_propagated =
+        sort_failed_response && strstr(sort_failed_response, "\"isError\":true") &&
+        strstr(sort_failed_response, "complete result set was scanned");
+    free(sort_failed_response);
+    mcp_test_restore_env(&path_backup, 1U);
+
+    char *no_match_response = cbm_mcp_handle_tool(
+        srv, "search_code",
+        "{\"pattern\":\"ABSENT_FALLBACK_NEEDLE\",\"project\":\"search-find-status\","
+        "\"file_pattern\":\"*.c\",\"format\":\"json\"}");
+    char *no_match_inner = extract_text_content(no_match_response);
+    bool no_match_is_exact_success =
+        no_match_response && !strstr(no_match_response, "\"isError\":true") && no_match_inner &&
+        strstr(no_match_inner, "\"total_grep_matches\":0") &&
+        strstr(no_match_inner, "\"total_relation\":\"eq\"");
+    free(no_match_inner);
+    free(no_match_response);
+
+    ASSERT_EQ(cbm_unlink(victim), 0);
+    char *empty_response = cbm_mcp_handle_tool(
+        srv, "search_code",
+        "{\"pattern\":\"ABSENT_FALLBACK_NEEDLE\",\"project\":\"search-find-status\","
+        "\"file_pattern\":\"*.c\",\"format\":\"json\"}");
+    char *empty_inner = extract_text_content(empty_response);
+    bool empty_discovery_is_exact_success =
+        empty_response && !strstr(empty_response, "\"isError\":true") && empty_inner &&
+        strstr(empty_inner, "\"total_grep_matches\":0") &&
+        strstr(empty_inner, "\"total_relation\":\"eq\"");
+    free(empty_inner);
+    free(empty_response);
+
+    cbm_mcp_server_free(srv);
+    ASSERT_EQ(th_rmtree(tmp), 0);
+    ASSERT_TRUE(discovery_failure_propagated);
+    ASSERT_TRUE(sort_failure_propagated);
+    ASSERT_TRUE(no_match_is_exact_success);
+    ASSERT_TRUE(empty_discovery_is_exact_success);
+    PASS();
+#endif
+}
+
 TEST(search_code_default_budget_limits_raw_rows_before_graph_results) {
     char tmp[256];
     snprintf(tmp, sizeof(tmp), "/tmp/cbm_srch_budget_XXXXXX");
@@ -19267,6 +19374,7 @@ SUITE(mcp) {
     RUN_TEST(search_code_preserves_valid_utf8_source);
     RUN_TEST(search_code_scans_complete_stream_and_ranks_globally);
     RUN_TEST(search_code_fails_closed_when_complete_scan_is_impossible);
+    RUN_TEST(search_code_recursive_fallback_propagates_discovery_failures);
     RUN_TEST(search_code_default_budget_limits_raw_rows_before_graph_results);
     RUN_TEST(search_code_raw_and_directory_remainders_are_independently_pageable);
     RUN_TEST(search_code_ranked_results_have_lossless_second_page);
