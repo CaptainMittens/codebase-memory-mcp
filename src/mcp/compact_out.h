@@ -1,11 +1,9 @@
-/* compact_out.h — TOON (Token-Oriented Object Notation) emission helpers.
+/* compact_out.h — compact tree emission helpers.
  *
  * Tool responses are consumed by LLM agents, where every byte is context
- * tokens. TOON encodes the same data as JSON but declares tabular fields
- * once in a header and streams rows line by line, cutting 40-60% of tokens
- * on homogeneous result sets at equal-or-better retrieval accuracy
- * (toonformat.dev/guide/benchmarks). Emitters here cover the subset we
- * emit: scalar key-value lines and flat tables with explicit [N] lengths.
+ * tokens. The tree format declares tabular fields once in a header and
+ * streams rows line by line, removing repeated-key overhead while retaining
+ * scalar key-value lines and explicit table lengths.
  *
  * Quoting: a cell/scalar is double-quoted iff it is empty, has leading or
  * trailing whitespace, contains a comma, quote, newline, or CR, or would
@@ -70,8 +68,9 @@ void cbm_tree_table_rows_typed(cbm_sb_t *sb, const char *key, int nrows, const c
 
 /* Semantic prefix-directory variant. Only columns explicitly marked in
  * prefix_cols may be factored, so labels, diagnostics, and arbitrary query
- * strings are never rewritten. The directory activates only when it saves at
- * least 15% and 64 bytes. */
+ * strings are never rewritten. The directory activates only when the exact
+ * rendering saves at least 15% and 64 bytes and a conservative model-neutral
+ * token-shape proxy saves at least 1%. */
 void cbm_tree_table_rows_profiled(cbm_sb_t *sb, const char *key, int nrows, const char *const *cols,
                                   int ncols, const char *const *cells, const bool *string_cols,
                                   const bool *prefix_cols);

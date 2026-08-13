@@ -1170,13 +1170,74 @@ TEST(mcp_tools_list_latest_metadata) {
      * relationships used for call/reference/type centrality, not every edge
      * family (for example DEFINES or CONTAINS_FILE). Keep the public contract
      * aligned with the store query. */
-    ASSERT_NOT_NULL(strstr(json, "Regex rows keep qn/file/lines and in/out over CALLS"));
+    ASSERT_NOT_NULL(strstr(json, "Find symbols via BM25 query, regex name/qn filters, or "
+                                 "semantic_query"));
+    ASSERT_NOT_NULL(strstr(json, "Rows keep qn/file/lines and in/out over CALLS"));
     ASSERT_NOT_NULL(strstr(json, "USAGE"));
     ASSERT_NOT_NULL(strstr(json, "CALL_REFERENCE"));
     ASSERT_NOT_NULL(strstr(json, "INHERITS"));
     ASSERT_NOT_NULL(strstr(json, "IMPLEMENTS"));
     ASSERT_NULL(strstr(json, "TOTAL degree across ALL edge types"));
     free(json);
+    PASS();
+}
+
+TEST(mcp_discovery_defaults_match_runtime_contract) {
+    const char *search_schema = cbm_mcp_tool_input_schema("search_graph");
+    ASSERT_NOT_NULL(search_schema);
+    yyjson_doc *doc = yyjson_read(search_schema, strlen(search_schema), 0);
+    ASSERT_NOT_NULL(doc);
+    yyjson_val *props = yyjson_obj_get(yyjson_doc_get_root(doc), "properties");
+    ASSERT_NOT_NULL(props);
+    yyjson_val *format = yyjson_obj_get(props, "format");
+    yyjson_val *detail = yyjson_obj_get(props, "detail");
+    ASSERT_NOT_NULL(format);
+    ASSERT_NOT_NULL(detail);
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(format, "default")), "tree");
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(detail, "default")), "default");
+    yyjson_doc_free(doc);
+
+    const char *detect_schema = cbm_mcp_tool_input_schema("detect_changes");
+    ASSERT_NOT_NULL(detect_schema);
+    doc = yyjson_read(detect_schema, strlen(detect_schema), 0);
+    ASSERT_NOT_NULL(doc);
+    props = yyjson_obj_get(yyjson_doc_get_root(doc), "properties");
+    ASSERT_NOT_NULL(props);
+    yyjson_val *scope = yyjson_obj_get(props, "scope");
+    ASSERT_NOT_NULL(scope);
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(scope, "default")), "impact");
+    yyjson_doc_free(doc);
+
+    /* search_graph's omitted values and the newly-declared defaults must be
+     * behaviorally identical. */
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    ASSERT_NOT_NULL(srv);
+    cbm_store_t *store = cbm_mcp_server_store(srv);
+    ASSERT_NOT_NULL(store);
+    const char *project = "discovery-default-contract";
+    ASSERT_EQ(cbm_store_upsert_project(store, project, cbm_tmpdir()), CBM_STORE_OK);
+    cbm_mcp_server_set_project(srv, project);
+    cbm_node_t node = {.project = project,
+                       .label = "Function",
+                       .name = "default_contract",
+                       .qualified_name = "fixture.default_contract",
+                       .file_path = "src/default.c",
+                       .start_line = 1,
+                       .end_line = 2};
+    ASSERT_GT(cbm_store_upsert_node(store, &node), 0);
+    char *implicit = cbm_mcp_handle_tool(
+        srv, "search_graph",
+        "{\"project\":\"discovery-default-contract\",\"name_pattern\":\"default_contract\"}");
+    char *explicit_defaults = cbm_mcp_handle_tool(
+        srv, "search_graph",
+        "{\"project\":\"discovery-default-contract\",\"name_pattern\":\"default_contract\","
+        "\"format\":\"tree\",\"detail\":\"default\"}");
+    ASSERT_NOT_NULL(implicit);
+    ASSERT_NOT_NULL(explicit_defaults);
+    ASSERT_STR_EQ(implicit, explicit_defaults);
+    free(implicit);
+    free(explicit_defaults);
+    cbm_mcp_server_free(srv);
     PASS();
 }
 
@@ -12083,12 +12144,19 @@ TEST(detect_changes_seeds_only_touched_symbol_issue1363) {
     snprintf(dc_args, sizeof(dc_args), "{\"project\":\"%s\",\"depth\":1}", project);
     char *dc_resp = cbm_mcp_handle_tool(srv, "detect_changes", dc_args);
     ASSERT_NOT_NULL(dc_resp);
+    char dc_explicit_args[700];
+    snprintf(dc_explicit_args, sizeof(dc_explicit_args),
+             "{\"project\":\"%s\",\"scope\":\"impact\",\"depth\":1}", project);
+    char *dc_explicit_resp = cbm_mcp_handle_tool(srv, "detect_changes", dc_explicit_args);
+    ASSERT_NOT_NULL(dc_explicit_resp);
+    ASSERT_STR_EQ(dc_resp, dc_explicit_resp);
     /* cbm_mcp_handle_tool wraps the tree text in a JSON string, so a literal
      * newline in the source becomes the two-character `\n` escape sequence
      * in dc_resp's actual bytes — match that, not a real newline. */
     ASSERT_NOT_NULL(strstr(dc_resp, "seed_symbols: 1\\n"));
     ASSERT_NULL(strstr(dc_resp, "bar"));
 
+    free(dc_explicit_resp);
     free(dc_resp);
     free(project);
     cbm_mcp_server_free(srv);
@@ -15801,6 +15869,7 @@ SUITE(mcp) {
     RUN_TEST(mcp_tools_list);
     RUN_TEST(mcp_tools_help_list_matches_registry);
     RUN_TEST(mcp_tools_list_latest_metadata);
+    RUN_TEST(mcp_discovery_defaults_match_runtime_contract);
     RUN_TEST(mcp_metadata_byte_budget);
     RUN_TEST(mcp_tools_have_behavior_annotations);
     RUN_TEST(mcp_index_repository_declares_name_override_issue571);
