@@ -8563,6 +8563,73 @@ TEST(search_code_raw_preview_centers_late_match_and_pages_content_bytes) {
     PASS();
 }
 
+TEST(search_code_raw_preview_reversibly_pages_malformed_utf8_bytes) {
+    const char malformed[] = {'H', 'E', 'A', 'D', (char)0x80, (char)0xff,
+                              'T', 'A', 'I', 'L', '\0'};
+
+    char *json = cbm_mcp_render_raw_preview_for_testing(malformed, false, 0, true);
+    ASSERT_NOT_NULL(json);
+    yyjson_doc *doc = yyjson_read(json, strlen(json), 0);
+    ASSERT_NOT_NULL(doc); /* The direct JSON payload must remain strict JSON. */
+    yyjson_val *root = yyjson_doc_get_root(doc);
+    yyjson_val *raw = yyjson_obj_get(root, "raw_matches");
+    yyjson_val *rows = raw ? yyjson_obj_get(raw, "rows") : NULL;
+    yyjson_val *row = rows ? yyjson_arr_get(rows, 0) : NULL;
+    ASSERT_NOT_NULL(row);
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_arr_get(row, 2)),
+                  "@bytes:4845414480ff5441494c");
+    ASSERT_EQ((int)yyjson_get_uint(yyjson_arr_get(row, 3)), 0);
+    ASSERT_EQ((int)yyjson_get_uint(yyjson_arr_get(row, 4)), 10);
+    ASSERT_EQ((int)yyjson_get_uint(yyjson_arr_get(row, 5)), 10);
+    yyjson_doc_free(doc);
+    free(json);
+
+    /* An explicit byte page beginning on malformed 0x80 must neither skip the
+     * byte nor reinterpret the offset as an encoded-text offset. */
+    json = cbm_mcp_render_raw_preview_for_testing(malformed, true, 4, true);
+    ASSERT_NOT_NULL(json);
+    doc = yyjson_read(json, strlen(json), 0);
+    ASSERT_NOT_NULL(doc);
+    root = yyjson_doc_get_root(doc);
+    raw = yyjson_obj_get(root, "raw_matches");
+    rows = raw ? yyjson_obj_get(raw, "rows") : NULL;
+    row = rows ? yyjson_arr_get(rows, 0) : NULL;
+    ASSERT_NOT_NULL(row);
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_arr_get(row, 2)), "@bytes:80ff5441494c");
+    ASSERT_EQ((int)yyjson_get_uint(yyjson_arr_get(row, 3)), 4);
+    ASSERT_EQ((int)yyjson_get_uint(yyjson_arr_get(row, 4)), 6);
+    ASSERT_EQ((int)yyjson_get_uint(yyjson_arr_get(row, 5)), 10);
+    yyjson_doc_free(doc);
+    free(json);
+
+    char *tree = cbm_mcp_render_raw_preview_for_testing(malformed, true, 4, false);
+    ASSERT_NOT_NULL(tree);
+    ASSERT_NOT_NULL(strstr(tree, "@bytes:80ff5441494c"));
+    ASSERT_NOT_NULL(strstr(tree, "content_start_byte"));
+    ASSERT_NOT_NULL(strstr(tree, " 4 6 10 "));
+    free(tree);
+
+    /* Literal reserved prefixes remain distinguishable from encoded bytes. */
+    json = cbm_mcp_render_raw_preview_for_testing("@bytes:literal", false, 0, true);
+    ASSERT_NOT_NULL(json);
+    doc = yyjson_read(json, strlen(json), 0);
+    ASSERT_NOT_NULL(doc);
+    root = yyjson_doc_get_root(doc);
+    raw = yyjson_obj_get(root, "raw_matches");
+    rows = raw ? yyjson_obj_get(raw, "rows") : NULL;
+    row = rows ? yyjson_arr_get(rows, 0) : NULL;
+    ASSERT_NOT_NULL(row);
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_arr_get(row, 2)), "@utf8:@bytes:literal");
+    yyjson_doc_free(doc);
+    free(json);
+
+    tree = cbm_mcp_render_raw_preview_for_testing("@bytes:literal", false, 0, false);
+    ASSERT_NOT_NULL(tree);
+    ASSERT_NOT_NULL(strstr(tree, "@utf8:@bytes:literal"));
+    free(tree);
+    PASS();
+}
+
 TEST(search_code_match_locations_are_explicitly_bounded_and_expandable) {
     char tmp[256];
     snprintf(tmp, sizeof(tmp), "/tmp/cbm_srch_match_locations_XXXXXX");
@@ -18896,6 +18963,7 @@ SUITE(mcp) {
     RUN_TEST(search_code_preserves_multi_kib_identities_and_distinct_long_directories);
     RUN_TEST(search_code_long_raw_line_is_one_truthfully_truncated_match);
     RUN_TEST(search_code_raw_preview_centers_late_match_and_pages_content_bytes);
+    RUN_TEST(search_code_raw_preview_reversibly_pages_malformed_utf8_bytes);
     RUN_TEST(search_code_match_locations_are_explicitly_bounded_and_expandable);
     RUN_TEST(search_code_scoped_path_with_spaces_issue687);
 #ifdef _WIN32

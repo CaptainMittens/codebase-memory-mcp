@@ -12992,10 +12992,55 @@ static bool search_utf8_continuation_byte(unsigned char byte) {
     return (byte & 0xC0U) == 0x80U;
 }
 
+/* A continuation-shaped byte is not necessarily part of valid UTF-8. Adjust
+ * paging only when a complete sequence actually spans the requested boundary;
+ * malformed bytes remain independently addressable original source bytes. */
+static size_t search_utf8_page_start(const char *content, size_t total, size_t start) {
+    if (start >= total ||
+        !search_utf8_continuation_byte((unsigned char)content[start])) {
+        return start;
+    }
+    size_t earliest = start > 3U ? start - 3U : 0U;
+    for (size_t candidate = start; candidate > earliest;) {
+        candidate--;
+        if (search_utf8_continuation_byte((unsigned char)content[candidate])) {
+            continue;
+        }
+        size_t sequence = utf8_sequence_len((const unsigned char *)content + candidate,
+                                            (const unsigned char *)content + total);
+        if (sequence > 1U && candidate + sequence > start) {
+            return candidate + sequence;
+        }
+        break;
+    }
+    return start;
+}
+
+static size_t search_utf8_page_end(const char *content, size_t total, size_t end) {
+    if (end >= total || !search_utf8_continuation_byte((unsigned char)content[end])) {
+        return end;
+    }
+    size_t earliest = end > 3U ? end - 3U : 0U;
+    for (size_t candidate = end; candidate > earliest;) {
+        candidate--;
+        if (search_utf8_continuation_byte((unsigned char)content[candidate])) {
+            continue;
+        }
+        size_t sequence = utf8_sequence_len((const unsigned char *)content + candidate,
+                                            (const unsigned char *)content + total);
+        if (sequence > 1U && candidate + sequence > end) {
+            return candidate;
+        }
+        break;
+    }
+    return end;
+}
+
 /* Select one bounded raw-line preview. By default it contains the complete
  * match whenever the match itself fits. An explicit content offset pages the
- * original line independently of the raw-row cursor. Both boundaries are
- * adjusted to UTF-8 code-point boundaries and the adjusted start is reported. */
+ * original line independently of the raw-row cursor. Boundaries inside valid
+ * UTF-8 code points are adjusted and reported; malformed bytes remain exactly
+ * addressable and are reversibly encoded by the shared output boundary. */
 static void search_raw_preview(grep_match_t *match, const char *content,
                                bool raw_content_offset_set, size_t raw_content_offset,
                                bool match_known, size_t match_start, size_t match_end) {
@@ -13016,23 +13061,17 @@ static void search_raw_preview(grep_match_t *match, const char *content,
             }
         }
     }
-    while (start < total && search_utf8_continuation_byte((unsigned char)content[start])) {
-        start++;
-    }
+    start = search_utf8_page_start(content, total, start);
 
     size_t remaining = total - start;
     size_t returned = remaining < preview_capacity ? remaining : preview_capacity;
     size_t end = start + returned;
     if (end < total) {
-        while (end > start && end < total &&
-               search_utf8_continuation_byte((unsigned char)content[end])) {
-            end--;
-        }
+        end = search_utf8_page_end(content, total, end);
     }
     returned = end - start;
     memcpy(match->content, content + start, returned);
     match->content[returned] = '\0';
-    sanitize_utf8_inplace(match->content);
     match->content_start_byte = start;
     match->content_returned_bytes = returned;
     match->content_total_bytes = total;
@@ -13041,6 +13080,19 @@ static void search_raw_preview(grep_match_t *match, const char *content,
     match->match_known = match_known;
     match->content_truncated = start > 0 || end < total;
 }
+
+#ifdef CBM_ENABLE_TEST_SEAMS
+char *cbm_mcp_render_raw_preview_for_testing(const char *content, bool content_offset_set,
+                                             size_t content_offset, bool json_format) {
+    if (!content) {
+        return NULL;
+    }
+    grep_match_t raw = {.file = "fixture.raw", .line = 7};
+    search_raw_preview(&raw, content, content_offset_set, content_offset, false, 0, 0);
+    return render_search_payload(NULL, 0, &raw, 1, 1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0,
+                                 "", false, false, 0, false, json_format);
+}
+#endif
 
 static grep_match_t *collect_grep_matches(FILE *fp, const char *root_path, size_t root_len,
                                           bool has_path_filter, cbm_regex_t *path_regex,
