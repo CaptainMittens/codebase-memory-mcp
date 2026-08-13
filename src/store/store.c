@@ -3553,8 +3553,17 @@ int cbm_store_list_files(cbm_store_t *s, const char *project, char ***out, int *
         return CBM_STORE_ERR;
     }
 
+    /* A node path can name a graph-only identity such as a Folder,
+     * <python-builtins>, or another synthetic source. Published indexes have
+     * one canonical File node per scannable path, so prefer that exact set.
+     * Legacy/manual stores without File nodes retain their previous node-path
+     * fallback (minus Folder directories). Missing canonical paths stay in
+     * the list so search_code still fails closed on a stale snapshot. */
     const char *sql = "SELECT DISTINCT file_path FROM nodes "
-                      "WHERE project = ?1 AND file_path IS NOT NULL AND file_path != '' "
+                      "WHERE project = ?1 AND label != 'Folder' "
+                      "AND file_path IS NOT NULL AND file_path != '' "
+                      "AND (label = 'File' OR NOT EXISTS ("
+                      "SELECT 1 FROM nodes WHERE project = ?1 AND label = 'File')) "
                       "ORDER BY file_path";
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(s->db, sql, CBM_NOT_FOUND, &stmt, NULL) != SQLITE_OK) {
