@@ -428,6 +428,7 @@ enum {
     TREE_PREFIX_MIN_USES = 3,
     TREE_PREFIX_MIN_SAVING = 64,
     TREE_PREFIX_MIN_PERCENT = 15,
+    TREE_PREFIX_MIN_TOKEN_SHAPE_PERCENT = 1,
     TREE_PREFIX_MAX_REFS = 16,
     TREE_PREFIX_MAX_SEEDS = 1024,
     TREE_PREFIX_MAX_CANDIDATES = 512,
@@ -443,6 +444,45 @@ typedef struct {
     int id;
     bool active;
 } tree_prefix_candidate_t;
+
+/* A dependency-free lower-resolution proxy for modern tokenizer pre-splits.
+ * It deliberately undercounts words (camelCase and Unicode stay whole), while
+ * counting punctuation, whitespace runs, and the common <=3-digit chunks.
+ * Comparing complete renders catches byte wins such as `establishment.` ->
+ * `@0+` that increase real cl100k/o200k tokens despite shorter text. */
+static size_t tree_token_shape_units(const char *text) {
+    const unsigned char *p = (const unsigned char *)text;
+    size_t units = 0;
+    while (p && *p) {
+        if (isdigit(*p)) {
+            size_t digits = 0;
+            while (isdigit(*p)) {
+                digits++;
+                p++;
+            }
+            units += (digits + 2U) / 3U;
+            continue;
+        }
+        if (isalpha(*p) || *p >= 0x80U) {
+            do {
+                p++;
+            } while (*p && (isalpha(*p) || *p >= 0x80U));
+            units++;
+            continue;
+        }
+        if (isspace(*p)) {
+            do {
+                p++;
+            } while (*p && isspace(*p));
+            units++;
+            continue;
+        }
+
+        p++;
+        units++;
+    }
+    return units;
+}
 
 static bool tree_column_is_string(const bool *string_cols, int col) {
     return !string_cols || string_cols[col];
@@ -836,8 +876,15 @@ static void tree_table_rows_impl(cbm_sb_t *sb, const char *key, int nrows, const
         size_t plain_len = strlen(plain_text);
         size_t compact_len = strlen(compact_text);
         size_t saving = plain_len > compact_len ? plain_len - compact_len : 0;
-        use_compact =
-            saving >= TREE_PREFIX_MIN_SAVING && saving * 100 >= plain_len * TREE_PREFIX_MIN_PERCENT;
+        size_t plain_token_shape = tree_token_shape_units(plain_text);
+        size_t compact_token_shape = tree_token_shape_units(compact_text);
+        size_t token_shape_saving = plain_token_shape > compact_token_shape
+                                        ? plain_token_shape - compact_token_shape
+                                        : 0;
+        use_compact = saving >= TREE_PREFIX_MIN_SAVING &&
+                      saving * 100 >= plain_len * TREE_PREFIX_MIN_PERCENT &&
+                      token_shape_saving * 100 >=
+                          plain_token_shape * TREE_PREFIX_MIN_TOKEN_SHAPE_PERCENT;
     }
     if (use_compact) {
         cbm_sb_append(sb, compact_text);
