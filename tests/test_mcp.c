@@ -693,6 +693,17 @@ TEST(tree_cell_reversibly_encodes_invalid_utf8) {
     PASS();
 }
 
+TEST(output_text_accepts_embedded_nul_as_valid_utf8) {
+    const char raw[] = {'a', '\0', 'b'};
+    char *encoded = NULL;
+    size_t encoded_len = 0;
+    ASSERT_TRUE(cbm_output_encode_text(raw, sizeof(raw), &encoded, &encoded_len));
+    ASSERT_NULL(encoded); /* U+0000 is valid UTF-8; the length-aware renderer escapes it. */
+    ASSERT_EQ(encoded_len, sizeof(raw));
+    free(encoded);
+    PASS();
+}
+
 TEST(json_to_tree_uses_header_once_rows_without_losing_metadata) {
     const char *json =
         "{\"projects\":[{\"name\":\"alpha\",\"nodes\":10},{\"name\":\"beta\",\"nodes\":20}],"
@@ -729,9 +740,8 @@ TEST(json_to_tree_keeps_multiline_source_readable) {
 }
 
 TEST(json_to_tree_quotes_dynamic_keys_without_line_injection) {
-    const char *json =
-        "{\"bad\\nkey\":{\"colon:key\":1,\"\":2},"
-        "\"rows\":[{\"col\\tname\":\"x\",\"close)\":\"y\"}]}";
+    const char *json = "{\"bad\\nkey\":{\"colon:key\":1,\"\":2},"
+                       "\"rows\":[{\"col\\tname\":\"x\",\"close)\":\"y\"}]}";
     char *tree = cbm_json_to_tree(json);
     ASSERT_NOT_NULL(tree);
     ASSERT_STR_EQ(tree, "\"bad\\nkey\":\n"
@@ -739,6 +749,23 @@ TEST(json_to_tree_quotes_dynamic_keys_without_line_injection) {
                         "  \"\": 2\n"
                         "rows: 1  (cols: \"col\\u0009name\" \"close)\")\n"
                         "  x y\n");
+    free(tree);
+    PASS();
+}
+
+TEST(json_to_tree_preserves_embedded_nul_keys_values_and_table_cells) {
+    const char *json = "{\"a\\u0000b\":\"x\\u0000y\",\"multiline\":\"x\\u0000\\ny\","
+                       "\"reserved\":\"@bytes:x\\u0000y\","
+                       "\"rows\":[{\"k\\u0000x\":\"v\\u0000one\",\"k\\u0000y\":\"left\"},"
+                       "{\"k\\u0000x\":\"two\",\"k\\u0000y\":\"q\\u0000right\"}]}";
+    char *tree = cbm_json_to_tree(json);
+    ASSERT_NOT_NULL(tree);
+    ASSERT_STR_EQ(tree, "\"a\\u0000b\": \"x\\u0000y\"\n"
+                        "multiline: \"x\\u0000\\ny\"\n"
+                        "reserved: \"@utf8:@bytes:x\\u0000y\"\n"
+                        "rows: 2  (cols: \"k\\u0000x\" \"k\\u0000y\")\n"
+                        "  \"v\\u0000one\" left\n"
+                        "  two \"q\\u0000right\"\n");
     free(tree);
     PASS();
 }
@@ -998,14 +1025,13 @@ TEST(tree_table_uses_prefix_dictionary_only_when_it_materially_wins) {
     char token_cheap_values[TOKEN_CHEAP_ROWS][64];
     const char *token_cheap_cells[TOKEN_CHEAP_ROWS];
     for (int i = 0; i < TOKEN_CHEAP_ROWS; i++) {
-        snprintf(token_cheap_values[i], sizeof(token_cheap_values[i]),
-                 "establishment.handler_%04d", i);
+        snprintf(token_cheap_values[i], sizeof(token_cheap_values[i]), "establishment.handler_%04d",
+                 i);
         token_cheap_cells[i] = token_cheap_values[i];
     }
     cbm_sb_init(&sb);
     cbm_tree_table_rows_profiled(&sb, "token_cheap", TOKEN_CHEAP_ROWS, roundtrip_cols, 1,
-                                 token_cheap_cells, roundtrip_string_cols,
-                                 roundtrip_prefix_cols);
+                                 token_cheap_cells, roundtrip_string_cols, roundtrip_prefix_cols);
     out = cbm_sb_finish(&sb);
     ASSERT_NOT_NULL(out);
     ASSERT_NULL(strstr(out, "token_cheap_refs:"));
@@ -1236,10 +1262,9 @@ TEST(mcp_tools_help_list_matches_registry) {
 TEST(mcp_tools_list_latest_metadata) {
     char *json = cbm_mcp_tools_list();
     ASSERT_NOT_NULL(json);
-    ASSERT_NOT_NULL(strstr(json, "\"title\":\"Search graph\""));
-    ASSERT_NOT_NULL(strstr(json, "\"title\":\"Index repository\""));
-    ASSERT_NOT_NULL(strstr(json, "\"title\":\"Check index coverage\""));
-    ASSERT_NOT_NULL(strstr(json, "\"title\":\"Get file outline\""));
+    /* MCP tool titles are optional; name is the specified display fallback.
+     * Avoid paying for space-cased duplicates on every discovery response. */
+    ASSERT_NULL(strstr(json, "\"title\":"));
     /* No tool may declare an outputSchema. The blanket permissive schema
      * ({"type":"object","additionalProperties":true}) carried zero information
      * for clients, but its presence made spec-compliant clients read
@@ -1333,7 +1358,7 @@ TEST(mcp_metadata_byte_budget) {
 
     char *json = cbm_mcp_tools_list();
     ASSERT_NOT_NULL(json);
-    ASSERT_LT((int)strlen(json), 16 * 1024);
+    ASSERT_LT((int)strlen(json), 15 * 1024);
 
     yyjson_doc *doc = yyjson_read(json, strlen(json), 0);
     ASSERT_NOT_NULL(doc);
@@ -3785,10 +3810,10 @@ TEST(tool_search_graph_rejects_bm25_and_semantic_query_together) {
                                     "label, file_path FROM nodes;"),
               CBM_STORE_OK);
 
-    char *response = cbm_mcp_handle_tool(
-        srv, "search_graph",
-        "{\"project\":\"mixed-search-modes\",\"query\":\"mixedneedle\","
-        "\"semantic_query\":[\"meaning\"],\"format\":\"json\"}");
+    char *response =
+        cbm_mcp_handle_tool(srv, "search_graph",
+                            "{\"project\":\"mixed-search-modes\",\"query\":\"mixedneedle\","
+                            "\"semantic_query\":[\"meaning\"],\"format\":\"json\"}");
     ASSERT_NOT_NULL(response);
     ASSERT_NOT_NULL(strstr(response, "\"isError\":true"));
     ASSERT_NOT_NULL(strstr(response, "query and semantic_query are mutually exclusive"));
@@ -3873,10 +3898,10 @@ TEST(tool_search_graph_semantic_ceiling_never_emits_unusable_continuation) {
     cbm_mcp_server_set_project(srv, "semantic-ceiling");
     ASSERT_EQ(cbm_store_upsert_project(store, "semantic-ceiling", "/tmp/semantic-ceiling"),
               CBM_STORE_OK);
-    char *response = cbm_mcp_handle_tool(
-        srv, "search_graph",
-        "{\"project\":\"semantic-ceiling\",\"semantic_query\":[\"x\"],"
-        "\"semantic_offset\":99999,\"format\":\"json\"}");
+    char *response =
+        cbm_mcp_handle_tool(srv, "search_graph",
+                            "{\"project\":\"semantic-ceiling\",\"semantic_query\":[\"x\"],"
+                            "\"semantic_offset\":99999,\"format\":\"json\"}");
     ASSERT_NOT_NULL(response);
     ASSERT_NOT_NULL(strstr(response, "\"isError\":true"));
     ASSERT_NOT_NULL(strstr(response, "semantic_offset maximum is 99998"));
@@ -4605,6 +4630,219 @@ TEST(tool_query_graph_default_budget_is_truthful_and_expandable) {
     yyjson_doc_free(doc);
     free(inner);
     free(response);
+    cbm_mcp_server_free(srv);
+    PASS();
+}
+
+/* Snapshot pagination binds the effective query identity, store generation,
+ * and the complete ordered materialization. Presentation knobs can change;
+ * graph/query identity and result bytes cannot. */
+TEST(tool_query_graph_cursor_is_lossless_and_snapshot_bound) {
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    ASSERT_NOT_NULL(srv);
+    cbm_store_t *store = cbm_mcp_server_store(srv);
+    ASSERT_NOT_NULL(store);
+    const char *project = "query-cursor";
+    cbm_mcp_server_set_project(srv, project);
+    ASSERT_EQ(cbm_store_upsert_project(store, project, "/tmp/query-cursor"), CBM_STORE_OK);
+
+    char *long_file = malloc(3001U);
+    ASSERT_NOT_NULL(long_file);
+    memset(long_file, 'p', 3000U);
+    long_file[3000] = '\0';
+    for (int index = 0; index < 5; index++) {
+        char name[16];
+        char qn[48];
+        snprintf(name, sizeof(name), "row_%d", index);
+        snprintf(qn, sizeof(qn), "query-cursor.row_%d", index);
+        cbm_node_t node = {.project = project,
+                           .label = "Function",
+                           .name = name,
+                           .qualified_name = qn,
+                           .file_path = index == 4 ? long_file : "src/short.c",
+                           .start_line = index + 1,
+                           .end_line = index + 1};
+        ASSERT_GT(cbm_store_upsert_node(store, &node), 0);
+    }
+    const char *query = "MATCH (n:Function) RETURN n.qualified_name AS qn, n.file_path AS file "
+                        "ORDER BY qn";
+
+    char first_args[512];
+    snprintf(first_args, sizeof(first_args),
+             "{\"project\":\"%s\",\"query\":\"%s\",\"max_rows\":2,"
+             "\"max_output_tokens\":2000,\"format\":\"json\"}",
+             project, query);
+    char *response = cbm_mcp_handle_tool(srv, "query_graph", first_args);
+    char *inner = extract_text_content(response);
+    ASSERT_NOT_NULL(inner);
+    yyjson_doc *doc = yyjson_read(inner, strlen(inner), 0);
+    ASSERT_NOT_NULL(doc);
+    yyjson_val *root = yyjson_doc_get_root(doc);
+    yyjson_val *next_value = yyjson_obj_get(root, "next_cursor");
+    ASSERT_TRUE(yyjson_is_str(next_value));
+    char *first_cursor = strdup(yyjson_get_str(next_value));
+    ASSERT_NOT_NULL(first_cursor);
+    ASSERT_EQ(yyjson_get_int(yyjson_obj_get(root, "next_offset")), 2);
+    ASSERT_STR_EQ(
+        yyjson_get_str(yyjson_arr_get(yyjson_arr_get(yyjson_obj_get(root, "rows"), 0), 0)),
+        "query-cursor.row_0");
+    yyjson_doc_free(doc);
+    free(inner);
+    free(response);
+
+    /* max_rows, output budget, and format are presentation only. */
+    char args[1024];
+    snprintf(args, sizeof(args),
+             "{\"project\":\"%s\",\"query\":\"%s\",\"max_rows\":2,"
+             "\"max_output_tokens\":1000,\"format\":\"tree\",\"cursor\":\"%s\"}",
+             project, query, first_cursor);
+    response = cbm_mcp_handle_tool(srv, "query_graph", args);
+    inner = extract_text_content(response);
+    ASSERT_NOT_NULL(inner);
+    ASSERT_NOT_NULL(strstr(inner, "query-cursor.row_2"));
+    ASSERT_NOT_NULL(strstr(inner, "query-cursor.row_3"));
+    ASSERT_NULL(strstr(inner, "query-cursor.row_0"));
+    const char *cursor_line = strstr(inner, "next_cursor: ");
+    ASSERT_NOT_NULL(cursor_line);
+    cursor_line += strlen("next_cursor: ");
+    size_t second_cursor_len = strcspn(cursor_line, "\r\n");
+    ASSERT_TRUE(second_cursor_len > 0 && second_cursor_len < 224U);
+    char second_cursor[224];
+    memcpy(second_cursor, cursor_line, second_cursor_len);
+    second_cursor[second_cursor_len] = '\0';
+    free(inner);
+    free(response);
+
+    /* The next row exists but cannot fit at the floor. No advancing cursor is
+     * fabricated; retrying the same cursor at a higher budget resumes it. */
+    snprintf(args, sizeof(args),
+             "{\"project\":\"%s\",\"query\":\"%s\",\"max_rows\":9,"
+             "\"max_output_tokens\":128,\"format\":\"json\",\"cursor\":\"%s\"}",
+             project, query, second_cursor);
+    response = cbm_mcp_handle_tool(srv, "query_graph", args);
+    inner = extract_text_content(response);
+    ASSERT_NOT_NULL(inner);
+    doc = yyjson_read(inner, strlen(inner), 0);
+    ASSERT_NOT_NULL(doc);
+    root = yyjson_doc_get_root(doc);
+    ASSERT_EQ(yyjson_get_int(yyjson_obj_get(root, "returned")), 0);
+    ASSERT_TRUE(yyjson_get_bool(yyjson_obj_get(root, "has_more")));
+    ASSERT_NULL(yyjson_obj_get(root, "next_cursor"));
+    yyjson_doc_free(doc);
+    free(inner);
+    free(response);
+
+    snprintf(args, sizeof(args),
+             "{\"project\":\"%s\",\"query\":\"%s\",\"max_rows\":9,"
+             "\"max_output_tokens\":2000,\"format\":\"json\",\"cursor\":\"%s\"}",
+             project, query, second_cursor);
+    response = cbm_mcp_handle_tool(srv, "query_graph", args);
+    inner = extract_text_content(response);
+    ASSERT_NOT_NULL(inner);
+    doc = yyjson_read(inner, strlen(inner), 0);
+    ASSERT_NOT_NULL(doc);
+    root = yyjson_doc_get_root(doc);
+    ASSERT_EQ(yyjson_get_int(yyjson_obj_get(root, "returned")), 1);
+    ASSERT_STR_EQ(
+        yyjson_get_str(yyjson_arr_get(yyjson_arr_get(yyjson_obj_get(root, "rows"), 0), 0)),
+        "query-cursor.row_4");
+    ASSERT_FALSE(yyjson_get_bool(yyjson_obj_get(root, "has_more")));
+    yyjson_doc_free(doc);
+    free(inner);
+    free(response);
+
+    /* A changed row without a generation bump is still detected by the full
+     * ordered-materialization digest. */
+    cbm_node_t changed = {.project = project,
+                          .label = "Function",
+                          .name = "row_3",
+                          .qualified_name = "query-cursor.row_3",
+                          .file_path = "src/changed.c",
+                          .start_line = 4,
+                          .end_line = 4};
+    ASSERT_GT(cbm_store_upsert_node(store, &changed), 0);
+    snprintf(args, sizeof(args), "{\"project\":\"%s\",\"query\":\"%s\",\"cursor\":\"%s\"}", project,
+             query, first_cursor);
+    response = cbm_mcp_handle_tool(srv, "query_graph", args);
+    inner = extract_text_content(response);
+    ASSERT_NOT_NULL(inner);
+    ASSERT_NOT_NULL(strstr(inner, "stale_cursor"));
+    ASSERT_NOT_NULL(strstr(response, "isError"));
+    free(inner);
+    free(response);
+
+    /* Query identity, explicit offsets, cursor bytes, and generation are all
+     * independently fail-closed. */
+    snprintf(args, sizeof(args),
+             "{\"project\":\"%s\",\"query\":\"MATCH (n) RETURN n.name\","
+             "\"cursor\":\"%s\"}",
+             project, first_cursor);
+    response = cbm_mcp_handle_tool(srv, "query_graph", args);
+    inner = extract_text_content(response);
+    ASSERT_NOT_NULL(strstr(inner, "cursor_params_mismatch"));
+    free(inner);
+    free(response);
+
+    snprintf(args, sizeof(args),
+             "{\"project\":\"%s\",\"query\":\"%s\",\"offset\":1,"
+             "\"cursor\":\"%s\"}",
+             project, query, first_cursor);
+    response = cbm_mcp_handle_tool(srv, "query_graph", args);
+    inner = extract_text_content(response);
+    ASSERT_NOT_NULL(strstr(inner, "cannot be combined"));
+    free(inner);
+    free(response);
+
+    char *tampered = strdup(first_cursor);
+    ASSERT_NOT_NULL(tampered);
+    size_t tampered_len = strlen(tampered);
+    tampered[tampered_len - 1U] = tampered[tampered_len - 1U] == '0' ? '1' : '0';
+    snprintf(args, sizeof(args), "{\"project\":\"%s\",\"query\":\"%s\",\"cursor\":\"%s\"}", project,
+             query, tampered);
+    response = cbm_mcp_handle_tool(srv, "query_graph", args);
+    inner = extract_text_content(response);
+    ASSERT_NOT_NULL(strstr(inner, "invalid_cursor"));
+    free(inner);
+    free(response);
+    free(tampered);
+
+    /* Mint under the changed materialization, then invalidate by generation. */
+    response = cbm_mcp_handle_tool(srv, "query_graph", first_args);
+    inner = extract_text_content(response);
+    doc = yyjson_read(inner, strlen(inner), 0);
+    ASSERT_NOT_NULL(doc);
+    next_value = yyjson_obj_get(yyjson_doc_get_root(doc), "next_cursor");
+    ASSERT_TRUE(yyjson_is_str(next_value));
+    char *generation_cursor = strdup(yyjson_get_str(next_value));
+    yyjson_doc_free(doc);
+    free(inner);
+    free(response);
+    ASSERT_NOT_NULL(generation_cursor);
+    ASSERT_EQ(cbm_store_upsert_project(store, project, "/tmp/query-cursor"), CBM_STORE_OK);
+    snprintf(args, sizeof(args), "{\"project\":\"%s\",\"query\":\"%s\",\"cursor\":\"%s\"}", project,
+             query, generation_cursor);
+    response = cbm_mcp_handle_tool(srv, "query_graph", args);
+    inner = extract_text_content(response);
+    ASSERT_NOT_NULL(strstr(inner, "stale_cursor"));
+    free(inner);
+    free(response);
+
+    /* Corrupt generation metadata must not silently degrade a fresh request
+     * to mutation-unsafe raw-offset pagination. */
+    ASSERT_EQ(cbm_store_exec(store, "UPDATE store_meta SET v='not-a-number' "
+                                    "WHERE k='mutation_gen';"),
+              CBM_STORE_OK);
+    response = cbm_mcp_handle_tool(srv, "query_graph", first_args);
+    inner = extract_text_content(response);
+    ASSERT_NOT_NULL(inner);
+    ASSERT_NOT_NULL(strstr(inner, "index_metadata_error"));
+    ASSERT_NOT_NULL(strstr(response, "isError"));
+    free(inner);
+    free(response);
+
+    free(generation_cursor);
+    free(first_cursor);
+    free(long_file);
     cbm_mcp_server_free(srv);
     PASS();
 }
@@ -8188,8 +8426,7 @@ TEST(search_code_scans_complete_stream_and_ranks_globally) {
         yyjson_val *rows = root ? yyjson_obj_get(root, "rows") : NULL;
         yyjson_val *first = rows ? yyjson_arr_get(rows, 0) : NULL;
         bool complete_and_globally_ranked =
-            root && first &&
-            yyjson_get_int(yyjson_obj_get(root, "total_grep_matches")) == 502 &&
+            root && first && yyjson_get_int(yyjson_obj_get(root, "total_grep_matches")) == 502 &&
             strcmp(yyjson_get_str(yyjson_obj_get(root, "total_relation")), "eq") == 0 &&
             yyjson_obj_get(root, "scan_saturated") == NULL &&
             yyjson_get_int(yyjson_obj_get(root, "total_results")) == 2 &&
@@ -8250,10 +8487,10 @@ TEST(search_code_fails_closed_when_complete_scan_is_impossible) {
                           .end_line = 1};
     ASSERT_GT(cbm_store_upsert_node(store, &missing), 0);
 
-    char *response = cbm_mcp_handle_tool(
-        srv, "search_code",
-        "{\"pattern\":\"NEVER_SCANNED\",\"project\":\"search-incomplete\","
-        "\"format\":\"json\"}");
+    char *response =
+        cbm_mcp_handle_tool(srv, "search_code",
+                            "{\"pattern\":\"NEVER_SCANNED\",\"project\":\"search-incomplete\","
+                            "\"format\":\"json\"}");
     ASSERT_NOT_NULL(response);
     ASSERT_NOT_NULL(strstr(response, "\"isError\":true"));
     ASSERT_NOT_NULL(strstr(response, "complete result set was scanned"));
@@ -8284,10 +8521,9 @@ TEST(search_code_recursive_fallback_propagates_discovery_failures) {
     snprintf(victim, sizeof(victim), "%s/victim.c", tmp);
     ASSERT_EQ(cbm_mkdir(bin_dir), 0);
     ASSERT_EQ(cbm_mkdir(sort_bin_dir), 0);
-    ASSERT_EQ(th_write_file(fake_find,
-                            "#!/bin/sh\n"
-                            "printf '%s\\000' \"$1/victim.c\"\n"
-                            "exit 73\n"),
+    ASSERT_EQ(th_write_file(fake_find, "#!/bin/sh\n"
+                                       "printf '%s\\000' \"$1/victim.c\"\n"
+                                       "exit 73\n"),
               0);
     ASSERT_EQ(chmod(fake_find, 0700), 0);
     ASSERT_EQ(th_write_file(fake_sort, "#!/bin/sh\nexit 74\n"), 0);
@@ -8308,8 +8544,7 @@ TEST(search_code_recursive_fallback_propagates_discovery_failures) {
     path_backup.value = path ? strdup(path) : NULL;
     ASSERT_TRUE(!path || path_backup.value != NULL);
     char forced_path[CBM_SZ_2K];
-    int forced_length =
-        snprintf(forced_path, sizeof(forced_path), "%s:/usr/bin:/bin", bin_dir);
+    int forced_length = snprintf(forced_path, sizeof(forced_path), "%s:/usr/bin:/bin", bin_dir);
     ASSERT_TRUE(forced_length > 0 && (size_t)forced_length < sizeof(forced_path));
     ASSERT_EQ(cbm_setenv("PATH", forced_path, 1), 0);
 
@@ -8317,9 +8552,9 @@ TEST(search_code_recursive_fallback_propagates_discovery_failures) {
         srv, "search_code",
         "{\"pattern\":\"FALLBACK_STATUS_NEEDLE\",\"project\":\"search-find-status\","
         "\"file_pattern\":\"*.c\",\"format\":\"json\"}");
-    bool discovery_failure_propagated =
-        failed_response && strstr(failed_response, "\"isError\":true") &&
-        strstr(failed_response, "complete result set was scanned");
+    bool discovery_failure_propagated = failed_response &&
+                                        strstr(failed_response, "\"isError\":true") &&
+                                        strstr(failed_response, "complete result set was scanned");
     free(failed_response);
 
     int forced_sort_length =
@@ -8330,9 +8565,9 @@ TEST(search_code_recursive_fallback_propagates_discovery_failures) {
         srv, "search_code",
         "{\"pattern\":\"FALLBACK_STATUS_NEEDLE\",\"project\":\"search-find-status\","
         "\"file_pattern\":\"*.c\",\"format\":\"json\"}");
-    bool sort_failure_propagated =
-        sort_failed_response && strstr(sort_failed_response, "\"isError\":true") &&
-        strstr(sort_failed_response, "complete result set was scanned");
+    bool sort_failure_propagated = sort_failed_response &&
+                                   strstr(sort_failed_response, "\"isError\":true") &&
+                                   strstr(sort_failed_response, "complete result set was scanned");
     free(sort_failed_response);
     mcp_test_restore_env(&path_backup, 1U);
 
@@ -8497,33 +8732,31 @@ TEST(search_code_raw_and_directory_remainders_are_independently_pageable) {
         ASSERT_GT(cbm_store_upsert_node(store, &nodes[i]), 0);
     }
 
-    char *first_response = cbm_mcp_handle_tool(
-        srv, "search_code",
-        "{\"pattern\":\"PAGE_NEEDLE\",\"project\":\"search-section-pages\","
-        "\"limit\":2,\"raw_limit\":1,\"directory_limit\":1,"
-        "\"max_output_tokens\":10000,\"format\":\"json\"}");
+    char *first_response =
+        cbm_mcp_handle_tool(srv, "search_code",
+                            "{\"pattern\":\"PAGE_NEEDLE\",\"project\":\"search-section-pages\","
+                            "\"limit\":2,\"raw_limit\":1,\"directory_limit\":1,"
+                            "\"max_output_tokens\":10000,\"format\":\"json\"}");
     char *first_inner = extract_text_content(first_response);
-    yyjson_doc *first_doc =
-        first_inner ? yyjson_read(first_inner, strlen(first_inner), 0) : NULL;
+    yyjson_doc *first_doc = first_inner ? yyjson_read(first_inner, strlen(first_inner), 0) : NULL;
     yyjson_val *first_root = first_doc ? yyjson_doc_get_root(first_doc) : NULL;
     yyjson_val *first_raw = first_root ? yyjson_obj_get(first_root, "raw_matches") : NULL;
     yyjson_val *first_raw_rows = first_raw ? yyjson_obj_get(first_raw, "rows") : NULL;
     yyjson_val *first_raw_row = first_raw_rows ? yyjson_arr_get(first_raw_rows, 0) : NULL;
-    yyjson_val *first_directories =
-        first_root ? yyjson_obj_get(first_root, "directories") : NULL;
+    yyjson_val *first_directories = first_root ? yyjson_obj_get(first_root, "directories") : NULL;
     bool first_page_bound =
         first_root && yyjson_get_int(yyjson_obj_get(first_root, "raw_next_offset")) == 1 &&
-        yyjson_get_int(yyjson_obj_get(first_root, "directory_next_offset")) == 1 &&
-        first_raw_row && strcmp(yyjson_get_str(yyjson_arr_get(first_raw_row, 0)), "raw-a.txt") == 0 &&
+        yyjson_get_int(yyjson_obj_get(first_root, "directory_next_offset")) == 1 && first_raw_row &&
+        strcmp(yyjson_get_str(yyjson_arr_get(first_raw_row, 0)), "raw-a.txt") == 0 &&
         yyjson_obj_get(first_directories, "graph-a/") != NULL &&
         yyjson_obj_get(first_directories, "graph-b/") == NULL;
 
-    char *second_response = cbm_mcp_handle_tool(
-        srv, "search_code",
-        "{\"pattern\":\"PAGE_NEEDLE\",\"project\":\"search-section-pages\","
-        "\"limit\":2,\"raw_limit\":1,\"raw_offset\":1,"
-        "\"directory_limit\":1,\"directory_offset\":1,"
-        "\"max_output_tokens\":10000,\"format\":\"json\"}");
+    char *second_response =
+        cbm_mcp_handle_tool(srv, "search_code",
+                            "{\"pattern\":\"PAGE_NEEDLE\",\"project\":\"search-section-pages\","
+                            "\"limit\":2,\"raw_limit\":1,\"raw_offset\":1,"
+                            "\"directory_limit\":1,\"directory_offset\":1,"
+                            "\"max_output_tokens\":10000,\"format\":\"json\"}");
     char *second_inner = extract_text_content(second_response);
     yyjson_doc *second_doc =
         second_inner ? yyjson_read(second_inner, strlen(second_inner), 0) : NULL;
@@ -8541,14 +8774,13 @@ TEST(search_code_raw_and_directory_remainders_are_independently_pageable) {
         !yyjson_get_bool(yyjson_obj_get(second_root, "raw_has_more")) &&
         !yyjson_get_bool(yyjson_obj_get(second_root, "directories_has_more"));
 
-    char *floor_response = cbm_mcp_handle_tool(
-        srv, "search_code",
-        "{\"pattern\":\"PAGE_NEEDLE\",\"project\":\"search-section-pages\","
-        "\"result_limit\":1,\"raw_limit\":1,\"directory_limit\":1,"
-        "\"max_output_tokens\":128,\"format\":\"json\"}");
+    char *floor_response =
+        cbm_mcp_handle_tool(srv, "search_code",
+                            "{\"pattern\":\"PAGE_NEEDLE\",\"project\":\"search-section-pages\","
+                            "\"result_limit\":1,\"raw_limit\":1,\"directory_limit\":1,"
+                            "\"max_output_tokens\":128,\"format\":\"json\"}");
     char *floor_inner = extract_text_content(floor_response);
-    yyjson_doc *floor_doc =
-        floor_inner ? yyjson_read(floor_inner, strlen(floor_inner), 0) : NULL;
+    yyjson_doc *floor_doc = floor_inner ? yyjson_read(floor_inner, strlen(floor_inner), 0) : NULL;
     yyjson_val *floor_root = floor_doc ? yyjson_doc_get_root(floor_doc) : NULL;
     bool json_floor_is_bounded_and_resumable =
         floor_root && strlen(floor_inner) <= 128U * 4U &&
@@ -8565,11 +8797,11 @@ TEST(search_code_raw_and_directory_remainders_are_independently_pageable) {
     free(floor_inner);
     free(floor_response);
 
-    floor_response = cbm_mcp_handle_tool(
-        srv, "search_code",
-        "{\"pattern\":\"PAGE_NEEDLE\",\"project\":\"search-section-pages\","
-        "\"result_limit\":1,\"raw_limit\":1,\"directory_limit\":1,"
-        "\"max_output_tokens\":128}");
+    floor_response =
+        cbm_mcp_handle_tool(srv, "search_code",
+                            "{\"pattern\":\"PAGE_NEEDLE\",\"project\":\"search-section-pages\","
+                            "\"result_limit\":1,\"raw_limit\":1,\"directory_limit\":1,"
+                            "\"max_output_tokens\":128}");
     floor_inner = extract_text_content(floor_response);
     bool compact_floor_is_bounded_and_resumable =
         floor_inner && strlen(floor_inner) <= 128U * 4U &&
@@ -9039,8 +9271,7 @@ TEST(search_code_raw_preview_centers_late_match_and_pages_content_bytes) {
 }
 
 TEST(search_code_raw_preview_reversibly_pages_malformed_utf8_bytes) {
-    const char malformed[] = {'H', 'E', 'A', 'D', (char)0x80, (char)0xff,
-                              'T', 'A', 'I', 'L', '\0'};
+    const char malformed[] = {'H', 'E', 'A', 'D', (char)0x80, (char)0xff, 'T', 'A', 'I', 'L', '\0'};
 
     char *json = cbm_mcp_render_raw_preview_for_testing(malformed, false, 0, true);
     ASSERT_NOT_NULL(json);
@@ -9051,8 +9282,7 @@ TEST(search_code_raw_preview_reversibly_pages_malformed_utf8_bytes) {
     yyjson_val *rows = raw ? yyjson_obj_get(raw, "rows") : NULL;
     yyjson_val *row = rows ? yyjson_arr_get(rows, 0) : NULL;
     ASSERT_NOT_NULL(row);
-    ASSERT_STR_EQ(yyjson_get_str(yyjson_arr_get(row, 2)),
-                  "@bytes:4845414480ff5441494c");
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_arr_get(row, 2)), "@bytes:4845414480ff5441494c");
     ASSERT_EQ((int)yyjson_get_uint(yyjson_arr_get(row, 3)), 0);
     ASSERT_EQ((int)yyjson_get_uint(yyjson_arr_get(row, 4)), 10);
     ASSERT_EQ((int)yyjson_get_uint(yyjson_arr_get(row, 5)), 10);
@@ -13041,11 +13271,11 @@ TEST(tool_detect_changes_invalid_base_is_an_error) {
     ASSERT_EQ(cbm_store_upsert_project(store, project, repo), CBM_STORE_OK);
     cbm_mcp_server_set_project(srv, project);
 
-    char *response = cbm_mcp_handle_tool(
-        srv, "detect_changes",
-        "{\"project\":\"detect-invalid-base-project\","
-        "\"base_branch\":\"refs/heads/cbm-base-that-does-not-exist\","
-        "\"scope\":\"files\",\"format\":\"json\"}");
+    char *response =
+        cbm_mcp_handle_tool(srv, "detect_changes",
+                            "{\"project\":\"detect-invalid-base-project\","
+                            "\"base_branch\":\"refs/heads/cbm-base-that-does-not-exist\","
+                            "\"scope\":\"files\",\"format\":\"json\"}");
     bool errored = response_contains_json_fragment(response, "\"isError\":true");
 
     free(response);
@@ -13067,7 +13297,9 @@ TEST(tool_detect_changes_preserves_utf8_git_path_and_impact_seed) {
     snprintf(cache, sizeof(cache), "%s/cbm-detect-utf8-path-cache-XXXXXX", cbm_tmpdir());
     ASSERT_NOT_NULL(cbm_mkdtemp(cache));
 
-    static const char utf8_path[] = "caf" "\xC3\xA9" ".c";
+    static const char utf8_path[] = "caf"
+                                    "\xC3\xA9"
+                                    ".c";
     char source_path[CBM_SZ_4K];
     snprintf(source_path, sizeof(source_path), "%s/%s", repo, utf8_path);
     ASSERT_EQ(th_write_file(source_path, "int cafe_value = 1;\n"), 0);
@@ -13118,17 +13350,15 @@ TEST(tool_detect_changes_preserves_utf8_git_path_and_impact_seed) {
                          .end_line = 1};
     int64_t caller_id = cbm_store_upsert_node(store, &caller);
     ASSERT_GT(caller_id, 0);
-    cbm_edge_t edge = {.project = project,
-                       .source_id = caller_id,
-                       .target_id = seed_id,
-                       .type = "CALLS"};
+    cbm_edge_t edge = {
+        .project = project, .source_id = caller_id, .target_id = seed_id, .type = "CALLS"};
     ASSERT_GT(cbm_store_insert_edge(store, &edge), 0);
 
-    char *response = cbm_mcp_handle_tool(
-        srv, "detect_changes",
-        "{\"project\":\"detect-utf8-path-project\",\"base_branch\":\"HEAD\","
-        "\"scope\":\"impact\",\"depth\":1,\"max_output_tokens\":10000,"
-        "\"format\":\"json\"}");
+    char *response =
+        cbm_mcp_handle_tool(srv, "detect_changes",
+                            "{\"project\":\"detect-utf8-path-project\",\"base_branch\":\"HEAD\","
+                            "\"scope\":\"impact\",\"depth\":1,\"max_output_tokens\":10000,"
+                            "\"format\":\"json\"}");
     char *inner = extract_text_content(response);
     yyjson_doc *doc = inner ? yyjson_read(inner, strlen(inner), 0) : NULL;
     yyjson_val *root = doc ? yyjson_doc_get_root(doc) : NULL;
@@ -13139,9 +13369,8 @@ TEST(tool_detect_changes_preserves_utf8_git_path_and_impact_seed) {
     bool path_preserved = changed_path && yyjson_is_str(changed_path) &&
                           strcmp(yyjson_get_str(changed_path), utf8_path) == 0;
     bool seed_found = root && yyjson_get_int(yyjson_obj_get(root, "seed_symbols")) == 1;
-    bool impact_found =
-        first_impact &&
-        strcmp(yyjson_get_str(yyjson_obj_get(first_impact, "qn")), "fixture.cafe_caller") == 0;
+    bool impact_found = first_impact && strcmp(yyjson_get_str(yyjson_obj_get(first_impact, "qn")),
+                                               "fixture.cafe_caller") == 0;
 
     yyjson_doc_free(doc);
     free(inner);
@@ -13169,11 +13398,11 @@ TEST(tool_detect_changes_finds_nested_untracked_file_and_impact_seed) {
     const char *const init_args[] = {"init", "-q", NULL};
     const char *const add_args[] = {"add", "-A", NULL};
     const char *const commit_args[] = {
-        "-c",      "user.name=cbm-test",
-        "-c",      "user.email=cbm-test@example.invalid",
-        "-c",      "commit.gpgsign=false",
-        "commit",  "-q",
-        "-m",      "fixture",
+        "-c",     "user.name=cbm-test",
+        "-c",     "user.email=cbm-test@example.invalid",
+        "-c",     "commit.gpgsign=false",
+        "commit", "-q",
+        "-m",     "fixture",
         NULL,
     };
     ASSERT_EQ(mcp_test_git(repo, init_args), 0);
@@ -13218,10 +13447,8 @@ TEST(tool_detect_changes_finds_nested_untracked_file_and_impact_seed) {
                          .end_line = 1};
     int64_t caller_id = cbm_store_upsert_node(store, &caller);
     ASSERT_GT(caller_id, 0);
-    cbm_edge_t edge = {.project = project,
-                       .source_id = caller_id,
-                       .target_id = seed_id,
-                       .type = "CALLS"};
+    cbm_edge_t edge = {
+        .project = project, .source_id = caller_id, .target_id = seed_id, .type = "CALLS"};
     ASSERT_GT(cbm_store_insert_edge(store, &edge), 0);
 
     char *response = cbm_mcp_handle_tool(
@@ -13236,14 +13463,12 @@ TEST(tool_detect_changes_finds_nested_untracked_file_and_impact_seed) {
     yyjson_val *changed_path = changed_files ? yyjson_arr_get(changed_files, 0) : NULL;
     yyjson_val *impacted = root ? yyjson_obj_get(root, "impacted") : NULL;
     yyjson_val *first_impact = impacted ? yyjson_arr_get(impacted, 0) : NULL;
-    bool exact_nested_path =
-        root && yyjson_get_int(yyjson_obj_get(root, "changed_total")) == 1 && changed_path &&
-        strcmp(yyjson_get_str(changed_path), "newdir/new.c") == 0;
+    bool exact_nested_path = root && yyjson_get_int(yyjson_obj_get(root, "changed_total")) == 1 &&
+                             changed_path &&
+                             strcmp(yyjson_get_str(changed_path), "newdir/new.c") == 0;
     bool seed_found = root && yyjson_get_int(yyjson_obj_get(root, "seed_symbols")) == 1;
-    bool impact_found =
-        first_impact &&
-        strcmp(yyjson_get_str(yyjson_obj_get(first_impact, "qn")),
-               "fixture.untracked_caller") == 0;
+    bool impact_found = first_impact && strcmp(yyjson_get_str(yyjson_obj_get(first_impact, "qn")),
+                                               "fixture.untracked_caller") == 0;
 
     yyjson_doc_free(doc);
     free(inner);
@@ -13277,11 +13502,11 @@ TEST(tool_detect_changes_escapes_newline_path_in_tree_and_round_trips_json) {
     const char *const init_args[] = {"init", "-q", NULL};
     const char *const add_args[] = {"add", "-A", NULL};
     const char *const commit_args[] = {
-        "-c",      "user.name=cbm-test",
-        "-c",      "user.email=cbm-test@example.invalid",
-        "-c",      "commit.gpgsign=false",
-        "commit",  "-q",
-        "-m",      "fixture",
+        "-c",     "user.name=cbm-test",
+        "-c",     "user.email=cbm-test@example.invalid",
+        "-c",     "commit.gpgsign=false",
+        "commit", "-q",
+        "-m",     "fixture",
         NULL,
     };
     ASSERT_EQ(mcp_test_git(repo, init_args), 0);
@@ -13304,28 +13529,25 @@ TEST(tool_detect_changes_escapes_newline_path_in_tree_and_round_trips_json) {
     ASSERT_EQ(cbm_store_upsert_project(store, project, repo), CBM_STORE_OK);
     cbm_mcp_server_set_project(srv, project);
 
-    char *tree_response = cbm_mcp_handle_tool(
-        srv, "detect_changes",
-        "{\"project\":\"detect-newline-path-project\",\"base_branch\":\"HEAD\","
-        "\"scope\":\"files\",\"max_output_tokens\":10000}");
+    char *tree_response =
+        cbm_mcp_handle_tool(srv, "detect_changes",
+                            "{\"project\":\"detect-newline-path-project\",\"base_branch\":\"HEAD\","
+                            "\"scope\":\"files\",\"max_output_tokens\":10000}");
     char *tree = extract_text_content(tree_response);
-    bool escaped_single_cell =
-        tree && strstr(tree, "\"safe.c\\nseed_symbols: 777\"") != NULL;
-    bool no_injected_scalar =
-        tree && strstr(tree, "\nseed_symbols: 777\n") == NULL;
+    bool escaped_single_cell = tree && strstr(tree, "\"safe.c\\nseed_symbols: 777\"") != NULL;
+    bool no_injected_scalar = tree && strstr(tree, "\nseed_symbols: 777\n") == NULL;
 
-    char *json_response = cbm_mcp_handle_tool(
-        srv, "detect_changes",
-        "{\"project\":\"detect-newline-path-project\",\"base_branch\":\"HEAD\","
-        "\"scope\":\"files\",\"max_output_tokens\":10000,\"format\":\"json\"}");
+    char *json_response =
+        cbm_mcp_handle_tool(srv, "detect_changes",
+                            "{\"project\":\"detect-newline-path-project\",\"base_branch\":\"HEAD\","
+                            "\"scope\":\"files\",\"max_output_tokens\":10000,\"format\":\"json\"}");
     char *json = extract_text_content(json_response);
     yyjson_doc *doc = json ? yyjson_read(json, strlen(json), 0) : NULL;
     yyjson_val *root = doc ? yyjson_doc_get_root(doc) : NULL;
     yyjson_val *changed_files = root ? yyjson_obj_get(root, "changed_files") : NULL;
     yyjson_val *changed_path = changed_files ? yyjson_arr_get(changed_files, 0) : NULL;
-    bool json_round_trip =
-        root && yyjson_get_int(yyjson_obj_get(root, "changed_total")) == 1 && changed_path &&
-        strcmp(yyjson_get_str(changed_path), newline_path) == 0;
+    bool json_round_trip = root && yyjson_get_int(yyjson_obj_get(root, "changed_total")) == 1 &&
+                           changed_path && strcmp(yyjson_get_str(changed_path), newline_path) == 0;
 
     yyjson_doc_free(doc);
     free(json);
@@ -13361,11 +13583,11 @@ TEST(tool_detect_changes_staged_rename_uses_exact_destination_record) {
     const char *const init_args[] = {"init", "-q", NULL};
     const char *const add_args[] = {"add", "-A", NULL};
     const char *const commit_args[] = {
-        "-c",      "user.name=cbm-test",
-        "-c",      "user.email=cbm-test@example.invalid",
-        "-c",      "commit.gpgsign=false",
-        "commit",  "-q",
-        "-m",      "fixture",
+        "-c",     "user.name=cbm-test",
+        "-c",     "user.email=cbm-test@example.invalid",
+        "-c",     "commit.gpgsign=false",
+        "commit", "-q",
+        "-m",     "fixture",
         NULL,
     };
     ASSERT_EQ(mcp_test_git(repo, init_args), 0);
@@ -13392,19 +13614,18 @@ TEST(tool_detect_changes_staged_rename_uses_exact_destination_record) {
     ASSERT_EQ(cbm_store_upsert_project(store, project, repo), CBM_STORE_OK);
     cbm_mcp_server_set_project(srv, project);
 
-    char *response = cbm_mcp_handle_tool(
-        srv, "detect_changes",
-        "{\"project\":\"detect-rename-path-project\",\"base_branch\":\"HEAD\","
-        "\"scope\":\"files\",\"max_output_tokens\":10000,\"format\":\"json\"}");
+    char *response =
+        cbm_mcp_handle_tool(srv, "detect_changes",
+                            "{\"project\":\"detect-rename-path-project\",\"base_branch\":\"HEAD\","
+                            "\"scope\":\"files\",\"max_output_tokens\":10000,\"format\":\"json\"}");
     char *inner = extract_text_content(response);
     yyjson_doc *doc = inner ? yyjson_read(inner, strlen(inner), 0) : NULL;
     yyjson_val *root = doc ? yyjson_doc_get_root(doc) : NULL;
     yyjson_val *changed_files = root ? yyjson_obj_get(root, "changed_files") : NULL;
     yyjson_val *changed_path = changed_files ? yyjson_arr_get(changed_files, 0) : NULL;
-    bool exact_destination =
-        root && yyjson_get_int(yyjson_obj_get(root, "changed_total")) == 1 && changed_files &&
-        yyjson_arr_size(changed_files) == 1 && changed_path &&
-        strcmp(yyjson_get_str(changed_path), destination) == 0;
+    bool exact_destination = root && yyjson_get_int(yyjson_obj_get(root, "changed_total")) == 1 &&
+                             changed_files && yyjson_arr_size(changed_files) == 1 && changed_path &&
+                             strcmp(yyjson_get_str(changed_path), destination) == 0;
 
     yyjson_doc_free(doc);
     free(inner);
@@ -13694,6 +13915,7 @@ TEST(tool_detect_changes_pages_changed_files_and_honors_semantic_budget) {
     ASSERT_EQ(yyjson_get_int(yyjson_obj_get(root, "changed_total")), 25);
     ASSERT_EQ(yyjson_get_int(yyjson_obj_get(root, "changed_returned")), 20);
     ASSERT_TRUE(yyjson_get_bool(yyjson_obj_get(root, "changed_has_more")));
+    ASSERT_TRUE(yyjson_get_bool(yyjson_obj_get(root, "truncated")));
     ASSERT_EQ(yyjson_get_int(yyjson_obj_get(root, "changed_next_offset")), 20);
     ASSERT_EQ(yyjson_arr_size(yyjson_obj_get(root, "changed_files")), 20);
     yyjson_val *changed_cursor_value = yyjson_obj_get(root, "changed_next_cursor");
@@ -13722,6 +13944,7 @@ TEST(tool_detect_changes_pages_changed_files_and_honors_semantic_budget) {
     ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(root, "impacted_total_relation")), "eq");
     ASSERT_EQ(yyjson_get_int(yyjson_obj_get(root, "impacted_shown")), 1);
     ASSERT_TRUE(yyjson_get_bool(yyjson_obj_get(root, "impacted_has_more")));
+    ASSERT_TRUE(yyjson_get_bool(yyjson_obj_get(root, "truncated")));
     ASSERT_EQ(yyjson_get_int(yyjson_obj_get(root, "impacted_next_offset")), 1);
     ASSERT_TRUE(yyjson_is_str(yyjson_obj_get(root, "impacted_next_cursor")));
     yyjson_val *first_impacted = yyjson_arr_get_first(yyjson_obj_get(root, "impacted"));
@@ -13750,6 +13973,7 @@ TEST(tool_detect_changes_pages_changed_files_and_honors_semantic_budget) {
     ASSERT_NOT_NULL(strstr(inner, long_detect_qn));
     ASSERT_NOT_NULL(strstr(inner, long_detect_file));
     ASSERT_NOT_NULL(strstr(inner, "module_continuation_requires_positive_limit: true"));
+    ASSERT_NOT_NULL(strstr(inner, "truncated: true"));
     ASSERT_NULL(strstr(inner, "module_continuation_requires_higher_budget"));
     free(inner);
     free(response);
@@ -13804,6 +14028,7 @@ TEST(tool_detect_changes_pages_changed_files_and_honors_semantic_budget) {
     root = yyjson_doc_get_root(doc);
     ASSERT_EQ(yyjson_get_int(yyjson_obj_get(root, "changed_returned")), 5);
     ASSERT_FALSE(yyjson_get_bool(yyjson_obj_get(root, "changed_has_more")));
+    ASSERT_FALSE(yyjson_get_bool(yyjson_obj_get(root, "truncated")));
     ASSERT_EQ(yyjson_arr_size(yyjson_obj_get(root, "changed_files")), 5);
     yyjson_doc_free(doc);
     free(inner);
@@ -13870,6 +14095,7 @@ TEST(tool_detect_changes_pages_changed_files_and_honors_semantic_budget) {
     root = yyjson_doc_get_root(doc);
     ASSERT_EQ(yyjson_get_int(yyjson_obj_get(root, "changed_returned")), 5);
     ASSERT_FALSE(yyjson_get_bool(yyjson_obj_get(root, "changed_has_more")));
+    ASSERT_FALSE(yyjson_get_bool(yyjson_obj_get(root, "truncated")));
     yyjson_doc_free(doc);
     free(inner);
     free(response);
@@ -13880,10 +14106,9 @@ TEST(tool_detect_changes_pages_changed_files_and_honors_semantic_budget) {
      * and an already-issued cursor must fail closed while the snapshot cannot
      * be re-established. */
     cbm_mcp_server_set_snapshot_read_test_hook(srv, mcp_snapshot_read_hook_probe, seed_file);
-    response = cbm_mcp_handle_tool(
-        srv, "detect_changes",
-        "{\"project\":\"detect-pages-project\",\"base_branch\":\"HEAD\","
-        "\"scope\":\"files\",\"format\":\"json\"}");
+    response = cbm_mcp_handle_tool(srv, "detect_changes",
+                                   "{\"project\":\"detect-pages-project\",\"base_branch\":\"HEAD\","
+                                   "\"scope\":\"files\",\"format\":\"json\"}");
     ASSERT_NOT_NULL(response);
     inner = extract_text_content(response);
     ASSERT_NOT_NULL(inner);
@@ -13926,10 +14151,9 @@ TEST(tool_detect_changes_pages_changed_files_and_honors_semantic_budget) {
     char changed_link[CBM_SZ_4K];
     snprintf(changed_link, sizeof(changed_link), "%s/changed-link.c", repo);
     ASSERT_EQ(symlink("first-target", changed_link), 0);
-    response = cbm_mcp_handle_tool(
-        srv, "detect_changes",
-        "{\"project\":\"detect-pages-project\",\"base_branch\":\"HEAD\","
-        "\"scope\":\"files\",\"format\":\"json\"}");
+    response = cbm_mcp_handle_tool(srv, "detect_changes",
+                                   "{\"project\":\"detect-pages-project\",\"base_branch\":\"HEAD\","
+                                   "\"scope\":\"files\",\"format\":\"json\"}");
     ASSERT_NOT_NULL(response);
     inner = extract_text_content(response);
     ASSERT_NOT_NULL(inner);
@@ -13954,10 +14178,9 @@ TEST(tool_detect_changes_pages_changed_files_and_honors_semantic_budget) {
     ASSERT_EQ(mcp_test_git(repo, add_deleted_args), 0);
     ASSERT_EQ(mcp_test_git(repo, commit_args), 0);
     ASSERT_EQ(cbm_unlink(deleted_path), 0);
-    response = cbm_mcp_handle_tool(
-        srv, "detect_changes",
-        "{\"project\":\"detect-pages-project\",\"base_branch\":\"HEAD\","
-        "\"scope\":\"files\",\"format\":\"json\"}");
+    response = cbm_mcp_handle_tool(srv, "detect_changes",
+                                   "{\"project\":\"detect-pages-project\",\"base_branch\":\"HEAD\","
+                                   "\"scope\":\"files\",\"format\":\"json\"}");
     ASSERT_NOT_NULL(response);
     inner = extract_text_content(response);
     ASSERT_NOT_NULL(inner);
@@ -13968,6 +14191,32 @@ TEST(tool_detect_changes_pages_changed_files_and_honors_semantic_budget) {
     ASSERT_NULL(yyjson_obj_get(root, "snapshot_cursor_unavailable"));
     ASSERT_TRUE(yyjson_is_str(yyjson_obj_get(root, "changed_next_cursor")));
     yyjson_doc_free(doc);
+    free(inner);
+    free(response);
+
+    /* Malformed generation metadata invalidates both a fresh snapshot and
+     * cursor replay. Never mint an empty-generation continuation. */
+    ASSERT_EQ(cbm_store_exec(store, "UPDATE store_meta SET v='not-a-number' "
+                                    "WHERE k='mutation_gen';"),
+              CBM_STORE_OK);
+    response = cbm_mcp_handle_tool(srv, "detect_changes",
+                                   "{\"project\":\"detect-pages-project\","
+                                   "\"base_branch\":\"HEAD\",\"scope\":\"files\","
+                                   "\"format\":\"json\"}");
+    ASSERT_NOT_NULL(response);
+    inner = extract_text_content(response);
+    ASSERT_NOT_NULL(inner);
+    ASSERT_NOT_NULL(strstr(inner, "index_metadata_error"));
+    ASSERT_NOT_NULL(strstr(response, "isError"));
+    free(inner);
+    free(response);
+
+    response = cbm_mcp_handle_tool(srv, "detect_changes", cursor_args);
+    ASSERT_NOT_NULL(response);
+    inner = extract_text_content(response);
+    ASSERT_NOT_NULL(inner);
+    ASSERT_NOT_NULL(strstr(inner, "index_metadata_error"));
+    ASSERT_NOT_NULL(strstr(response, "isError"));
     free(inner);
     free(response);
     free(changed_cursor);
@@ -14022,18 +14271,18 @@ TEST(tool_detect_changes_output_budget_sets_truncated_in_tree_and_json) {
     ASSERT_EQ(cbm_store_upsert_project(store, project, repo), CBM_STORE_OK);
     cbm_mcp_server_set_project(srv, project);
 
-    char *tree_response = cbm_mcp_handle_tool(
-        srv, "detect_changes",
-        "{\"project\":\"detect-budget-flag-project\",\"base_branch\":\"HEAD\","
-        "\"scope\":\"files\",\"max_output_tokens\":128}");
+    char *tree_response =
+        cbm_mcp_handle_tool(srv, "detect_changes",
+                            "{\"project\":\"detect-budget-flag-project\",\"base_branch\":\"HEAD\","
+                            "\"scope\":\"files\",\"max_output_tokens\":128}");
     char *tree = extract_text_content(tree_response);
     bool tree_budgeted = tree && strstr(tree, "truncation_reason: output_budget") != NULL;
     bool tree_truncated = tree && strstr(tree, "truncated: true") != NULL;
 
-    char *json_response = cbm_mcp_handle_tool(
-        srv, "detect_changes",
-        "{\"project\":\"detect-budget-flag-project\",\"base_branch\":\"HEAD\","
-        "\"scope\":\"files\",\"max_output_tokens\":128,\"format\":\"json\"}");
+    char *json_response =
+        cbm_mcp_handle_tool(srv, "detect_changes",
+                            "{\"project\":\"detect-budget-flag-project\",\"base_branch\":\"HEAD\","
+                            "\"scope\":\"files\",\"max_output_tokens\":128,\"format\":\"json\"}");
     char *json = extract_text_content(json_response);
     yyjson_doc *doc = json ? yyjson_read(json, strlen(json), 0) : NULL;
     yyjson_val *root = doc ? yyjson_doc_get_root(doc) : NULL;
@@ -19250,9 +19499,11 @@ SUITE(mcp) {
     RUN_TEST(jsonrpc_parse_notification);
     RUN_TEST(jsonrpc_parse_invalid);
     RUN_TEST(tree_cell_reversibly_encodes_invalid_utf8);
+    RUN_TEST(output_text_accepts_embedded_nul_as_valid_utf8);
     RUN_TEST(json_to_tree_uses_header_once_rows_without_losing_metadata);
     RUN_TEST(json_to_tree_keeps_multiline_source_readable);
     RUN_TEST(json_to_tree_quotes_dynamic_keys_without_line_injection);
+    RUN_TEST(json_to_tree_preserves_embedded_nul_keys_values_and_table_cells);
     RUN_TEST(tree_table_uses_prefix_dictionary_only_when_it_materially_wins);
     RUN_TEST(jsonrpc_parse_tools_call);
     RUN_TEST(jsonrpc_parse_string_id_issue253);
@@ -19376,6 +19627,7 @@ SUITE(mcp) {
     RUN_TEST(mcp_resource_discovery_methods_return_empty_lists);
     RUN_TEST(tool_query_graph_basic);
     RUN_TEST(tool_query_graph_default_budget_is_truthful_and_expandable);
+    RUN_TEST(tool_query_graph_cursor_is_lossless_and_snapshot_bound);
     RUN_TEST(tool_query_graph_budget_bounds_first_row_and_json_escaping);
     RUN_TEST(tool_query_graph_prefix_directory_is_lossless_and_json_stays_direct);
     RUN_TEST(tool_query_graph_prefix_directory_recovers_rows_beyond_raw_estimate);

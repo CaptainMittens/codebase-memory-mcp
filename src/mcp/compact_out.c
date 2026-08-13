@@ -76,20 +76,20 @@ void cbm_sb_free(cbm_sb_t *sb) {
 /* ── Tree quoting ────────────────────────────────────────────────── */
 
 /* True when `s` parses as an integer or real literal (sign, digits, one dot). */
-static bool looks_numeric(const char *s) {
-    if (!s || !*s) {
+static bool looks_numeric_n(const char *s, size_t len) {
+    if (!s || len == 0) {
         return false;
     }
-    const char *p = s;
-    if (*p == '-' || *p == '+') {
-        p++;
+    size_t offset = 0;
+    if (s[offset] == '-' || s[offset] == '+') {
+        offset++;
     }
     bool digit = false;
     bool dot = false;
-    for (; *p; p++) {
-        if (isdigit((unsigned char)*p)) {
+    for (; offset < len; offset++) {
+        if (isdigit((unsigned char)s[offset])) {
             digit = true;
-        } else if (*p == '.' && !dot) {
+        } else if (s[offset] == '.' && !dot) {
             dot = true;
         } else {
             return false;
@@ -178,7 +178,7 @@ bool cbm_output_encode_text(const char *data, size_t len, char **encoded, size_t
 
     bool valid_utf8 = true;
     size_t offset = 0;
-    while (offset < len) {
+    while (valid_utf8 && offset < len) {
         size_t sequence = utf8_sequence_length((const unsigned char *)data + offset, len - offset);
         if (!sequence) {
             valid_utf8 = false;
@@ -219,41 +219,47 @@ bool cbm_output_encode_text(const char *data, size_t len, char **encoded, size_t
     return true;
 }
 
-static bool needs_quotes(const char *s) {
-    if (!s || !*s) {
+static bool needs_quotes_n(const char *s, size_t len) {
+    if (!s || len == 0) {
         return false; /* empty cells emit as the "-" placeholder, not quotes */
     }
-    size_t remaining = strlen(s);
-    for (const char *p = s; *p; p++, remaining--) {
-        unsigned char c = (unsigned char)*p;
+    size_t offset = 0;
+    while (offset < len) {
+        unsigned char c = (unsigned char)s[offset];
         /* Space-delimited rows: any internal whitespace or quote forces
          * quoting so column positions stay parseable. Control bytes and
          * invalid UTF-8 force the quoted path too, which sanitizes them —
          * one raw byte otherwise makes line-oriented consumers (BSD grep)
          * treat the ENTIRE tool output as unmatchable binary. */
-        if (isspace(c) || *p == '"' || *p == '\r' || c < 0x20 || c == 0x7f) {
+        if (isspace(c) || s[offset] == '"' || s[offset] == '\r' || c < 0x20 || c == 0x7f) {
             return true;
         }
         if (c >= 0x80) {
-            size_t len = utf8_sequence_length((const unsigned char *)p, remaining);
-            if (!len) {
+            size_t sequence = utf8_sequence_length((const unsigned char *)s + offset, len - offset);
+            if (!sequence) {
                 return true;
             }
-            p += len - 1;
-            remaining -= len - 1;
+            offset += sequence;
+        } else {
+            offset++;
         }
     }
-    if (strcmp(s, "true") == 0 || strcmp(s, "false") == 0 || strcmp(s, "null") == 0 ||
-        strcmp(s, "-") == 0) {
+    if ((len == 4 && memcmp(s, "true", 4) == 0) || (len == 5 && memcmp(s, "false", 5) == 0) ||
+        (len == 4 && memcmp(s, "null", 4) == 0) || (len == 1 && s[0] == '-')) {
         return true;
     }
-    return looks_numeric(s);
+    return looks_numeric_n(s, len);
 }
 
-static void append_quoted(cbm_sb_t *sb, const char *s) {
+static bool needs_quotes(const char *s) {
+    return needs_quotes_n(s, s ? strlen(s) : 0);
+}
+
+static void append_quoted_n(cbm_sb_t *sb, const char *s, size_t len) {
     cbm_sb_append_n(sb, "\"", 1);
-    size_t remaining = s ? strlen(s) : 0;
-    for (const char *p = s ? s : ""; *p; p++, remaining--) {
+    size_t offset = 0;
+    while (s && offset < len) {
+        const char *p = s + offset;
         switch (*p) {
         case '"':
             cbm_sb_append_n(sb, "\\\"", 2);
@@ -277,11 +283,11 @@ static void append_quoted(cbm_sb_t *sb, const char *s) {
                 snprintf(esc, sizeof(esc), "\\u%04x", (unsigned)c);
                 cbm_sb_append(sb, esc);
             } else {
-                size_t len = utf8_sequence_length((const unsigned char *)p, remaining);
-                if (len) {
-                    cbm_sb_append_n(sb, p, len);
-                    p += len - 1;
-                    remaining -= len - 1;
+                size_t sequence = utf8_sequence_length((const unsigned char *)p, len - offset);
+                if (sequence) {
+                    cbm_sb_append_n(sb, p, sequence);
+                    offset += sequence;
+                    continue;
                 } else {
                     /* Callers normalize first; retain a defensive printable
                      * escape if an internal caller ever violates that rule. */
@@ -293,28 +299,38 @@ static void append_quoted(cbm_sb_t *sb, const char *s) {
             break;
         }
         }
+        offset++;
     }
     cbm_sb_append_n(sb, "\"", 1);
 }
 
-static void append_value(cbm_sb_t *sb, const char *s) {
-    if (!s || !*s) {
+static void append_quoted(cbm_sb_t *sb, const char *s) {
+    append_quoted_n(sb, s, s ? strlen(s) : 0);
+}
+
+static void append_value_n(cbm_sb_t *sb, const char *s, size_t len) {
+    if (!s || len == 0) {
         cbm_sb_append_n(sb, "-", 1); /* stable column positions for empties */
         return;
     }
     char *encoded = NULL;
     size_t encoded_len = 0;
-    if (!cbm_output_encode_text(s, strlen(s), &encoded, &encoded_len)) {
+    if (!cbm_output_encode_text(s, len, &encoded, &encoded_len)) {
         sb->oom = true;
         return;
     }
     const char *safe = encoded ? encoded : s;
-    if (needs_quotes(safe)) {
-        append_quoted(sb, safe);
+    size_t safe_len = encoded ? encoded_len : len;
+    if (needs_quotes_n(safe, safe_len)) {
+        append_quoted_n(sb, safe, safe_len);
     } else {
-        cbm_sb_append_n(sb, safe, encoded ? encoded_len : strlen(safe));
+        cbm_sb_append_n(sb, safe, safe_len);
     }
     free(encoded);
+}
+
+static void append_value(cbm_sb_t *sb, const char *s) {
+    append_value_n(sb, s, s ? strlen(s) : 0);
 }
 
 /* Object keys and table column names share the compact tree's structural
@@ -322,21 +338,28 @@ static void append_value(cbm_sb_t *sb, const char *s) {
  * be confused with a delimiter or escape sequence. Unlike a value cell, an
  * empty key must remain the lossless string "" rather than the missing-value
  * placeholder "-". */
-static void append_key(cbm_sb_t *sb, const char *s) {
+static void append_key_n(cbm_sb_t *sb, const char *s, size_t len) {
     const char *raw = s ? s : "";
     char *encoded = NULL;
     size_t encoded_len = 0;
-    if (!cbm_output_encode_text(raw, strlen(raw), &encoded, &encoded_len)) {
+    if (!cbm_output_encode_text(raw, len, &encoded, &encoded_len)) {
         sb->oom = true;
         return;
     }
     const char *safe = encoded ? encoded : raw;
-    if (!*safe || needs_quotes(safe) || strpbrk(safe, ":()\\")) {
-        append_quoted(sb, safe);
+    size_t safe_len = encoded ? encoded_len : len;
+    if (safe_len == 0 || needs_quotes_n(safe, safe_len) || memchr(safe, ':', safe_len) ||
+        memchr(safe, '(', safe_len) || memchr(safe, ')', safe_len) ||
+        memchr(safe, '\\', safe_len)) {
+        append_quoted_n(sb, safe, safe_len);
     } else {
-        cbm_sb_append_n(sb, safe, encoded ? encoded_len : strlen(safe));
+        cbm_sb_append_n(sb, safe, safe_len);
     }
     free(encoded);
+}
+
+static void append_key(cbm_sb_t *sb, const char *s) {
+    append_key_n(sb, s, s ? strlen(s) : 0);
 }
 
 /* ── Scalars ────────────────────────────────────────────────────── */
@@ -878,13 +901,12 @@ static void tree_table_rows_impl(cbm_sb_t *sb, const char *key, int nrows, const
         size_t saving = plain_len > compact_len ? plain_len - compact_len : 0;
         size_t plain_token_shape = tree_token_shape_units(plain_text);
         size_t compact_token_shape = tree_token_shape_units(compact_text);
-        size_t token_shape_saving = plain_token_shape > compact_token_shape
-                                        ? plain_token_shape - compact_token_shape
-                                        : 0;
-        use_compact = saving >= TREE_PREFIX_MIN_SAVING &&
-                      saving * 100 >= plain_len * TREE_PREFIX_MIN_PERCENT &&
-                      token_shape_saving * 100 >=
-                          plain_token_shape * TREE_PREFIX_MIN_TOKEN_SHAPE_PERCENT;
+        size_t token_shape_saving =
+            plain_token_shape > compact_token_shape ? plain_token_shape - compact_token_shape : 0;
+        use_compact =
+            saving >= TREE_PREFIX_MIN_SAVING &&
+            saving * 100 >= plain_len * TREE_PREFIX_MIN_PERCENT &&
+            token_shape_saving * 100 >= plain_token_shape * TREE_PREFIX_MIN_TOKEN_SHAPE_PERCENT;
     }
     if (use_compact) {
         cbm_sb_append(sb, compact_text);
@@ -933,18 +955,18 @@ static void json_tree_indent(cbm_sb_t *sb, int depth) {
  * escaped into one long quoted scalar. Use the familiar YAML block markers:
  * `|-` means no trailing newline, `|` means one, and `|+` preserves several.
  * The content remains readable/copyable and valid UTF-8. */
-static void json_tree_block_string(cbm_sb_t *sb, const char *text, int depth) {
-    size_t len = strlen(text);
+static void json_tree_block_string(cbm_sb_t *sb, const char *text, size_t len, int depth) {
     size_t trailing_newlines = 0;
     while (trailing_newlines < len && text[len - trailing_newlines - 1] == '\n') {
         trailing_newlines++;
     }
     cbm_sb_append(sb, trailing_newlines == 0 ? "|-\n" : trailing_newlines == 1 ? "|\n" : "|+\n");
 
-    const char *line = text;
+    size_t line_offset = 0;
     for (;;) {
-        const char *newline = strchr(line, '\n');
-        const char *end = newline ? newline : line + strlen(line);
+        const char *line = text + line_offset;
+        const char *newline = memchr(line, '\n', len - line_offset);
+        const char *end = newline ? newline : text + len;
         json_tree_indent(sb, depth + 1);
         for (const char *p = line; p < end; p++) {
             unsigned char c = (unsigned char)*p;
@@ -968,8 +990,8 @@ static void json_tree_block_string(cbm_sb_t *sb, const char *text, int depth) {
         if (!newline) {
             break;
         }
-        line = newline + 1;
-        if (*line == '\0') {
+        line_offset = (size_t)(newline - text) + 1;
+        if (line_offset == len) {
             break;
         }
     }
@@ -977,7 +999,7 @@ static void json_tree_block_string(cbm_sb_t *sb, const char *text, int depth) {
 
 static void json_tree_scalar(cbm_sb_t *sb, yyjson_val *value) {
     if (yyjson_is_str(value)) {
-        append_value(sb, yyjson_get_str(value));
+        append_value_n(sb, yyjson_get_str(value), yyjson_get_len(value));
     } else if (yyjson_is_bool(value)) {
         cbm_sb_append(sb, yyjson_get_bool(value) ? "true" : "false");
     } else if (yyjson_is_null(value)) {
@@ -1018,7 +1040,7 @@ static bool json_tree_array_is_object_table(yyjson_val *array, yyjson_val **firs
         yyjson_val *key;
         yyjson_val *unused;
         yyjson_obj_foreach(first, key_index, key_maximum, key, unused) {
-            if (!yyjson_obj_get(item, yyjson_get_str(key))) {
+            if (!yyjson_obj_getn(item, yyjson_get_str(key), yyjson_get_len(key))) {
                 return false;
             }
         }
@@ -1027,15 +1049,16 @@ static bool json_tree_array_is_object_table(yyjson_val *array, yyjson_val **firs
     return true;
 }
 
-static void json_tree_value(cbm_sb_t *sb, const char *key_name, yyjson_val *value, int depth);
+static void json_tree_value(cbm_sb_t *sb, const char *key_name, size_t key_len, yyjson_val *value,
+                            int depth);
 
-static void json_tree_object_table(cbm_sb_t *sb, const char *key_name, yyjson_val *array,
-                                   yyjson_val *first, int depth) {
+static void json_tree_object_table(cbm_sb_t *sb, const char *key_name, size_t key_len,
+                                   yyjson_val *array, yyjson_val *first, int depth) {
     if (!sb || !key_name || !array || !first) {
         return;
     }
     json_tree_indent(sb, depth);
-    append_key(sb, key_name);
+    append_key_n(sb, key_name, key_len);
     char count[48];
     snprintf(count, sizeof(count), ": %zu  (cols:", yyjson_arr_size(array));
     cbm_sb_append(sb, count);
@@ -1046,7 +1069,7 @@ static void json_tree_object_table(cbm_sb_t *sb, const char *key_name, yyjson_va
     yyjson_val *unused;
     yyjson_obj_foreach(first, key_index, key_maximum, column, unused) {
         cbm_sb_append_n(sb, " ", 1);
-        append_key(sb, yyjson_get_str(column));
+        append_key_n(sb, yyjson_get_str(column), yyjson_get_len(column));
     }
     cbm_sb_append_n(sb, ")\n", 2);
 
@@ -1060,7 +1083,7 @@ static void json_tree_object_table(cbm_sb_t *sb, const char *key_name, yyjson_va
             if (!first_cell) {
                 cbm_sb_append_n(sb, " ", 1);
             }
-            yyjson_val *cell = yyjson_obj_get(row, yyjson_get_str(column));
+            yyjson_val *cell = yyjson_obj_getn(row, yyjson_get_str(column), yyjson_get_len(column));
             json_tree_scalar(sb, cell);
             first_cell = false;
         }
@@ -1068,15 +1091,16 @@ static void json_tree_object_table(cbm_sb_t *sb, const char *key_name, yyjson_va
     }
 }
 
-static void json_tree_array(cbm_sb_t *sb, const char *key_name, yyjson_val *array, int depth) {
+static void json_tree_array(cbm_sb_t *sb, const char *key_name, size_t key_len, yyjson_val *array,
+                            int depth) {
     yyjson_val *first = NULL;
     if (json_tree_array_is_object_table(array, &first)) {
-        json_tree_object_table(sb, key_name, array, first, depth);
+        json_tree_object_table(sb, key_name, key_len, array, first, depth);
         return;
     }
 
     json_tree_indent(sb, depth);
-    append_key(sb, key_name);
+    append_key_n(sb, key_name, key_len);
     char count[48];
     snprintf(count, sizeof(count), ": %zu\n", yyjson_arr_size(array));
     cbm_sb_append(sb, count);
@@ -1092,10 +1116,11 @@ static void json_tree_array(cbm_sb_t *sb, const char *key_name, yyjson_val *arra
             yyjson_val *field;
             yyjson_val *field_value;
             yyjson_obj_foreach(item, field_index, field_maximum, field, field_value) {
-                json_tree_value(sb, yyjson_get_str(field), field_value, depth + 2);
+                json_tree_value(sb, yyjson_get_str(field), yyjson_get_len(field), field_value,
+                                depth + 2);
             }
         } else if (yyjson_is_arr(item)) {
-            json_tree_value(sb, "-", item, depth + 1);
+            json_tree_value(sb, "-", 1, item, depth + 1);
         } else {
             json_tree_indent(sb, depth + 1);
             cbm_sb_append(sb, "- ");
@@ -1105,10 +1130,11 @@ static void json_tree_array(cbm_sb_t *sb, const char *key_name, yyjson_val *arra
     }
 }
 
-static void json_tree_value(cbm_sb_t *sb, const char *key_name, yyjson_val *value, int depth) {
+static void json_tree_value(cbm_sb_t *sb, const char *key_name, size_t key_len, yyjson_val *value,
+                            int depth) {
     if (depth >= JSON_TREE_MAX_DEPTH) {
         json_tree_indent(sb, depth);
-        append_key(sb, key_name);
+        append_key_n(sb, key_name, key_len);
         cbm_sb_append(sb, ": ");
         char *encoded = yyjson_val_write(value, 0, NULL);
         append_value(sb, encoded ? encoded : "null");
@@ -1118,26 +1144,28 @@ static void json_tree_value(cbm_sb_t *sb, const char *key_name, yyjson_val *valu
     }
     if (yyjson_is_obj(value)) {
         json_tree_indent(sb, depth);
-        append_key(sb, key_name);
+        append_key_n(sb, key_name, key_len);
         cbm_sb_append(sb, ":\n");
         size_t index;
         size_t maximum;
         yyjson_val *key;
         yyjson_val *child;
         yyjson_obj_foreach(value, index, maximum, key, child) {
-            json_tree_value(sb, yyjson_get_str(key), child, depth + 1);
+            json_tree_value(sb, yyjson_get_str(key), yyjson_get_len(key), child, depth + 1);
         }
     } else if (yyjson_is_arr(value)) {
-        json_tree_array(sb, key_name, value, depth);
+        json_tree_array(sb, key_name, key_len, value, depth);
     } else if (yyjson_is_str(value) &&
-               (strchr(yyjson_get_str(value), '\n') || strchr(yyjson_get_str(value), '\r'))) {
+               !memchr(yyjson_get_str(value), '\0', yyjson_get_len(value)) &&
+               (memchr(yyjson_get_str(value), '\n', yyjson_get_len(value)) ||
+                memchr(yyjson_get_str(value), '\r', yyjson_get_len(value)))) {
         json_tree_indent(sb, depth);
-        append_key(sb, key_name);
+        append_key_n(sb, key_name, key_len);
         cbm_sb_append(sb, ": ");
-        json_tree_block_string(sb, yyjson_get_str(value), depth);
+        json_tree_block_string(sb, yyjson_get_str(value), yyjson_get_len(value), depth);
     } else {
         json_tree_indent(sb, depth);
-        append_key(sb, key_name);
+        append_key_n(sb, key_name, key_len);
         cbm_sb_append(sb, ": ");
         json_tree_scalar(sb, value);
         cbm_sb_append_n(sb, "\n", 1);
@@ -1161,10 +1189,10 @@ char *cbm_json_to_tree(const char *json) {
         yyjson_val *key;
         yyjson_val *value;
         yyjson_obj_foreach(root, index, maximum, key, value) {
-            json_tree_value(&sb, yyjson_get_str(key), value, 0);
+            json_tree_value(&sb, yyjson_get_str(key), yyjson_get_len(key), value, 0);
         }
     } else if (yyjson_is_arr(root)) {
-        json_tree_array(&sb, "items", root, 0);
+        json_tree_array(&sb, "items", sizeof("items") - 1, root, 0);
     } else {
         cbm_sb_append(&sb, "value: ");
         json_tree_scalar(&sb, root);
