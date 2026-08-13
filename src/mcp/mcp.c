@@ -92,6 +92,7 @@ enum {
 #define mcp_fdopen _fdopen
 #define mcp_close _close
 #else
+#include <fnmatch.h>
 #include <unistd.h>
 #include <poll.h>
 #include <fcntl.h>
@@ -12400,21 +12401,15 @@ void cbm_search_code_build_grep_cmd(char *cmd, size_t cmd_sz, bool use_regex, bo
 #else
     const char *flag = use_regex ? "-E" : "-F";
     if (scoped) {
-        if (file_pattern) {
-            /* -0: read NUL-separated paths from the filelist so paths containing
-             * spaces stay one argument (issue #687). Pairs with the NUL separator
-             * written by write_scoped_filelist. */
-            snprintf(cmd, cmd_sz,
-                     "xargs -0 sh -c 'grep -Hn -d skip %s --include=\"%s\" -f \"%s\" \"$@\"; "
-                     "status=$?; [ \"$status\" -eq 0 ] || [ \"$status\" -eq 1 ]' sh < '%s' "
-                     "2>/dev/null",
-                     flag, file_pattern, tmpfile, filelist);
-        } else {
-            snprintf(cmd, cmd_sz,
-                     "xargs -0 sh -c 'grep -Hn -d skip %s -f \"%s\" \"$@\"; status=$?; "
-                     "[ \"$status\" -eq 0 ] || [ \"$status\" -eq 1 ]' sh < '%s' 2>/dev/null",
-                     flag, tmpfile, filelist);
-        }
+        /* file_pattern was already applied to the canonical file list in C.
+         * Keep this scan compatible with BusyBox grep, which has no GNU
+         * --include option (the shipped Alpine/static runtime). */
+        snprintf(cmd, cmd_sz,
+                 "xargs -0 sh -c 'pat=$1; shift; if [ \"$#\" -eq 0 ]; then exit 0; fi; "
+                 "grep -Hn %s -f \"$pat\" -- \"$@\"; rc=$?; if [ \"$rc\" -eq 1 ]; then "
+                 "exit 0; fi; if [ \"$rc\" -ne 0 ]; then exit 255; fi; exit 0' sh '%s' "
+                 "< '%s' 2>/dev/null",
+                 flag, tmpfile, filelist);
     } else {
         /* Do not pipe discovery directly into sort/xargs: POSIX sh reports only
          * the final pipeline command, which can hide a partial find or failed
@@ -13785,6 +13780,17 @@ static bool write_scoped_filelist(cbm_mcp_server_t *srv, const char *project, co
                     continue;
                 }
             }
+#ifndef _WIN32
+            /* GNU grep's --include is unavailable in BusyBox grep. Filter the
+             * canonical list before xargs instead, preserving grep's basename
+             * glob semantics without making the shipped static binary depend
+             * on GNU userland. Windows keeps its PowerShell -like filter. */
+            const char *basename = strrchr(indexed_files[fi], '/');
+            basename = basename ? basename + SKIP_ONE : indexed_files[fi];
+            if (file_pattern && fnmatch(file_pattern, basename, 0) != 0) {
+                continue;
+            }
+#endif
 #ifdef _WIN32
             if (cbm_search_code_file_pattern_can_prefilter(file_pattern) &&
                 !cbm_search_code_windows_path_matches_prefilter(indexed_files[fi], file_pattern)) {
@@ -14366,7 +14372,7 @@ static char *handle_search_code(cbm_mcp_server_t *srv, const char *args) {
     bool scan_ok = sr != NULL;
     uint64_t scan_t0 = metrics.include_phase_timings ? cbm_now_ms() : 0;
     if (scoped && scoped_written == 0 && !scan_cancellation_latched && !scan_deadline_latched) {
-        /* The path_filter excluded every indexed file — nothing to scan.
+        /* The path_filter (or POSIX file_pattern) excluded every indexed file — nothing to scan.
          * Skip the grep subprocess: xargs on an empty filelist is
          * platform-dependent (GNU execs grep once with no operands, BSD
          * skips), and the post-grep filter would drop every hit anyway. */
