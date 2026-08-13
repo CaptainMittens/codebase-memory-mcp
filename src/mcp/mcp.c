@@ -449,31 +449,29 @@ bool cbm_mcp_cancel_request_matches(const char *params_json, int64_t active_id,
 
 typedef struct {
     const char *name;
-    const char *title;
     const char *description;
     const char *input_schema; /* JSON string */
 } tool_def_t;
 
 static const tool_def_t TOOLS[] = {
-    {"index_repository", "Index repository",
-     "Index a repository. full/moderate add semantic edges; fast omits them; "
-     "cross-repo-intelligence links indexed services. Results summarize coverage gaps.",
+    {"index_repository",
+     "Index a repository. full/moderate add semantics; fast omits them; cross-repo-intelligence "
+     "links services. Reports coverage gaps.",
      "{\"type\":\"object\",\"properties\":{\"repo_path\":{\"type\":\"string\",\"description\":"
      "\"Repository path\"},"
      "\"mode\":{\"type\":\"string\","
      "\"enum\":[\"full\",\"moderate\",\"fast\",\"cross-repo-intelligence\"],"
-     "\"default\":\"full\",\"description\":\"full: all files+semantic; moderate: "
-     "filtered+semantic; "
-     "fast: filtered without semantic; cross-repo-intelligence: link services.\"},"
+     "\"default\":\"full\",\"description\":\"full: all+semantic; moderate: "
+     "filtered+semantic; fast: filtered only; cross-repo-intelligence: link services.\"},"
      "\"target_projects\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},"
      "\"description\":\"Cross-repo targets; [\\\"*\\\"] means all.\"},"
      "\"name\":{\"type\":\"string\",\"description\":"
-     "\"Project-name override; Non-ASCII bytes are encoded and unsafe characters normalized.\"},"
+     "\"Name override; Non-ASCII bytes are encoded; unsafe characters normalized.\"},"
      "\"persistence\":{\"type\":\"boolean\",\"default\":false,\"description\":"
      "\"Write .codebase-memory/graph.db.zst.\"}"
      "},\"required\":[\"repo_path\"]}"},
 
-    {"search_graph", "Search graph",
+    {"search_graph",
      "Find symbols via BM25 query, regex name/qn filters, or semantic_query. Rows keep "
      "qn/file/lines and in/out over CALLS/USAGE/CALL_REFERENCE/INHERITS/IMPLEMENTS.",
      "{\"type\":\"object\",\"properties\":{\"project\":{\"type\":\"string\"},"
@@ -498,86 +496,81 @@ static const tool_def_t TOOLS[] = {
      "\"detail\":{\"type\":\"string\",\"enum\":[\"ids\",\"default\"],\"default\":\"default\"}},"
      "\"required\":[\"project\"]}"},
 
-    {"query_graph", "Query graph",
-     "Run read-only Cypher for multi-hop patterns, aggregation, complexity, or cross-service "
-     "analysis. Defaults to 200 visible rows and reports exact or lower-bound totals plus "
-     "truncation. Use max_rows or Cypher SKIP/LIMIT to continue. graph=missed queries flagged "
-     "coverage files; absence there is not proof of completeness. Call get_graph_schema with "
-     "diagnostics=full to discover queryable property names.",
+    {"query_graph",
+     "Read-only Cypher for multi-hop, aggregation, complexity, or cross-service analysis. "
+     "Default: 200 visible rows with "
+     "exact/lower-bound totals and truncation; continue safely with next_cursor. "
+     "graph=missed is a file tree of flagged coverage gaps; absence is not proof of completeness. "
+     "Use get_graph_schema(diagnostics=full) for properties.",
      "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Cypher "
      "query\"},\"project\":{\"type\":\"string\"},"
      "\"graph\":{\"type\":\"string\",\"enum\":[\"code\",\"missed\"],\"default\":\"code\","
-     "\"description\":\"Which graph to query: the code knowledge graph (default) or the "
-     "missed graph (only files not fully indexed, laid out as their file structure).\"},"
+     "\"description\":\"code graph (default) or missed coverage-gap file tree.\"},"
      "\"max_rows\":{\"type\":\"integer\","
      "\"description\":"
-     "\"Visible row budget (default 200; max 99998). Zero preserves the legacy maximum "
-     "window. This never changes query evaluation.\",\"minimum\":0,\"default\":200},"
+     "\"Visible rows (default 200; max 99998); 0 uses the legacy maximum. Evaluation is "
+     "unchanged.\",\"minimum\":0,\"default\":200},"
      "\"offset\":{\"type\":\"integer\",\"minimum\":0,\"default\":0,"
-     "\"description\":\"Skip materialized result rows for response paging; unlike Cypher "
-     "SKIP, this does not change query evaluation.\"},"
+     "\"description\":\"Live compatibility paging; cannot be combined with cursor.\"},"
+     "\"cursor\":{\"type\":\"string\",\"description\":\"Snapshot continuation; keep "
+     "query/project/graph. Format, budget, and max_rows may change.\"},"
      "\"max_output_tokens\":{\"type\":\"integer\",\"minimum\":128,\"maximum\":1000000,"
-     "\"description\":\"Approximate token sizing; deterministic ceiling is 4 UTF-8 bytes per "
-     "requested token. Rows are omitted only whole.\"},"
+     "\"description\":\"Sizing hint; hard ceiling is 4 UTF-8 bytes/token. Rows stay whole.\"},"
      "\"format\":{\"type\":\"string\",\"enum\":[\"tree\",\"json\"],\"default\":\"tree\","
-     "\"description\":\"tree may encode repeated prefixes with a local @N+suffix directory; "
-     "json keeps direct strings.\"}},"
+     "\"description\":\"tree may use local @N+suffix prefix refs; json uses direct strings.\"}},"
      "\"required\":[\"query\",\"project\"]}"},
 
-    {"trace_path", "Trace path",
+    {"trace_path",
      "Trace callers/callees, data flow, or cross-service paths. Defaults exclude tests and "
-     "resolver evidence. Rows retain qn/hop; totals, relations, and continuations are explicit.",
+     "resolver evidence. Rows keep qn/hop with explicit totals, relations, and continuations.",
      "{\"type\":\"object\",\"properties\":{\"function_name\":{\"type\":\"string\"},\"project\":{"
      "\"type\":\"string\"},\"direction\":{\"type\":\"string\",\"enum\":[\"inbound\",\"outbound\","
      "\"both\"],\"default\":\"both\"},\"depth\":{\"type\":\"integer\",\"default\":3,"
      "\"minimum\":1,\"maximum\":15},"
      "\"limit\":{\"type\":\"integer\",\"default\":100,\"minimum\":1,\"maximum\":5000,"
-     "\"description\":\"Visible rows per page; a gte relation flags the 5000-node engine "
-     "ceiling.\"},"
+     "\"description\":\"Rows/page; gte flags the 5000-node engine ceiling.\"},"
      "\"max_output_tokens\":{\"type\":\"integer\",\"default\":3200,\"minimum\":128,"
-     "\"maximum\":1000000,\"description\":\"Approximate token sizing; deterministic ceiling "
-     "is 4 UTF-8 bytes per requested token. Optional evidence/args yield before nearest graph "
-     "rows.\"},"
-     "\"cursor\":{\"type\":\"string\",\"description\":\"Pass tree next or JSON next_cursor back "
-     "with traversal args unchanged; max_output_tokens may be raised.\"},"
+     "\"maximum\":1000000,\"description\":\"Sizing hint; hard ceiling is 4 UTF-8 bytes/token. "
+     "Evidence/args yield before nearest graph rows.\"},"
+     "\"cursor\":{\"type\":\"string\",\"description\":\"Pass next/next_cursor with traversal "
+     "args unchanged; budget may increase.\"},"
      "\"mode\":{"
      "\"type\":\"string\",\"enum\":[\"calls\",\"data_flow\",\"cross_service\"],\"default\":"
-     "\"calls\",\"description\":\"calls, argument-aware data_flow, or service-boundary edges.\"},"
+     "\"calls\",\"description\":\"calls, argument-aware data_flow, or service edges.\"},"
      "\"parameter_name\":{\"type\":\"string\",\"description\":\"data_flow parameter filter.\"},"
      "\"edge_types\":{\"type\":\"array\",\"items\":{"
      "\"type\":\"string\"}},\"risk_labels\":{\"type\":\"boolean\",\"default\":false,"
      "\"description\":\"Add hop-risk labels.\"},\"include_tests\":{\"type\":\"boolean\","
      "\"default\":false},"
      "\"format\":{\"type\":\"string\",\"enum\":[\"tree\",\"json\"],\"default\":\"tree\","
-     "\"description\":\"tree chooses the smaller complete direct/grouped shape; json preserves "
-     "a stable grouped table model.\"},"
+     "\"description\":\"tree chooses smaller complete direct/grouped output; json uses stable "
+     "grouped tables.\"},"
      "\"include_evidence\":{\"type\":\"boolean\",\"default\":false,"
      "\"description\":\"Add resolver class and confidence.\"}},"
      "\"required\":[\"function_name\",\"project\"]}"},
 
-    {"get_code_snippet", "Get code snippet",
-     "Read a symbol found by search_graph. auto returns bounded source, but outlines large "
-     "containers; full restores up to 500 lines; outline and source pages carry continuations. "
-     "coverage_note marks partial indexing.",
+    {"get_code_snippet",
+     "Read a search_graph symbol. auto bounds source and outlines large containers; full "
+     "restores up to 500 lines. Source/outline pages continue; coverage_note marks gaps.",
      "{\"type\":\"object\",\"properties\":{\"qualified_name\":{\"type\":\"string\",\"description\":"
-     "\"Qualified name from search_graph, or short name.\"},\"project\":{"
+     "\"search_graph qn, or short name.\"},\"project\":{"
      "\"type\":\"string\"},\"include_neighbors\":{"
      "\"type\":\"boolean\",\"default\":false},"
      "\"source_mode\":{\"type\":\"string\",\"enum\":[\"auto\",\"full\",\"outline\"],"
      "\"default\":\"auto\",\"description\":\"auto outlines 200+ line containers; full returns "
-     "source; outline lists members.\"},"
+     "source; "
+     "outline lists members.\"},"
      "\"member_limit\":{\"type\":\"integer\",\"default\":50,\"minimum\":1,\"maximum\":500},"
      "\"member_offset\":{\"type\":\"integer\",\"default\":0,\"minimum\":0},"
      "\"start_line\":{\"type\":\"integer\",\"minimum\":1},"
      "\"max_lines\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":500},"
      "\"max_output_tokens\":{\"type\":\"integer\",\"minimum\":128,"
-     "\"maximum\":1000000,\"description\":\"Approximate token sizing for auto/outline "
-     "(default 2500); deterministic ceiling is 4 UTF-8 bytes per requested token. Source is "
-     "reduced only at whole-line boundaries. Explicit full is uncapped unless this is set.\"},"
+     "\"maximum\":1000000,\"description\":\"auto/outline sizing hint (default 2500), hard "
+     "ceiling 4 UTF-8 bytes/token. Lines stay whole; explicit full is uncapped unless set.\"},"
      "\"format\":{\"type\":\"string\",\"enum\":[\"tree\",\"json\"],\"default\":\"tree\"}},"
      "\"required\":[\"qualified_name\",\"project\"]}"},
 
-    {"get_graph_schema", "Get graph schema",
+    {"get_graph_schema",
      "Get node-label and edge-type counts. diagnostics=full also lists queryable properties.",
      "{\"type\":\"object\",\"properties\":{\"project\":{\"type\":\"string\"},"
      "\"format\":{\"type\":\"string\",\"enum\":[\"tree\",\"json\"],\"default\":\"tree\"},"
@@ -586,25 +579,24 @@ static const tool_def_t TOOLS[] = {
      "\"offset\":{\"type\":\"integer\",\"default\":0,\"minimum\":0}},\"required\":["
      "\"project\"]}"},
 
-    {"get_architecture", "Get architecture",
-     "Get a compact architecture overview: counts, languages, packages, and entry points. "
-     "Request aspects for structure, dependencies, routes, hotspots, boundaries, layers, "
-     "clusters, cycles, or file tree; path scopes to a directory.",
+    {"get_architecture",
+     "Compact counts, languages, packages, entry points. Request structure, dependencies, "
+     "routes, hotspots, boundaries, layers, clusters, cycles, or file_tree; path scopes a "
+     "directory.",
      /* The aspects enum mirrors VALID_ASPECTS (see aspect_is_valid) — update both together. */
      "{\"type\":\"object\",\"properties\":{\"project\":{\"type\":\"string\"},\"path\":{\"type\":"
-     "\"string\",\"description\":\"Optional directory prefix to scope architecture (e.g. "
-     "apps/hoa)\"},"
+     "\"string\",\"description\":\"Directory prefix (for example apps/hoa).\"},"
      "\"aspects\":{\"type\":\"array\",\"items\":{\"type\":\"string\",\"enum\":[\"all\","
      "\"overview\",\"structure\",\"dependencies\",\"routes\",\"languages\",\"packages\","
      "\"entry_points\",\"hotspots\",\"boundaries\",\"layers\",\"file_tree\",\"clusters\","
      "\"cycles\"]},"
-     "\"description\":\"Aspects to include. 'all' = everything; 'overview' = compact summary "
-     "except file_tree; omit = languages/packages/entry_points. cycles is always opt-in.\"},"
+     "\"description\":\"all=everything; overview=compact except file_tree; omitted=languages/"
+     "packages/entry_points; cycles is opt-in.\"},"
      "\"format\":{\"type\":\"string\",\"enum\":[\"tree\",\"json\"],\"default\":\"tree\"}},"
      "\"required\":[\"project\"]}"},
 
-    {"search_code", "Search code",
-     "Graph-ranked text search. compact returns symbols; full adds bounded source; files paths.",
+    {"search_code",
+     "Graph-ranked text search: compact symbols, full bounded source, or file paths.",
      "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"},\"project\":{\"type\":"
      "\"string\"},\"file_pattern\":{\"type\":\"string\"},\"path_filter\":{\"type\":\"string\"},"
      "\"mode\":{\"type\":\"string\","
@@ -617,7 +609,7 @@ static const tool_def_t TOOLS[] = {
      "\"raw_limit\":{\"type\":\"integer\",\"default\":5,\"minimum\":0,\"maximum\":100},"
      "\"raw_offset\":{\"type\":\"integer\",\"default\":0,\"minimum\":0},"
      "\"raw_content_offset\":{\"type\":\"integer\",\"minimum\":0,"
-     "\"description\":\"Raw-line byte offset; omit for a match-centered preview.\"},"
+     "\"description\":\"Raw-line byte offset; omit for match-centered preview.\"},"
      "\"directory_limit\":{\"type\":\"integer\",\"default\":20,\"minimum\":0,"
      "\"maximum\":64},"
      "\"directory_offset\":{\"type\":\"integer\",\"default\":0,\"minimum\":0},"
@@ -629,9 +621,7 @@ static const tool_def_t TOOLS[] = {
      "\"format\":{\"type\":\"string\",\"enum\":[\"tree\",\"json\"],\"default\":\"tree\"}},"
      "\"required\":[\"pattern\",\"project\"]}"},
 
-    {"list_projects", "List projects",
-     "List indexed projects with stable paging. Identity is "
-     "the lean default; request stats for graph sizes.",
+    {"list_projects", "List projects with stable paging. Identity is lean; stats adds graph sizes.",
      "{\"type\":\"object\",\"properties\":{"
      "\"format\":{\"type\":\"string\",\"enum\":[\"tree\",\"json\"],\"default\":\"tree\"},"
      "\"detail\":{\"type\":\"string\",\"enum\":[\"identity\",\"stats\"],"
@@ -639,29 +629,27 @@ static const tool_def_t TOOLS[] = {
      "\"limit\":{\"type\":\"integer\",\"default\":50,\"minimum\":1,\"maximum\":500},"
      "\"offset\":{\"type\":\"integer\",\"default\":0,\"minimum\":0},"
      "\"metadata_only\":{\"type\":\"boolean\",\"default\":false,"
-     "\"description\":\"Compatibility mode: omit counts, size, and branch.\"}}}"},
-    {"delete_project", "Delete project", "Delete a project from the index",
+     "\"description\":\"Compatibility: omit counts, size, and branch.\"}}}"},
+    {"delete_project", "Delete a project from the index",
      "{\"type\":\"object\",\"properties\":{\"project\":{\"type\":\"string\"}},\"required\":["
      "\"project\"]}"},
 
-    {"index_status", "Index status",
-     "Get project readiness, counts, root, and coverage-gap counts. diagnostics=summary/full adds "
-     "sample/file rows; verbose adds Git-path diagnostics. Coverage is best-effort, not proof of "
-     "completeness; use check_index_coverage for cited paths.",
+    {"index_status",
+     "Project readiness, counts, root, and coverage gaps. diagnostics adds coverage rows; verbose "
+     "adds Git paths. Best-effort only; verify cited paths with check_index_coverage.",
      "{\"type\":\"object\",\"properties\":{\"project\":{\"type\":\"string\"},"
-     "\"verbose\":{\"type\":\"boolean\",\"default\":false,\"description\":\"Include the git "
-     "context block (worktree/shadow path variants). Only needed when debugging where an index "
-     "lives — omitted by default to keep the status lean.\"},"
+     "\"verbose\":{\"type\":\"boolean\",\"default\":false,\"description\":\"Add worktree/"
+     "shadow Git paths for index-location debugging.\"},"
      "\"diagnostics\":{\"type\":\"string\",\"enum\":[\"none\",\"summary\",\"full\"],"
-     "\"default\":\"none\",\"description\":\"Coverage rows: counts only, five samples, or up to "
+     "\"default\":\"none\",\"description\":\"Coverage rows: counts, five samples, or up to "
      "500.\"},"
      "\"format\":{\"type\":\"string\",\"enum\":[\"tree\",\"json\"],\"default\":\"tree\"}},"
      "\"required\":["
      "\"project\"]}"},
 
-    {"check_index_coverage", "Check index coverage",
-     "Best-effort coverage/freshness for exact paths or scopes. Paths and scopes page separately; "
-     "diagnostics=full adds raw detail. A clean result is not proof of completeness.",
+    {"check_index_coverage",
+     "Best-effort exact-path/scope coverage and freshness, paged separately. full diagnostics "
+     "adds raw detail. Clean is not proof of completeness.",
      "{\"type\":\"object\",\"properties\":{"
      "\"project\":{\"type\":\"string\"},"
      "\"paths\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"maxItems\":128},"
@@ -675,8 +663,7 @@ static const tool_def_t TOOLS[] = {
      "\"required\":[\"project\"]"
      "}"},
 
-    {"detect_changes", "Detect changes",
-     "Map a Git diff to files and impact. Page with snapshot cursors.",
+    {"detect_changes", "Map a Git diff to files and impact. Page with snapshot cursors.",
      "{\"type\":\"object\",\"properties\":{\"project\":{\"type\":\"string\"},\"scope\":{\"type\":"
      "\"string\",\"enum\":[\"files\",\"impact\"],\"default\":\"impact\"},"
      "\"direction\":{\"type\":\"string\",\"enum\":[\"inbound\",\"outbound\",\"both\"],\"default\":"
@@ -692,27 +679,25 @@ static const tool_def_t TOOLS[] = {
      "\"module_offset\":{\"type\":\"integer\",\"default\":0,\"minimum\":0},"
      "\"module_cursor\":{\"type\":\"string\"},"
      "\"max_output_tokens\":{\"type\":\"integer\",\"default\":3200,\"minimum\":128,"
-     "\"maximum\":1000000,\"description\":\"Approximate token sizing; deterministic ceiling "
-     "is 4 UTF-8 bytes per requested token.\"},"
+     "\"maximum\":1000000,\"description\":\"Sizing hint; hard ceiling is 4 UTF-8 bytes/token.\"},"
      "\"base_branch\":{\"type\":"
      "\"string\",\"default\":\"main\"},\"since\":{\"type\":\"string\"},"
      "\"format\":{\"type\":\"string\",\"enum\":[\"tree\",\"json\"],\"default\":\"tree\"}},"
      "\"required\":"
      "[\"project\"]}"},
 
-    {"manage_adr", "Manage ADR", "Outline an ADR by default; get reads it; update replaces it",
+    {"manage_adr", "Outline an ADR by default; get reads it; update replaces it",
      "{\"type\":\"object\",\"properties\":{\"project\":{\"type\":\"string\"},\"mode\":{\"type\":"
      "\"string\",\"enum\":[\"outline\",\"get\",\"update\",\"sections\"],\"default\":\"outline\","
-     "\"description\":\"outline pages heading rows; get returns content; update replaces all; "
-     "sections is the legacy heading list.\"},\"content\":{\"type\":\"string\"},"
+     "\"description\":\"outline pages headings; get reads; update replaces; sections is legacy.\"},"
+     "\"content\":{\"type\":\"string\"},"
      "\"section_limit\":{\"type\":\"integer\",\"default\":50,\"minimum\":1,\"maximum\":500},"
      "\"section_offset\":{\"type\":\"integer\",\"default\":0,\"minimum\":0},"
      "\"format\":{\"type\":\"string\",\"enum\":[\"tree\",\"json\"],\"default\":\"tree\"}},"
      "\"additionalProperties\":false,"
      "\"required\":[\"project\"]}"},
 
-    {"ingest_traces", "Ingest traces",
-     "Validate and count traces; graph edge creation is not implemented",
+    {"ingest_traces", "Validate and count traces; graph edge creation is not implemented",
      "{\"type\":\"object\",\"properties\":{\"traces\":{\"type\":\"array\",\"items\":{\"type\":"
      "\"object\",\"properties\":{\"caller\":{\"type\":\"string\"},\"callee\":{\"type\":\"string\"},"
      "\"count\":{\"type\":\"integer\"}},\"additionalProperties\":false}},\"project\":{\"type\":"
@@ -774,7 +759,9 @@ static void mcp_add_json_schema(yyjson_mut_doc *doc, yyjson_mut_val *obj, const 
 static void mcp_add_tool_def(yyjson_mut_doc *doc, yyjson_mut_val *tools, int i) {
     yyjson_mut_val *tool = yyjson_mut_obj(doc);
     yyjson_mut_obj_add_str(doc, tool, "name", TOOLS[i].name);
-    yyjson_mut_obj_add_str(doc, tool, "title", TOOLS[i].title);
+    /* MCP title is optional and clients fall back to name. These titles only
+     * repeated the snake_case name with spaces, so omit their recurring
+     * discovery cost and retain the behavioral description instead. */
     yyjson_mut_obj_add_str(doc, tool, "description", TOOLS[i].description);
 
     mcp_add_json_schema(doc, tool, "inputSchema", TOOLS[i].input_schema);
@@ -4655,6 +4642,230 @@ static char *handle_search_graph(cbm_mcp_server_t *srv, const char *args) {
     return result;
 }
 
+/* query_graph response cursors bind one fully materialized result, not merely
+ * an integer offset. Re-executing an unordered query may otherwise produce a
+ * different order even while the store's coarse generation is unchanged.
+ *
+ * Token: q1.<generation>.<params-hash>.<result-digest>.<offset>.<seal>
+ *
+ * The SHA-256 materialization digest covers ordered columns and rows, explicit
+ * NULL markers, engine truncation, and the warning. The short seal makes an
+ * edited offset or token field fail closed instead of silently skipping rows.
+ * It is an integrity checksum for an opaque token, not an authentication MAC.
+ */
+enum {
+    QUERY_GRAPH_CURSOR_TOKEN_CAP = 224,
+    QUERY_GRAPH_GENERATION_CAP = 96,
+    QUERY_GRAPH_CURSOR_DIGEST_HEX_LEN = 32
+};
+
+typedef struct {
+    char generation[QUERY_GRAPH_GENERATION_CAP];
+    uint64_t params_hash;
+    char result_digest[QUERY_GRAPH_CURSOR_DIGEST_HEX_LEN + 1];
+    int offset;
+} query_graph_cursor_t;
+
+typedef struct {
+    const char *generation;
+    uint64_t params_hash;
+    const char *result_digest;
+    bool can_mint;
+} query_graph_cursor_context_t;
+
+static void query_graph_sha_u64(cbm_sha256_ctx *sha, uint64_t value) {
+    uint8_t bytes[8];
+    for (int index = 7; index >= 0; index--) {
+        bytes[index] = (uint8_t)(value & 0xffU);
+        value >>= 8U;
+    }
+    cbm_sha256_update(sha, bytes, sizeof(bytes));
+}
+
+static void query_graph_sha_field(cbm_sha256_ctx *sha, const char *value) {
+    const uint8_t present = value ? 1U : 0U;
+    cbm_sha256_update(sha, &present, sizeof(present));
+    if (!value) {
+        return;
+    }
+    size_t length = strlen(value);
+    query_graph_sha_u64(sha, (uint64_t)length);
+    cbm_sha256_update(sha, value, length);
+}
+
+static void query_graph_digest_hex(const uint8_t digest[CBM_SHA256_DIGEST_LEN],
+                                   char out[CBM_SHA256_HEX_LEN + 1]) {
+    static const char hex[] = "0123456789abcdef";
+    for (int index = 0; index < CBM_SHA256_DIGEST_LEN; index++) {
+        out[index * 2] = hex[digest[index] >> 4U];
+        out[index * 2 + 1] = hex[digest[index] & 0x0fU];
+    }
+    out[CBM_SHA256_HEX_LEN] = '\0';
+}
+
+static uint64_t query_graph_params_hash(const char *project, const char *query, const char *graph) {
+    static const char domain[] = "cbm.query_graph.params.v1";
+    cbm_sha256_ctx sha;
+    cbm_sha256_init(&sha);
+    cbm_sha256_update(&sha, domain, sizeof(domain));
+    query_graph_sha_field(&sha, project);
+    query_graph_sha_field(&sha, query);
+    query_graph_sha_field(&sha, graph);
+    uint8_t digest[CBM_SHA256_DIGEST_LEN];
+    cbm_sha256_final(&sha, digest);
+    uint64_t hash = 0;
+    for (int index = 0; index < 8; index++) {
+        hash = (hash << 8U) | digest[index];
+    }
+    return hash;
+}
+
+static void query_graph_result_digest(const cbm_cypher_result_t *result,
+                                      char out[CBM_SHA256_HEX_LEN + 1]) {
+    static const char domain[] = "cbm.query_graph.materialization.v1";
+    cbm_sha256_ctx sha;
+    cbm_sha256_init(&sha);
+    cbm_sha256_update(&sha, domain, sizeof(domain));
+    query_graph_sha_u64(&sha, (uint64_t)result->col_count);
+    query_graph_sha_u64(&sha, (uint64_t)result->row_count);
+    const uint8_t truncated = result->truncated ? 1U : 0U;
+    cbm_sha256_update(&sha, &truncated, sizeof(truncated));
+    query_graph_sha_field(&sha, result->warning);
+    for (int column = 0; column < result->col_count; column++) {
+        query_graph_sha_field(&sha, result->columns ? result->columns[column] : NULL);
+    }
+    for (int row = 0; row < result->row_count; row++) {
+        const char **cells = result->rows ? result->rows[row] : NULL;
+        for (int column = 0; column < result->col_count; column++) {
+            query_graph_sha_field(&sha, cells ? cells[column] : NULL);
+        }
+    }
+    uint8_t digest[CBM_SHA256_DIGEST_LEN];
+    cbm_sha256_final(&sha, digest);
+    query_graph_digest_hex(digest, out);
+}
+
+static void query_graph_cursor_seal(const query_graph_cursor_t *cursor, char out[17]) {
+    static const char domain[] = "cbm.query_graph.cursor.v1";
+    cbm_sha256_ctx sha;
+    cbm_sha256_init(&sha);
+    cbm_sha256_update(&sha, domain, sizeof(domain));
+    query_graph_sha_field(&sha, cursor->generation);
+    query_graph_sha_u64(&sha, cursor->params_hash);
+    query_graph_sha_field(&sha, cursor->result_digest);
+    query_graph_sha_u64(&sha, (uint64_t)cursor->offset);
+    uint8_t digest[CBM_SHA256_DIGEST_LEN];
+    cbm_sha256_final(&sha, digest);
+    char full_hex[CBM_SHA256_HEX_LEN + 1];
+    query_graph_digest_hex(digest, full_hex);
+    memcpy(out, full_hex, 16);
+    out[16] = '\0';
+}
+
+static bool query_graph_cursor_encode(const query_graph_cursor_context_t *context, int offset,
+                                      char out[QUERY_GRAPH_CURSOR_TOKEN_CAP]) {
+    if (!context || !context->can_mint || !context->generation || !context->result_digest ||
+        offset <= 0) {
+        return false;
+    }
+    query_graph_cursor_t cursor = {.params_hash = context->params_hash, .offset = offset};
+    snprintf(cursor.generation, sizeof(cursor.generation), "%s", context->generation);
+    snprintf(cursor.result_digest, sizeof(cursor.result_digest), "%.*s",
+             QUERY_GRAPH_CURSOR_DIGEST_HEX_LEN, context->result_digest);
+    char seal[17];
+    query_graph_cursor_seal(&cursor, seal);
+    int written =
+        snprintf(out, QUERY_GRAPH_CURSOR_TOKEN_CAP, "q1.%s.%016llx.%s.%d.%s", cursor.generation,
+                 (unsigned long long)cursor.params_hash, cursor.result_digest, cursor.offset, seal);
+    return written > 0 && written < QUERY_GRAPH_CURSOR_TOKEN_CAP;
+}
+
+static bool query_graph_hex_span(const char *begin, const char *end, size_t expected) {
+    if (!begin || !end || end < begin || (size_t)(end - begin) != expected) {
+        return false;
+    }
+    for (const char *digit = begin; digit < end; digit++) {
+        if (!isxdigit((unsigned char)*digit)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* Decode and validate every token field that does not require executing the
+ * query. The materialization digest itself is checked immediately after the
+ * full query has been re-executed. */
+static const char *query_graph_cursor_decode(const char *token, const char *current_generation,
+                                             uint64_t expected_params_hash,
+                                             query_graph_cursor_t *out) {
+    static const char invalid[] =
+        "invalid_cursor: unrecognized or modified token — re-run the original query without "
+        "'cursor'";
+    memset(out, 0, sizeof(*out));
+    if (!token || strncmp(token, "q1.", 3) != 0) {
+        return invalid;
+    }
+    const char *generation_start = token + 3;
+    const char *generation_end = strchr(generation_start, '.');
+    if (!generation_end || generation_end == generation_start ||
+        (size_t)(generation_end - generation_start) >= sizeof(out->generation)) {
+        return invalid;
+    }
+    memcpy(out->generation, generation_start, (size_t)(generation_end - generation_start));
+    out->generation[generation_end - generation_start] = '\0';
+
+    const char *hash_start = generation_end + 1;
+    const char *hash_end = strchr(hash_start, '.');
+    if (!query_graph_hex_span(hash_start, hash_end, 16)) {
+        return invalid;
+    }
+    errno = 0;
+    char *parsed_end = NULL;
+    unsigned long long parsed_hash = strtoull(hash_start, &parsed_end, 16);
+    if (errno == ERANGE || parsed_end != hash_end) {
+        return invalid;
+    }
+    out->params_hash = (uint64_t)parsed_hash;
+
+    const char *digest_start = hash_end + 1;
+    const char *digest_end = strchr(digest_start, '.');
+    if (!query_graph_hex_span(digest_start, digest_end, QUERY_GRAPH_CURSOR_DIGEST_HEX_LEN)) {
+        return invalid;
+    }
+    memcpy(out->result_digest, digest_start, QUERY_GRAPH_CURSOR_DIGEST_HEX_LEN);
+    out->result_digest[QUERY_GRAPH_CURSOR_DIGEST_HEX_LEN] = '\0';
+
+    const char *offset_start = digest_end + 1;
+    const char *offset_end = strchr(offset_start, '.');
+    errno = 0;
+    long parsed_offset = offset_end ? strtol(offset_start, &parsed_end, 10) : -1;
+    if (!offset_end || offset_end == offset_start || errno == ERANGE || parsed_end != offset_end ||
+        parsed_offset <= 0 || parsed_offset > INT_MAX) {
+        return invalid;
+    }
+    out->offset = (int)parsed_offset;
+
+    const char *seal_start = offset_end + 1;
+    const char *seal_end = token + strlen(token);
+    if (!query_graph_hex_span(seal_start, seal_end, 16)) {
+        return invalid;
+    }
+    char expected_seal[17];
+    query_graph_cursor_seal(out, expected_seal);
+    if (memcmp(seal_start, expected_seal, 16) != 0) {
+        return invalid;
+    }
+    if (out->params_hash != expected_params_hash) {
+        return "cursor_params_mismatch: this cursor was issued for a different "
+               "query/project/graph — pass those arguments unchanged";
+    }
+    if (strcmp(out->generation, current_generation) != 0) {
+        return "stale_cursor: the project was reindexed since this cursor was issued — re-run "
+               "the original query without 'cursor'";
+    }
+    return NULL;
+}
+
 static bool query_graph_semantic_prefix_column(const char *column) {
     if (!column) {
         return false;
@@ -4742,7 +4953,8 @@ static const char *query_graph_truncation_reason(const cbm_cypher_result_t *resu
 
 static char *query_graph_tree_response_text(const cbm_cypher_result_t *result, int row_offset,
                                             int row_count, int visible_count, bool exact_total,
-                                            bool allow_directory) {
+                                            bool allow_directory,
+                                            const query_graph_cursor_context_t *cursor_context) {
     bool budget_hit = row_count < visible_count;
     bool materialized_more = row_offset + row_count < result->row_count;
     bool page_limit_hit = !budget_hit && materialized_more;
@@ -4769,6 +4981,10 @@ static char *query_graph_tree_response_text(const cbm_cypher_result_t *result, i
         cbm_tree_scalar_str(&sb, "truncation_reason", reason);
     }
     if (row_count > 0 && materialized_more) {
+        char next_cursor[QUERY_GRAPH_CURSOR_TOKEN_CAP];
+        if (query_graph_cursor_encode(cursor_context, row_offset + row_count, next_cursor)) {
+            cbm_tree_scalar_str(&sb, "next_cursor", next_cursor);
+        }
         cbm_tree_scalar_int(&sb, "next_offset", row_offset + row_count);
     } else if (budget_hit && row_count == 0) {
         cbm_tree_scalar_str(&sb, "hint",
@@ -4786,7 +5002,8 @@ static char *query_graph_tree_response_text(const cbm_cypher_result_t *result, i
 }
 
 static char *query_graph_json_response_text(const cbm_cypher_result_t *result, int row_offset,
-                                            int row_count, int visible_count, bool exact_total) {
+                                            int row_count, int visible_count, bool exact_total,
+                                            const query_graph_cursor_context_t *cursor_context) {
     bool budget_hit = row_count < visible_count;
     bool materialized_more = row_offset + row_count < result->row_count;
     bool page_limit_hit = !budget_hit && materialized_more;
@@ -4822,6 +5039,10 @@ static char *query_graph_json_response_text(const cbm_cypher_result_t *result, i
         yyjson_mut_obj_add_str(doc, root, "truncation_reason", reason);
     }
     if (row_count > 0 && materialized_more) {
+        char next_cursor[QUERY_GRAPH_CURSOR_TOKEN_CAP];
+        if (query_graph_cursor_encode(cursor_context, row_offset + row_count, next_cursor)) {
+            yyjson_mut_obj_add_strcpy(doc, root, "next_cursor", next_cursor);
+        }
         yyjson_mut_obj_add_int(doc, root, "next_offset", row_offset + row_count);
     } else if (budget_hit && row_count == 0) {
         yyjson_mut_obj_add_str(doc, root, "hint",
@@ -4901,10 +5122,12 @@ static char *handle_query_graph(cbm_mcp_server_t *srv, const char *args) {
     } else if (visible_limit < 0) {
         visible_limit = 1;
     }
-    int row_offset = cbm_mcp_get_int_arg(args, "offset", 0);
+    int requested_offset = cbm_mcp_get_int_arg(args, "offset", 0);
+    int row_offset = requested_offset;
     if (row_offset < 0) {
         row_offset = 0;
     }
+    char *cursor_arg = cbm_mcp_get_string_arg(args, "cursor");
 
     /* graph="missed" (#963): run the SAME cypher against the derived
      * miss-graph view (shadow project "<project>::missed") instead of the
@@ -4914,10 +5137,12 @@ static char *handle_query_graph(cbm_mcp_server_t *srv, const char *args) {
     free(graph_arg);
 
     if (!query) {
+        free(cursor_arg);
         free(project);
         return cbm_mcp_text_result("query is required", true);
     }
     if (missed_graph && !project) {
+        free(cursor_arg);
         free(query);
         return cbm_mcp_text_result("project is required when graph=\"missed\"", true);
     }
@@ -4925,6 +5150,7 @@ static char *handle_query_graph(cbm_mcp_server_t *srv, const char *args) {
         char *_err = build_project_list_error("project not found or not indexed");
         char *_res = cbm_mcp_text_result(_err, true);
         free(_err);
+        free(cursor_arg);
         free(project);
         free(query);
         return _res;
@@ -4932,6 +5158,7 @@ static char *handle_query_graph(cbm_mcp_server_t *srv, const char *args) {
 
     char *not_indexed = verify_project_indexed(store, project);
     if (not_indexed) {
+        free(cursor_arg);
         free(project);
         free(query);
         return not_indexed;
@@ -4942,6 +5169,49 @@ static char *handle_query_graph(cbm_mcp_server_t *srv, const char *args) {
     if (missed_graph) {
         cbm_store_coverage_shadow_project(covproj, sizeof(covproj), project);
         cypher_project = covproj;
+    }
+
+    char generation[QUERY_GRAPH_GENERATION_CAP] = "";
+    int generation_rc = cbm_store_generation(store, generation, sizeof(generation));
+    if (generation_rc != CBM_STORE_OK) {
+        free(cursor_arg);
+        free(project);
+        free(query);
+        return cbm_mcp_text_result(
+            "index_metadata_error: generation metadata is unreadable; reindex before querying",
+            true);
+    }
+    bool generation_available = generation[0] != '\0';
+    const char *effective_project = project ? project : srv->current_project;
+    uint64_t params_hash =
+        query_graph_params_hash(effective_project, query, missed_graph ? "missed" : "code");
+    query_graph_cursor_t cursor = {0};
+    if (cursor_arg) {
+        if (requested_offset != 0) {
+            free(cursor_arg);
+            free(project);
+            free(query);
+            return cbm_mcp_text_result(
+                "invalid_params: cursor cannot be combined with a nonzero offset", true);
+        }
+        if (!generation_available || strcmp(generation, "legacy") == 0) {
+            free(cursor_arg);
+            free(project);
+            free(query);
+            return cbm_mcp_text_result(
+                "cursor_unsupported: this index predates generation tracking; reindex before "
+                "using snapshot pagination",
+                true);
+        }
+        const char *cursor_error =
+            query_graph_cursor_decode(cursor_arg, generation, params_hash, &cursor);
+        if (cursor_error) {
+            free(cursor_arg);
+            free(project);
+            free(query);
+            return cbm_mcp_text_result(cursor_error, true);
+        }
+        row_offset = cursor.offset;
     }
 
     cbm_cypher_result_t result = {0};
@@ -4955,10 +5225,32 @@ static char *handle_query_graph(cbm_mcp_server_t *srv, const char *args) {
         char *err_msg = result.error ? result.error : "query execution failed";
         char *resp = cbm_mcp_text_result(err_msg, true);
         cbm_cypher_result_free(&result);
+        free(cursor_arg);
         free(query);
         free(project);
         return resp;
     }
+
+    char result_digest[CBM_SHA256_HEX_LEN + 1];
+    query_graph_result_digest(&result, result_digest);
+    if (cursor_arg &&
+        strncmp(cursor.result_digest, result_digest, QUERY_GRAPH_CURSOR_DIGEST_HEX_LEN) != 0) {
+        char *resp = cbm_mcp_text_result(
+            "stale_cursor: the complete query materialization changed since this cursor was "
+            "issued; re-run the original query without 'cursor'",
+            true);
+        cbm_cypher_result_free(&result);
+        free(cursor_arg);
+        free(query);
+        free(project);
+        return resp;
+    }
+    query_graph_cursor_context_t cursor_context = {
+        .generation = generation,
+        .params_hash = params_hash,
+        .result_digest = result_digest,
+        .can_mint = generation_available && strcmp(generation, "legacy") != 0,
+    };
 
     /* Response encoding: TOON table by default (the columns double as the
      * table header); format:"json" restores the legacy columns/rows arrays. */
@@ -5012,8 +5304,8 @@ static char *handle_query_graph(cbm_mcp_server_t *srv, const char *args) {
         int high = exact_upper;
         while (low <= high) {
             int middle = low + (high - low) / 2;
-            char *candidate = query_graph_json_response_text(&result, row_offset, middle,
-                                                             available_rows, exact_total);
+            char *candidate = query_graph_json_response_text(
+                &result, row_offset, middle, available_rows, exact_total, &cursor_context);
             bool fits = candidate && strlen(candidate) <= byte_budget;
             free(candidate);
             if (fits) {
@@ -5024,7 +5316,7 @@ static char *handle_query_graph(cbm_mcp_server_t *srv, const char *args) {
             }
         }
         json = query_graph_json_response_text(&result, row_offset, output_rows, available_rows,
-                                              exact_total);
+                                              exact_total, &cursor_context);
     } else {
         /* A repeated multi-KiB path/QN prefix can make the complete compact
          * page tiny even when the raw estimate is enormous. Probe that common
@@ -5032,8 +5324,9 @@ static char *handle_query_graph(cbm_mcp_server_t *srv, const char *args) {
          * using the conservative raw estimate. */
         enum { QUERY_COMPACT_FULL_PROBE_MAX_BYTES = 16 * 1024 * 1024 };
         if (available_rows <= 512 && estimated <= QUERY_COMPACT_FULL_PROBE_MAX_BYTES) {
-            char *candidate = query_graph_tree_response_text(&result, row_offset, available_rows,
-                                                             available_rows, exact_total, true);
+            char *candidate =
+                query_graph_tree_response_text(&result, row_offset, available_rows, available_rows,
+                                               exact_total, true, &cursor_context);
             if (candidate && strlen(candidate) <= byte_budget) {
                 output_rows = available_rows;
                 json = candidate;
@@ -5048,8 +5341,9 @@ static char *handle_query_graph(cbm_mcp_server_t *srv, const char *args) {
             int high = exact_upper;
             while (low <= high) {
                 int middle = low + (high - low) / 2;
-                char *candidate = query_graph_tree_response_text(
-                    &result, row_offset, middle, available_rows, exact_total, false);
+                char *candidate =
+                    query_graph_tree_response_text(&result, row_offset, middle, available_rows,
+                                                   exact_total, false, &cursor_context);
                 bool fits = candidate && strlen(candidate) <= byte_budget;
                 free(candidate);
                 if (fits) {
@@ -5073,7 +5367,8 @@ static char *handle_query_graph(cbm_mcp_server_t *srv, const char *args) {
             for (int candidate_rows = compact_upper; candidate_rows > output_rows;
                  candidate_rows--) {
                 char *candidate = query_graph_tree_response_text(
-                    &result, row_offset, candidate_rows, available_rows, exact_total, true);
+                    &result, row_offset, candidate_rows, available_rows, exact_total, true,
+                    &cursor_context);
                 bool fits = candidate && strlen(candidate) <= byte_budget;
                 if (fits) {
                     output_rows = candidate_rows;
@@ -5083,8 +5378,9 @@ static char *handle_query_graph(cbm_mcp_server_t *srv, const char *args) {
                 free(candidate);
             }
             if (!json) {
-                json = query_graph_tree_response_text(&result, row_offset, output_rows,
-                                                      available_rows, exact_total, true);
+                json =
+                    query_graph_tree_response_text(&result, row_offset, output_rows, available_rows,
+                                                   exact_total, true, &cursor_context);
             }
         }
     }
@@ -5093,6 +5389,7 @@ static char *handle_query_graph(cbm_mcp_server_t *srv, const char *args) {
         json = query_graph_budget_floor_text(&result, row_offset, exact_total, qg_legacy_json);
     }
     cbm_cypher_result_free(&result);
+    free(cursor_arg);
     free(query);
     free(project);
 
@@ -11054,21 +11351,19 @@ static void build_grep_cmd(char *cmd, size_t cmd_sz, bool use_regex, bool scoped
             /* -0: read NUL-separated paths from the filelist so paths containing
              * spaces stay one argument (issue #687). Pairs with the NUL separator
              * written by write_scoped_filelist. */
-            snprintf(
-                cmd, cmd_sz,
-                "xargs -0 sh -c 'pat=$1; shift; if [ \"$#\" -eq 0 ]; then exit 0; fi; "
-                "grep -Hn %s --include=\"%s\" -f \"$pat\" -- \"$@\"; rc=$?; if [ \"$rc\" "
-                "-eq 1 ]; then exit 0; fi; if [ \"$rc\" -ne 0 ]; then exit 255; fi; "
-                "exit 0' sh '%s' < '%s' 2>/dev/null",
-                flag, file_pattern, tmpfile, filelist);
+            snprintf(cmd, cmd_sz,
+                     "xargs -0 sh -c 'pat=$1; shift; if [ \"$#\" -eq 0 ]; then exit 0; fi; "
+                     "grep -Hn %s --include=\"%s\" -f \"$pat\" -- \"$@\"; rc=$?; if [ \"$rc\" "
+                     "-eq 1 ]; then exit 0; fi; if [ \"$rc\" -ne 0 ]; then exit 255; fi; "
+                     "exit 0' sh '%s' < '%s' 2>/dev/null",
+                     flag, file_pattern, tmpfile, filelist);
         } else {
-            snprintf(
-                cmd, cmd_sz,
-                "xargs -0 sh -c 'pat=$1; shift; if [ \"$#\" -eq 0 ]; then exit 0; fi; "
-                "grep -Hn %s -f \"$pat\" -- \"$@\"; rc=$?; if [ \"$rc\" -eq 1 ]; then "
-                "exit 0; fi; if [ \"$rc\" -ne 0 ]; then exit 255; fi; exit 0' sh '%s' "
-                "< '%s' 2>/dev/null",
-                flag, tmpfile, filelist);
+            snprintf(cmd, cmd_sz,
+                     "xargs -0 sh -c 'pat=$1; shift; if [ \"$#\" -eq 0 ]; then exit 0; fi; "
+                     "grep -Hn %s -f \"$pat\" -- \"$@\"; rc=$?; if [ \"$rc\" -eq 1 ]; then "
+                     "exit 0; fi; if [ \"$rc\" -ne 0 ]; then exit 255; fi; exit 0' sh '%s' "
+                     "< '%s' 2>/dev/null",
+                     flag, tmpfile, filelist);
         }
     } else {
         /* Do not pipe discovery directly into sort/xargs: POSIX sh reports only
@@ -11078,29 +11373,27 @@ static void build_grep_cmd(char *cmd, size_t cmd_sz, bool use_regex, bool scoped
          * The xargs wrapper's zero-argument guard also makes empty discovery
          * succeed on both GNU (runs once) and BSD (runs zero times) xargs. */
         if (file_pattern) {
-            snprintf(
-                cmd, cmd_sz,
-                "fl='%s'; find '%s' -type f -name '%s' -print0 > \"$fl\" 2>/dev/null; "
-                "rc=$?; if [ \"$rc\" -ne 0 ]; then exit \"$rc\"; fi; "
-                "LC_ALL=C sort -z -o \"$fl\" \"$fl\" 2>/dev/null; rc=$?; "
-                "if [ \"$rc\" -ne 0 ]; then exit \"$rc\"; fi; "
-                "xargs -0 sh -c 'pat=$1; shift; if [ \"$#\" -eq 0 ]; then exit 0; fi; "
-                "grep -Hn %s -f \"$pat\" -- \"$@\"; rc=$?; if [ \"$rc\" -eq 1 ]; then "
-                "exit 0; fi; if [ \"$rc\" -ne 0 ]; then exit 255; fi; exit 0' sh '%s' "
-                "< \"$fl\" 2>/dev/null",
-                filelist, root_path, file_pattern, flag, tmpfile);
+            snprintf(cmd, cmd_sz,
+                     "fl='%s'; find '%s' -type f -name '%s' -print0 > \"$fl\" 2>/dev/null; "
+                     "rc=$?; if [ \"$rc\" -ne 0 ]; then exit \"$rc\"; fi; "
+                     "LC_ALL=C sort -z -o \"$fl\" \"$fl\" 2>/dev/null; rc=$?; "
+                     "if [ \"$rc\" -ne 0 ]; then exit \"$rc\"; fi; "
+                     "xargs -0 sh -c 'pat=$1; shift; if [ \"$#\" -eq 0 ]; then exit 0; fi; "
+                     "grep -Hn %s -f \"$pat\" -- \"$@\"; rc=$?; if [ \"$rc\" -eq 1 ]; then "
+                     "exit 0; fi; if [ \"$rc\" -ne 0 ]; then exit 255; fi; exit 0' sh '%s' "
+                     "< \"$fl\" 2>/dev/null",
+                     filelist, root_path, file_pattern, flag, tmpfile);
         } else {
-            snprintf(
-                cmd, cmd_sz,
-                "fl='%s'; find '%s' -type f -print0 > \"$fl\" 2>/dev/null; rc=$?; "
-                "if [ \"$rc\" -ne 0 ]; then exit \"$rc\"; fi; "
-                "LC_ALL=C sort -z -o \"$fl\" \"$fl\" 2>/dev/null; rc=$?; "
-                "if [ \"$rc\" -ne 0 ]; then exit \"$rc\"; fi; "
-                "xargs -0 sh -c 'pat=$1; shift; if [ \"$#\" -eq 0 ]; then exit 0; fi; "
-                "grep -Hn %s -f \"$pat\" -- \"$@\"; rc=$?; if [ \"$rc\" -eq 1 ]; then "
-                "exit 0; fi; if [ \"$rc\" -ne 0 ]; then exit 255; fi; exit 0' sh '%s' "
-                "< \"$fl\" 2>/dev/null",
-                filelist, root_path, flag, tmpfile);
+            snprintf(cmd, cmd_sz,
+                     "fl='%s'; find '%s' -type f -print0 > \"$fl\" 2>/dev/null; rc=$?; "
+                     "if [ \"$rc\" -ne 0 ]; then exit \"$rc\"; fi; "
+                     "LC_ALL=C sort -z -o \"$fl\" \"$fl\" 2>/dev/null; rc=$?; "
+                     "if [ \"$rc\" -ne 0 ]; then exit \"$rc\"; fi; "
+                     "xargs -0 sh -c 'pat=$1; shift; if [ \"$#\" -eq 0 ]; then exit 0; fi; "
+                     "grep -Hn %s -f \"$pat\" -- \"$@\"; rc=$?; if [ \"$rc\" -eq 1 ]; then "
+                     "exit 0; fi; if [ \"$rc\" -ne 0 ]; then exit 255; fi; exit 0' sh '%s' "
+                     "< \"$fl\" 2>/dev/null",
+                     filelist, root_path, flag, tmpfile);
         }
     }
 #endif
@@ -11330,13 +11623,12 @@ static char *search_match_lines_text(const search_result_t *result, int match_li
  * distribution table, and the summary scalars. */
 static char *assemble_search_output_toon(search_result_t *sr, int sr_count, grep_match_t *raw,
                                          int raw_count, int raw_content_truncated, int gm_count,
-                                         int result_start,
-                                         int result_limit, int output_count, int raw_start,
-                                         int raw_output, int directory_start, int directory_output,
-                                         int raw_limit, int directory_limit, int match_limit,
-                                         bool scan_saturated, bool warn_literal_pipe,
-                                         uint64_t elapsed_ms, bool budget_hit,
-                                         int source_lines_returned) {
+                                         int result_start, int result_limit, int output_count,
+                                         int raw_start, int raw_output, int directory_start,
+                                         int directory_output, int raw_limit, int directory_limit,
+                                         int match_limit, bool scan_saturated,
+                                         bool warn_literal_pipe, uint64_t elapsed_ms,
+                                         bool budget_hit, int source_lines_returned) {
     enum { SEARCH_SLOW_MS = 5000 };
     cbm_sb_t sb;
     cbm_sb_init(&sb);
@@ -11572,15 +11864,12 @@ static char *assemble_search_output_toon(search_result_t *sr, int sr_count, grep
 }
 
 /* Phase 4: assemble JSON output from search results */
-static char *assemble_search_output(search_result_t *sr, int sr_count, grep_match_t *raw,
-                                    int raw_count, int raw_content_truncated, int gm_count,
-                                    int result_start, int result_limit,
-                                    int output_count, int raw_start, int raw_output,
-                                    int directory_start, int directory_output, int raw_limit,
-                                    int directory_limit, int match_limit, int mode,
-                                    int context_lines, int source_max_lines, const char *root_path,
-                                    bool scan_saturated, bool warn_literal_pipe,
-                                    uint64_t elapsed_ms, bool budget_hit) {
+static char *assemble_search_output(
+    search_result_t *sr, int sr_count, grep_match_t *raw, int raw_count, int raw_content_truncated,
+    int gm_count, int result_start, int result_limit, int output_count, int raw_start,
+    int raw_output, int directory_start, int directory_output, int raw_limit, int directory_limit,
+    int match_limit, int mode, int context_lines, int source_max_lines, const char *root_path,
+    bool scan_saturated, bool warn_literal_pipe, uint64_t elapsed_ms, bool budget_hit) {
     enum { MODE_COMPACT = 0, MODE_FULL = 1, MODE_FILES = 2, SEARCH_SLOW_MS = 5000 };
 
     yyjson_mut_doc *doc = yyjson_mut_doc_new(NULL);
@@ -11814,18 +12103,18 @@ static char *assemble_search_output(search_result_t *sr, int sr_count, grep_matc
 static char *render_search_payload(search_result_t *sr, int sr_count, grep_match_t *raw,
                                    int raw_count, int raw_content_truncated, int gm_count,
                                    int result_start, int result_limit, int output_count,
-                                   int raw_start, int raw_output,
-                                   int directory_start, int directory_output, int raw_limit,
-                                   int directory_limit, int match_limit, int mode,
-                                   int context_lines, int source_max_lines, const char *root_path,
-                                   bool scan_saturated, bool warn_literal_pipe, uint64_t elapsed_ms,
-                                   bool budget_hit, bool json_format) {
+                                   int raw_start, int raw_output, int directory_start,
+                                   int directory_output, int raw_limit, int directory_limit,
+                                   int match_limit, int mode, int context_lines,
+                                   int source_max_lines, const char *root_path, bool scan_saturated,
+                                   bool warn_literal_pipe, uint64_t elapsed_ms, bool budget_hit,
+                                   bool json_format) {
     if (mode == 0 && !json_format) {
-        return assemble_search_output_toon(
-            sr, sr_count, raw, raw_count, raw_content_truncated, gm_count, result_start,
-            result_limit, output_count, raw_start, raw_output, directory_start, directory_output,
-            raw_limit, directory_limit, match_limit, scan_saturated, warn_literal_pipe, elapsed_ms,
-            budget_hit, -1);
+        return assemble_search_output_toon(sr, sr_count, raw, raw_count, raw_content_truncated,
+                                           gm_count, result_start, result_limit, output_count,
+                                           raw_start, raw_output, directory_start, directory_output,
+                                           raw_limit, directory_limit, match_limit, scan_saturated,
+                                           warn_literal_pipe, elapsed_ms, budget_hit, -1);
     }
 
     char *json = assemble_search_output(
@@ -11873,9 +12162,8 @@ char *cbm_mcp_render_search_rows_for_testing(const char *const *qualified_names,
     }
     char *payload =
         render_search_payload(results, row_count, NULL, 0, 0, row_count, 0, row_count, row_count, 0,
-                              0, 0, row_count, 0, row_count > 0 ? 1 : 0,
-                              row_count > 0 ? 1 : 0, 0, 0, 0, "", false, false, 0, false,
-                              json_format);
+                              0, 0, row_count, 0, row_count > 0 ? 1 : 0, row_count > 0 ? 1 : 0, 0,
+                              0, 0, "", false, false, 0, false, json_format);
     free_search_results(results, initialized);
     return payload;
 }
@@ -12015,8 +12303,7 @@ static bool search_utf8_continuation_byte(unsigned char byte) {
  * paging only when a complete sequence actually spans the requested boundary;
  * malformed bytes remain independently addressable original source bytes. */
 static size_t search_utf8_page_start(const char *content, size_t total, size_t start) {
-    if (start >= total ||
-        !search_utf8_continuation_byte((unsigned char)content[start])) {
+    if (start >= total || !search_utf8_continuation_byte((unsigned char)content[start])) {
         return start;
     }
     size_t earliest = start > 3U ? start - 3U : 0U;
@@ -12108,9 +12395,8 @@ char *cbm_mcp_render_raw_preview_for_testing(const char *content, bool content_o
     }
     grep_match_t raw = {.file = "fixture.raw", .line = 7};
     search_raw_preview(&raw, content, content_offset_set, content_offset, false, 0, 0);
-    return render_search_payload(NULL, 0, &raw, 1, raw.content_truncated ? 1 : 0, 1, 0, 0, 0,
-                                 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, "", false, false, 0, false,
-                                 json_format);
+    return render_search_payload(NULL, 0, &raw, 1, raw.content_truncated ? 1 : 0, 1, 0, 0, 0, 0, 1,
+                                 0, 0, 1, 0, 0, 0, 0, 0, "", false, false, 0, false, json_format);
 }
 #endif
 
@@ -12220,9 +12506,8 @@ static bool add_to_search_results(search_result_t **sr, int *sr_count, int *sr_c
 /* Match a single grep hit to the tightest containing node, then add to sr or raw. */
 static bool classify_grep_hit(grep_match_t *hit, cbm_node_t *file_nodes, int file_node_count,
                               search_result_t **sr, int *sr_count, int *sr_cap, grep_match_t **raw,
-                              int raw_offset, int raw_limit, int *raw_count,
-                              int *raw_stored_count, int *raw_cap,
-                              int *raw_content_truncated) {
+                              int raw_offset, int raw_limit, int *raw_count, int *raw_stored_count,
+                              int *raw_cap, int *raw_content_truncated) {
     int best = find_tightest_node(file_nodes, file_node_count, hit->line);
     if (best >= 0) {
         return add_to_search_results(sr, sr_count, sr_cap, &file_nodes[best], hit->line);
@@ -12237,8 +12522,8 @@ static bool classify_grep_hit(grep_match_t *hit, cbm_node_t *file_nodes, int fil
             }
             (*raw_content_truncated)++;
         }
-        bool retain = raw_limit > 0 && raw_index >= raw_offset &&
-                      raw_index - raw_offset < raw_limit;
+        bool retain =
+            raw_limit > 0 && raw_index >= raw_offset && raw_index - raw_offset < raw_limit;
         if (!retain) {
             return true;
         }
@@ -12279,21 +12564,19 @@ static void free_file_nodes(cbm_node_t *nodes, int count) {
  * line numbers each; raw matches retain only the caller's requested page.
  * Exact totals are counted while the stream is consumed to EOF. */
 static bool scan_and_classify_grep_matches(
-    FILE *fp, const char *root_path, size_t root_len, bool has_path_filter,
-    cbm_regex_t *path_regex, const char *pattern, bool use_regex,
-    bool raw_content_offset_set, size_t raw_content_offset, cbm_store_t *store,
-    const char *project, search_result_t **sr, int *sr_count, int *sr_cap, grep_match_t **raw,
-    int raw_offset, int raw_limit, int *raw_count, int *raw_stored_count, int *raw_cap,
-    int *raw_content_truncated, int *grep_count) {
+    FILE *fp, const char *root_path, size_t root_len, bool has_path_filter, cbm_regex_t *path_regex,
+    const char *pattern, bool use_regex, bool raw_content_offset_set, size_t raw_content_offset,
+    cbm_store_t *store, const char *project, search_result_t **sr, int *sr_count, int *sr_cap,
+    grep_match_t **raw, int raw_offset, int raw_limit, int *raw_count, int *raw_stored_count,
+    int *raw_cap, int *raw_content_truncated, int *grep_count) {
     char *line = NULL;
     size_t line_capacity = 0;
     char *current_file = NULL;
     cbm_node_t *file_nodes = NULL;
     int file_node_count = 0;
     cbm_regex_t content_regex;
-    bool content_regex_ready =
-        use_regex && pattern &&
-        cbm_regcomp(&content_regex, pattern, CBM_REG_EXTENDED) == CBM_REG_OK;
+    bool content_regex_ready = use_regex && pattern &&
+                               cbm_regcomp(&content_regex, pattern, CBM_REG_EXTENDED) == CBM_REG_OK;
     bool ok = true;
 
     for (;;) {
@@ -13700,15 +13983,17 @@ static bool detect_snapshot_add_changed_file(cbm_mcp_server_t *srv, cbm_sha256_c
     detect_snapshot_add_field(hash, metadata);
     bool complete = true;
     if (info.is_regular) {
-        bool allow_open = true;
+        FILE *file = NULL;
 #ifdef CBM_ENABLE_TEST_SEAMS
-        if (srv && srv->snapshot_read_test_hook) {
-            allow_open = srv->snapshot_read_test_hook(srv->snapshot_read_test_context, absolute);
+        bool allow_open = !srv || !srv->snapshot_read_test_hook ||
+                          srv->snapshot_read_test_hook(srv->snapshot_read_test_context, absolute);
+        if (allow_open) {
+            file = cbm_fopen(absolute, "rb");
         }
 #else
         (void)srv;
+        file = cbm_fopen(absolute, "rb");
 #endif
-        FILE *file = allow_open ? cbm_fopen(absolute, "rb") : NULL;
         if (file) {
             unsigned char buffer[64 * 1024];
             size_t count;
@@ -13736,9 +14021,9 @@ static bool detect_snapshot_add_changed_file(cbm_mcp_server_t *srv, cbm_sha256_c
 }
 
 static bool detect_snapshot_fingerprint(cbm_mcp_server_t *srv, const char *root_path,
-                                        const char *head_oid,
-                                        const char *base_oid, const char *merge_base,
-                                        const char *generation, char **files, int file_count,
+                                        const char *head_oid, const char *base_oid,
+                                        const char *merge_base, const char *generation,
+                                        char **files, int file_count,
                                         const cbm_traverse_result_t *impact,
                                         const detect_module_row_t *modules, int module_count,
                                         int module_overflow, char out[33]) {
@@ -13846,6 +14131,22 @@ static char *handle_detect_changes(cbm_mcp_server_t *srv, const char *args) {
         free(base_branch);
         free(scope);
         return cbm_mcp_text_result("project path contains invalid characters", true);
+    }
+
+    /* Every detect snapshot and cursor is generation-bound. Validate the
+     * metadata immediately after store resolution so fresh requests and
+     * cursor replays fail identically before Git work or cursor minting. */
+    cbm_store_t *store = srv->store;
+    char generation[96] = "";
+    if (cbm_store_generation(store, generation, sizeof(generation)) != CBM_STORE_OK) {
+        free(root_path);
+        free(project);
+        free(base_branch);
+        free(scope);
+        return cbm_mcp_text_result(
+            "index_metadata_error: generation metadata is unreadable; reindex before detecting "
+            "changes",
+            true);
     }
 
     /* Direction of impact. Default inbound = the BLAST RADIUS: the transitive
@@ -14171,9 +14472,6 @@ static char *handle_detect_changes(cbm_mcp_server_t *srv, const char *args) {
         qsort(files, (size_t)file_count, sizeof(*files), detect_changed_path_compare);
     }
 
-    /* resolve_store already called via get_project_root above */
-    cbm_store_t *store = srv->store;
-
     /* Per-symbol impact page size. Engine saturation makes the reported total
      * an explicit lower bound, while impact_offset continues every materialized
      * row without identifier truncation. */
@@ -14306,10 +14604,10 @@ static char *handle_detect_changes(cbm_mcp_server_t *srv, const char *args) {
 
     /* The impact traversal: ONE multi-source BFS over all seeds. */
     cbm_traverse_result_t impact = {0};
-    bool truncated = false;
+    bool engine_saturated = false;
     if (want_symbols && seed_count > 0) {
         (void)cbm_store_bfs_multi(store, seeds, seed_count, direction, NULL, 0, depth,
-                                  MCP_BFS_LIMIT_MAX, &impact, &truncated);
+                                  MCP_BFS_LIMIT_MAX, &impact, &engine_saturated);
     }
 
     detect_module_row_t *modules = NULL;
@@ -14325,14 +14623,12 @@ static char *handle_detect_changes(cbm_mcp_server_t *srv, const char *args) {
      * number of pageable rollup rows for the materialized impact set; its
      * relation becomes `gte` if traversal hit the engine ceiling. */
     int module_total = nmods + (module_overflow > 0 ? 1 : 0);
-    char generation[96] = "unknown";
-    (void)cbm_store_generation(store, generation, sizeof(generation));
-    char detect_snapshot[33];
+    const char *cursor_error = NULL;
+    char detect_snapshot[33] = "";
     bool detect_snapshot_complete = detect_snapshot_fingerprint(
         srv, root_path, head_oid, base_oid, merge_base, generation, files, file_count, &impact,
         modules, nmods, module_overflow, detect_snapshot);
 
-    const char *cursor_error = NULL;
     detect_cursor_t decoded_cursor = {0};
     bool cursor_supplied = (changed_cursor_arg && changed_cursor_arg[0]) ||
                            (impact_cursor_arg && impact_cursor_arg[0]) ||
@@ -14418,7 +14714,12 @@ static char *handle_detect_changes(cbm_mcp_server_t *srv, const char *args) {
     bool output_budget_floor_exceeded = false;
     char *out_str = NULL;
 
-render_detect_output:
+render_detect_output:;
+    bool changed_has_more = changed_start + changed_returned < file_count;
+    bool impacted_has_more = want_symbols && imp_start + imp_returned < impact.visited_count;
+    bool module_has_more = want_symbols && module_start + module_returned < module_total;
+    bool response_truncated = engine_saturated || output_budget_hit || changed_has_more ||
+                              impacted_has_more || module_has_more;
     if (!legacy_json) {
         cbm_sb_t sb;
         cbm_sb_init(&sb);
@@ -14434,6 +14735,9 @@ render_detect_output:
         if (output_budget_floor_exceeded) {
             cbm_tree_scalar_bool(&sb, "output_budget_floor_exceeded", true);
         }
+        if (engine_saturated) {
+            cbm_tree_scalar_bool(&sb, "engine_saturated", true);
+        }
         if (!detect_snapshot_complete) {
             cbm_tree_scalar_bool(&sb, "snapshot_cursor_unavailable", true);
         }
@@ -14441,12 +14745,11 @@ render_detect_output:
          * file, so paging affects presentation only, never the graph answer. */
         cbm_tree_scalar_int(&sb, "changed_total", file_count);
         cbm_tree_scalar_int(&sb, "changed_returned", changed_returned);
-        bool changed_has_more = changed_start + changed_returned < file_count;
         cbm_tree_scalar_bool(&sb, "changed_has_more", changed_has_more);
         if (changed_has_more && changed_returned > 0) {
             cbm_tree_scalar_int(&sb, "changed_next_offset", changed_start + changed_returned);
-            char cursor[80];
             if (detect_snapshot_complete) {
+                char cursor[80];
                 detect_cursor_encode('c', detect_snapshot, detect_qhash,
                                      changed_start + changed_returned, cursor);
                 cbm_tree_scalar_str(&sb, "changed_next_cursor", cursor);
@@ -14476,7 +14779,7 @@ render_detect_output:
         free(changed_cells);
         cbm_tree_scalar_int(&sb, "seed_symbols", seed_count);
         if (want_symbols) {
-            detect_emit_impacted_tree(&sb, &impact, imp_start, imp_returned, truncated);
+            detect_emit_impacted_tree(&sb, &impact, imp_start, imp_returned, engine_saturated);
             if (detect_snapshot_complete && imp_start + imp_returned < impact.visited_count &&
                 imp_returned > 0) {
                 char cursor[80];
@@ -14487,14 +14790,13 @@ render_detect_output:
             /* module rollup: independently pageable, while counts are still
              * computed from the complete impact set. */
             cbm_tree_scalar_int(&sb, "module_total", module_total);
-            cbm_tree_scalar_str(&sb, "module_total_relation", truncated ? "gte" : "eq");
+            cbm_tree_scalar_str(&sb, "module_total_relation", engine_saturated ? "gte" : "eq");
             cbm_tree_scalar_int(&sb, "module_returned", module_returned);
-            bool module_has_more = module_start + module_returned < module_total;
             cbm_tree_scalar_bool(&sb, "module_has_more", module_has_more);
             if (module_has_more && module_returned > 0) {
                 cbm_tree_scalar_int(&sb, "module_next_offset", module_start + module_returned);
-                char cursor[80];
                 if (detect_snapshot_complete) {
+                    char cursor[80];
                     detect_cursor_encode('m', detect_snapshot, detect_qhash,
                                          module_start + module_returned, cursor);
                     cbm_tree_scalar_str(&sb, "module_next_cursor", cursor);
@@ -14529,13 +14831,13 @@ render_detect_output:
             }
             free(count_text);
             free(cells);
-            if (truncated) {
+            if (engine_saturated) {
                 cbm_tree_scalar_str(&sb, "hint",
                                     "impact hit the safety ceiling — narrow with a lower "
                                     "'depth' or a smaller diff");
             }
         }
-        if (truncated || output_budget_hit) {
+        if (response_truncated) {
             cbm_tree_scalar_bool(&sb, "truncated", true);
         }
         out_str = cbm_sb_finish(&sb);
@@ -14556,18 +14858,20 @@ render_detect_output:
         if (output_budget_floor_exceeded) {
             yyjson_mut_obj_add_bool(doc, root_obj, "output_budget_floor_exceeded", true);
         }
+        if (engine_saturated) {
+            yyjson_mut_obj_add_bool(doc, root_obj, "engine_saturated", true);
+        }
         if (!detect_snapshot_complete) {
             yyjson_mut_obj_add_bool(doc, root_obj, "snapshot_cursor_unavailable", true);
         }
         yyjson_mut_obj_add_int(doc, root_obj, "changed_total", file_count);
         yyjson_mut_obj_add_int(doc, root_obj, "changed_returned", changed_returned);
-        bool changed_has_more = changed_start + changed_returned < file_count;
         yyjson_mut_obj_add_bool(doc, root_obj, "changed_has_more", changed_has_more);
         if (changed_has_more && changed_returned > 0) {
             yyjson_mut_obj_add_int(doc, root_obj, "changed_next_offset",
                                    changed_start + changed_returned);
-            char cursor[80];
             if (detect_snapshot_complete) {
+                char cursor[80];
                 detect_cursor_encode('c', detect_snapshot, detect_qhash,
                                      changed_start + changed_returned, cursor);
                 yyjson_mut_obj_add_strcpy(doc, root_obj, "changed_next_cursor", cursor);
@@ -14586,7 +14890,8 @@ render_detect_output:
         yyjson_mut_obj_add_val(doc, root_obj, "changed_files", cf);
         yyjson_mut_obj_add_int(doc, root_obj, "seed_symbols", seed_count);
         yyjson_mut_obj_add_int(doc, root_obj, "impacted_total", impact.visited_count);
-        yyjson_mut_obj_add_str(doc, root_obj, "impacted_total_relation", truncated ? "gte" : "eq");
+        yyjson_mut_obj_add_str(doc, root_obj, "impacted_total_relation",
+                               engine_saturated ? "gte" : "eq");
         yyjson_mut_obj_add_int(doc, root_obj, "impacted_shown", imp_returned);
         yyjson_mut_val *imp = yyjson_mut_arr(doc);
         for (int i = imp_start; i < imp_start + imp_returned; i++) {
@@ -14603,7 +14908,6 @@ render_detect_output:
             yyjson_mut_arr_add_val(imp, o);
         }
         yyjson_mut_obj_add_val(doc, root_obj, "impacted", imp);
-        bool impacted_has_more = imp_start + imp_returned < impact.visited_count;
         yyjson_mut_obj_add_bool(doc, root_obj, "impacted_has_more", impacted_has_more);
         if (impacted_has_more && imp_returned > 0) {
             yyjson_mut_obj_add_int(doc, root_obj, "impacted_next_offset", imp_start + imp_returned);
@@ -14621,9 +14925,8 @@ render_detect_output:
         if (want_symbols) {
             yyjson_mut_obj_add_int(doc, root_obj, "module_total", module_total);
             yyjson_mut_obj_add_str(doc, root_obj, "module_total_relation",
-                                   truncated ? "gte" : "eq");
+                                   engine_saturated ? "gte" : "eq");
             yyjson_mut_obj_add_int(doc, root_obj, "module_returned", module_returned);
-            bool module_has_more = module_start + module_returned < module_total;
             yyjson_mut_obj_add_bool(doc, root_obj, "module_has_more", module_has_more);
             if (module_has_more && module_returned > 0) {
                 yyjson_mut_obj_add_int(doc, root_obj, "module_next_offset",
@@ -14655,7 +14958,7 @@ render_detect_output:
             }
             yyjson_mut_obj_add_val(doc, root_obj, "impacted_modules", rollup);
         }
-        yyjson_mut_obj_add_bool(doc, root_obj, "truncated", truncated || output_budget_hit);
+        yyjson_mut_obj_add_bool(doc, root_obj, "truncated", response_truncated);
         out_str = yy_doc_to_str(doc);
         yyjson_mut_doc_free(doc);
     }
@@ -14686,6 +14989,9 @@ render_detect_output:
                 cbm_tree_scalar_str(&floor, "truncation_reason", "output_budget");
                 cbm_tree_scalar_bool(&floor, "truncated", true);
                 cbm_tree_scalar_bool(&floor, "output_budget_floor_exceeded", true);
+                if (engine_saturated) {
+                    cbm_tree_scalar_bool(&floor, "engine_saturated", true);
+                }
                 cbm_tree_scalar_int(&floor, "max_output_bytes", (long long)output_budget_bytes);
                 cbm_tree_scalar_str(&floor, "hint",
                                     "mandatory detect_changes metadata exceeds the budget; raise "
@@ -14698,6 +15004,9 @@ render_detect_output:
                 yyjson_mut_obj_add_str(floor_doc, floor, "truncation_reason", "output_budget");
                 yyjson_mut_obj_add_bool(floor_doc, floor, "truncated", true);
                 yyjson_mut_obj_add_bool(floor_doc, floor, "output_budget_floor_exceeded", true);
+                if (engine_saturated) {
+                    yyjson_mut_obj_add_bool(floor_doc, floor, "engine_saturated", true);
+                }
                 yyjson_mut_obj_add_uint(floor_doc, floor, "max_output_bytes", output_budget_bytes);
                 yyjson_mut_obj_add_str(
                     floor_doc, floor, "hint",
