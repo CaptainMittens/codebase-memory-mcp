@@ -266,6 +266,10 @@ static bool mcp_search_cache_close(mcp_search_cache_t *cache) {
     cache->saved_cache = NULL;
     return th_rmtree(cache->path) == 0;
 }
+static bool mcp_snapshot_read_hook_probe(void *context, const char *absolute_path) {
+    const char *rejected_fragment = context;
+    return !rejected_fragment || !absolute_path || !strstr(absolute_path, rejected_fragment);
+}
 
 typedef struct {
     const char *name;
@@ -13327,6 +13331,37 @@ TEST(tool_detect_changes_pages_changed_files_and_honors_semantic_budget) {
     free(inner);
     free(response);
 
+    /* A cursor is only safe when every changed regular file contributed its
+     * bytes. Force a portable open failure after Git has listed the file: the
+     * first page must stay usable but cannot advertise snapshot-bound cursors,
+     * and an already-issued cursor must fail closed while the snapshot cannot
+     * be re-established. */
+    cbm_mcp_server_set_snapshot_read_test_hook(srv, mcp_snapshot_read_hook_probe, seed_file);
+    response = cbm_mcp_handle_tool(
+        srv, "detect_changes",
+        "{\"project\":\"detect-pages-project\",\"base_branch\":\"HEAD\","
+        "\"scope\":\"files\",\"format\":\"json\"}");
+    ASSERT_NOT_NULL(response);
+    inner = extract_text_content(response);
+    ASSERT_NOT_NULL(inner);
+    doc = yyjson_read(inner, strlen(inner), 0);
+    ASSERT_NOT_NULL(doc);
+    root = yyjson_doc_get_root(doc);
+    ASSERT_TRUE(yyjson_get_bool(yyjson_obj_get(root, "snapshot_cursor_unavailable")));
+    ASSERT_NULL(yyjson_obj_get(root, "changed_next_cursor"));
+    yyjson_doc_free(doc);
+    free(inner);
+    free(response);
+
+    response = cbm_mcp_handle_tool(srv, "detect_changes", cursor_args);
+    ASSERT_NOT_NULL(response);
+    inner = extract_text_content(response);
+    ASSERT_NOT_NULL(inner);
+    ASSERT_NOT_NULL(strstr(inner, "snapshot_unavailable"));
+    free(inner);
+    free(response);
+    cbm_mcp_server_set_snapshot_read_test_hook(srv, NULL, NULL);
+
     /* The same path set with changed bytes is a different live snapshot. The
      * old opaque cursor must fail loudly instead of applying offset 20 to the
      * new ordering/impact model. */
@@ -13340,6 +13375,30 @@ TEST(tool_detect_changes_pages_changed_files_and_honors_semantic_budget) {
     ASSERT_NOT_NULL(strstr(inner, "snapshot_changed"));
     free(inner);
     free(response);
+
+#ifndef _WIN32
+    /* lstat metadata is not the symlink's identity: different target bytes can
+     * have the same length and timestamp. Until those bytes are fingerprinted,
+     * keep the otherwise complete answer but withhold snapshot cursors. */
+    char changed_link[CBM_SZ_4K];
+    snprintf(changed_link, sizeof(changed_link), "%s/changed-link.c", repo);
+    ASSERT_EQ(symlink("first-target", changed_link), 0);
+    response = cbm_mcp_handle_tool(
+        srv, "detect_changes",
+        "{\"project\":\"detect-pages-project\",\"base_branch\":\"HEAD\","
+        "\"scope\":\"files\",\"format\":\"json\"}");
+    ASSERT_NOT_NULL(response);
+    inner = extract_text_content(response);
+    ASSERT_NOT_NULL(inner);
+    doc = yyjson_read(inner, strlen(inner), 0);
+    ASSERT_NOT_NULL(doc);
+    root = yyjson_doc_get_root(doc);
+    ASSERT_TRUE(yyjson_get_bool(yyjson_obj_get(root, "snapshot_cursor_unavailable")));
+    ASSERT_NULL(yyjson_obj_get(root, "changed_next_cursor"));
+    yyjson_doc_free(doc);
+    free(inner);
+    free(response);
+#endif
     free(changed_cursor);
 
     cbm_mcp_server_free(srv);

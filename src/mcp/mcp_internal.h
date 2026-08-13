@@ -76,6 +76,14 @@ void cbm_search_code_build_grep_cmd(char *cmd, size_t cmd_sz, bool use_regex, bo
                                     const char *file_pattern, const char *tmpfile,
                                     const char *filelist, const char *root_path);
 #ifdef CBM_ENABLE_TEST_SEAMS
+/* Reject opening one changed file while detect_changes fingerprints its live
+ * snapshot. This makes otherwise platform-specific permission/read races
+ * deterministic without changing production filesystem behavior. */
+typedef bool (*cbm_mcp_snapshot_read_test_hook_fn)(void *context, const char *absolute_path);
+void cbm_mcp_server_set_snapshot_read_test_hook(cbm_mcp_server_t *srv,
+                                                cbm_mcp_snapshot_read_test_hook_fn hook,
+                                                void *context);
+
 /* Filesystem PATH_MAX prevents a portable end-to-end fixture for multi-KiB
  * stored paths. This seam drives the normal search result ownership,
  * directory aggregation, and renderer pipeline with synthetic identities. */
