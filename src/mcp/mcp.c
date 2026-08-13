@@ -13545,12 +13545,15 @@ static bool detect_snapshot_add_changed_file(cbm_mcp_server_t *srv, cbm_sha256_c
     memcpy(absolute + root_len + 1U, relative_path, relative_len + 1U);
 
     cbm_path_info_t info = {0};
-    if (cbm_path_info_utf8(absolute, &info) != 0) {
-        /* A missing path can be a legitimate deletion, but the portable
-         * metadata API cannot distinguish it from permission and transient
-         * inspection failures on every supported platform. Hash the observed
-         * state for diagnostics, but do not issue a cursor from incomplete
-         * evidence. Offset paging remains available. */
+    int info_status = cbm_path_info_utf8(absolute, &info);
+    if (info_status == CBM_PATH_INFO_ABSENT) {
+        detect_snapshot_add_field(hash, "absent");
+        free(absolute);
+        return true;
+    }
+    if (info_status != CBM_PATH_INFO_OK) {
+        /* Hash the observed failure state for diagnostics, but do not issue a
+         * cursor from incomplete evidence. Offset paging remains available. */
         detect_snapshot_add_field(hash, "metadata_unavailable");
         free(absolute);
         return false;
