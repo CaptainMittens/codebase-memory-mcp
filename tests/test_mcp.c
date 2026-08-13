@@ -593,7 +593,7 @@ static int mcp_count_corrupt_artifacts(const char *cache, const char *project) {
 static int mcp_count_directory_entries_with_prefix(const char *directory, const char *prefix) {
     cbm_dir_t *dir = cbm_opendir(directory);
     if (!dir) {
-        return -1;
+        return 0;
     }
     size_t prefix_length = strlen(prefix);
     int count = 0;
@@ -7554,6 +7554,130 @@ TEST(search_code_default_budget_limits_raw_rows_before_graph_results) {
     PASS();
 }
 
+TEST(search_code_raw_and_directory_remainders_are_independently_pageable) {
+    char tmp[256];
+    snprintf(tmp, sizeof(tmp), "%s/cbm_srch_section_pages_XXXXXX", cbm_tmpdir());
+    ASSERT_NOT_NULL(cbm_mkdtemp(tmp));
+
+    const char *directories[] = {"graph-a", "graph-b"};
+    for (size_t i = 0; i < sizeof(directories) / sizeof(directories[0]); i++) {
+        char path[CBM_SZ_4K];
+        snprintf(path, sizeof(path), "%s/%s", tmp, directories[i]);
+        ASSERT_EQ(cbm_mkdir(path), 0);
+    }
+
+    const char *relative_paths[] = {"graph-a/route.c", "graph-b/function.c", "raw-a.txt",
+                                    "raw-b.txt"};
+    for (size_t i = 0; i < sizeof(relative_paths) / sizeof(relative_paths[0]); i++) {
+        char path[CBM_SZ_4K];
+        snprintf(path, sizeof(path), "%s/%s", tmp, relative_paths[i]);
+        ASSERT_EQ(th_write_file(path, i < 2 ? "int PAGE_NEEDLE_graph = 1;\n"
+                                            : "int PAGE_NEEDLE_raw = 1;\nint sentinel = 0;\n"),
+                  0);
+    }
+
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    ASSERT_NOT_NULL(srv);
+    cbm_store_t *store = cbm_mcp_server_store(srv);
+    ASSERT_NOT_NULL(store);
+    const char *project = "search-section-pages";
+    cbm_mcp_server_set_project(srv, project);
+    ASSERT_EQ(cbm_store_upsert_project(store, project, tmp), CBM_STORE_OK);
+
+    cbm_node_t nodes[] = {
+        {.project = project,
+         .label = "Route",
+         .name = "route_hit",
+         .qualified_name = "fixture.route_hit",
+         .file_path = "graph-a/route.c",
+         .start_line = 1,
+         .end_line = 1},
+        {.project = project,
+         .label = "Function",
+         .name = "function_hit",
+         .qualified_name = "fixture.function_hit",
+         .file_path = "graph-b/function.c",
+         .start_line = 1,
+         .end_line = 1},
+        /* These nodes put the files in the scoped grep list, but deliberately
+         * do not cover the matching first line, leaving one raw row per file. */
+        {.project = project,
+         .label = "Variable",
+         .name = "raw_a_sentinel",
+         .qualified_name = "fixture.raw_a_sentinel",
+         .file_path = "raw-a.txt",
+         .start_line = 2,
+         .end_line = 2},
+        {.project = project,
+         .label = "Variable",
+         .name = "raw_b_sentinel",
+         .qualified_name = "fixture.raw_b_sentinel",
+         .file_path = "raw-b.txt",
+         .start_line = 2,
+         .end_line = 2},
+    };
+    for (size_t i = 0; i < sizeof(nodes) / sizeof(nodes[0]); i++) {
+        ASSERT_GT(cbm_store_upsert_node(store, &nodes[i]), 0);
+    }
+
+    char *first_response = cbm_mcp_handle_tool(
+        srv, "search_code",
+        "{\"pattern\":\"PAGE_NEEDLE\",\"project\":\"search-section-pages\","
+        "\"limit\":2,\"raw_limit\":1,\"directory_limit\":1,"
+        "\"max_output_tokens\":10000,\"format\":\"json\"}");
+    char *first_inner = extract_text_content(first_response);
+    yyjson_doc *first_doc =
+        first_inner ? yyjson_read(first_inner, strlen(first_inner), 0) : NULL;
+    yyjson_val *first_root = first_doc ? yyjson_doc_get_root(first_doc) : NULL;
+    yyjson_val *first_raw = first_root ? yyjson_obj_get(first_root, "raw_matches") : NULL;
+    yyjson_val *first_raw_rows = first_raw ? yyjson_obj_get(first_raw, "rows") : NULL;
+    yyjson_val *first_raw_row = first_raw_rows ? yyjson_arr_get(first_raw_rows, 0) : NULL;
+    yyjson_val *first_directories =
+        first_root ? yyjson_obj_get(first_root, "directories") : NULL;
+    bool first_page_bound =
+        first_root && yyjson_get_int(yyjson_obj_get(first_root, "raw_next_offset")) == 1 &&
+        yyjson_get_int(yyjson_obj_get(first_root, "directory_next_offset")) == 1 &&
+        first_raw_row && strcmp(yyjson_get_str(yyjson_arr_get(first_raw_row, 0)), "raw-a.txt") == 0 &&
+        yyjson_obj_get(first_directories, "graph-a/") != NULL &&
+        yyjson_obj_get(first_directories, "graph-b/") == NULL;
+
+    char *second_response = cbm_mcp_handle_tool(
+        srv, "search_code",
+        "{\"pattern\":\"PAGE_NEEDLE\",\"project\":\"search-section-pages\","
+        "\"limit\":2,\"raw_limit\":1,\"raw_offset\":1,"
+        "\"directory_limit\":1,\"directory_offset\":1,"
+        "\"max_output_tokens\":10000,\"format\":\"json\"}");
+    char *second_inner = extract_text_content(second_response);
+    yyjson_doc *second_doc =
+        second_inner ? yyjson_read(second_inner, strlen(second_inner), 0) : NULL;
+    yyjson_val *second_root = second_doc ? yyjson_doc_get_root(second_doc) : NULL;
+    yyjson_val *second_raw = second_root ? yyjson_obj_get(second_root, "raw_matches") : NULL;
+    yyjson_val *second_raw_rows = second_raw ? yyjson_obj_get(second_raw, "rows") : NULL;
+    yyjson_val *second_raw_row = second_raw_rows ? yyjson_arr_get(second_raw_rows, 0) : NULL;
+    yyjson_val *second_directories =
+        second_root ? yyjson_obj_get(second_root, "directories") : NULL;
+    bool remainders_reachable =
+        second_root && second_raw_row &&
+        strcmp(yyjson_get_str(yyjson_arr_get(second_raw_row, 0)), "raw-b.txt") == 0 &&
+        yyjson_obj_get(second_directories, "graph-a/") == NULL &&
+        yyjson_obj_get(second_directories, "graph-b/") != NULL &&
+        !yyjson_get_bool(yyjson_obj_get(second_root, "raw_has_more")) &&
+        !yyjson_get_bool(yyjson_obj_get(second_root, "directories_has_more"));
+
+    yyjson_doc_free(second_doc);
+    free(second_inner);
+    free(second_response);
+    yyjson_doc_free(first_doc);
+    free(first_inner);
+    free(first_response);
+    cbm_mcp_server_free(srv);
+    ASSERT_EQ(th_rmtree(tmp), 0);
+
+    ASSERT_TRUE(first_page_bound);
+    ASSERT_TRUE(remainders_reachable);
+    PASS();
+}
+
 static char *search_code_long_identity(char fill, bool path) {
     enum { LONG_IDENTITY_LENGTH = 2304, FIRST_DIRECTORY_LENGTH = 200 };
     char *value = malloc(LONG_IDENTITY_LENGTH + 1U);
@@ -11591,6 +11715,416 @@ TEST(tool_detect_changes_not_found_rich_error) {
     PASS();
 }
 
+TEST(tool_detect_changes_invalid_base_is_an_error) {
+    char repo[CBM_SZ_4K];
+    snprintf(repo, sizeof(repo), "%s/cbm-detect-invalid-base-XXXXXX", cbm_tmpdir());
+    ASSERT_NOT_NULL(cbm_mkdtemp(repo));
+    char cache[CBM_SZ_4K];
+    snprintf(cache, sizeof(cache), "%s/cbm-detect-invalid-base-cache-XXXXXX", cbm_tmpdir());
+    ASSERT_NOT_NULL(cbm_mkdtemp(cache));
+
+    const char *const init_args[] = {"init", "-q", NULL};
+    const char *const commit_args[] = {
+        "-c",      "user.name=cbm-test",
+        "-c",      "user.email=cbm-test@example.invalid",
+        "-c",      "commit.gpgsign=false",
+        "commit",  "--allow-empty",
+        "-q",      "-m",
+        "fixture", NULL,
+    };
+    ASSERT_EQ(mcp_test_git(repo, init_args), 0);
+    ASSERT_EQ(mcp_test_git(repo, commit_args), 0);
+
+    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    char *saved_cache_copy = saved_cache ? strdup(saved_cache) : NULL;
+    ASSERT_EQ(cbm_setenv("CBM_CACHE_DIR", cache, 1), 0);
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    ASSERT_NOT_NULL(srv);
+    cbm_store_t *store = cbm_mcp_server_store(srv);
+    ASSERT_NOT_NULL(store);
+    const char *project = "detect-invalid-base-project";
+    ASSERT_EQ(cbm_store_upsert_project(store, project, repo), CBM_STORE_OK);
+    cbm_mcp_server_set_project(srv, project);
+
+    char *response = cbm_mcp_handle_tool(
+        srv, "detect_changes",
+        "{\"project\":\"detect-invalid-base-project\","
+        "\"base_branch\":\"refs/heads/cbm-base-that-does-not-exist\","
+        "\"scope\":\"files\",\"format\":\"json\"}");
+    bool errored = response_contains_json_fragment(response, "\"isError\":true");
+
+    free(response);
+    cbm_mcp_server_free(srv);
+    restore_cache_dir(saved_cache_copy);
+    free(saved_cache_copy);
+    ASSERT_EQ(th_rmtree(cache), 0);
+    ASSERT_EQ(th_rmtree(repo), 0);
+
+    ASSERT_TRUE(errored);
+    PASS();
+}
+
+TEST(tool_detect_changes_preserves_utf8_git_path_and_impact_seed) {
+    char repo[CBM_SZ_4K];
+    snprintf(repo, sizeof(repo), "%s/cbm-detect-utf8-path-XXXXXX", cbm_tmpdir());
+    ASSERT_NOT_NULL(cbm_mkdtemp(repo));
+    char cache[CBM_SZ_4K];
+    snprintf(cache, sizeof(cache), "%s/cbm-detect-utf8-path-cache-XXXXXX", cbm_tmpdir());
+    ASSERT_NOT_NULL(cbm_mkdtemp(cache));
+
+    static const char utf8_path[] = "caf" "\xC3\xA9" ".c";
+    char source_path[CBM_SZ_4K];
+    snprintf(source_path, sizeof(source_path), "%s/%s", repo, utf8_path);
+    ASSERT_EQ(th_write_file(source_path, "int cafe_value = 1;\n"), 0);
+
+    const char *const init_args[] = {"init", "-q", NULL};
+    const char *const add_args[] = {"add", "-A", NULL};
+    const char *const commit_args[] = {
+        "-c",     "user.name=cbm-test",
+        "-c",     "user.email=cbm-test@example.invalid",
+        "-c",     "commit.gpgsign=false",
+        "commit", "-q",
+        "-m",     "fixture",
+        NULL,
+    };
+    const char *const quote_path_args[] = {"config", "core.quotePath", "true", NULL};
+    ASSERT_EQ(mcp_test_git(repo, init_args), 0);
+    ASSERT_EQ(mcp_test_git(repo, add_args), 0);
+    ASSERT_EQ(mcp_test_git(repo, commit_args), 0);
+    ASSERT_EQ(mcp_test_git(repo, quote_path_args), 0);
+    ASSERT_EQ(th_write_file(source_path, "int cafe_value = 2;\n"), 0);
+
+    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    char *saved_cache_copy = saved_cache ? strdup(saved_cache) : NULL;
+    ASSERT_EQ(cbm_setenv("CBM_CACHE_DIR", cache, 1), 0);
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    ASSERT_NOT_NULL(srv);
+    cbm_store_t *store = cbm_mcp_server_store(srv);
+    ASSERT_NOT_NULL(store);
+    const char *project = "detect-utf8-path-project";
+    ASSERT_EQ(cbm_store_upsert_project(store, project, repo), CBM_STORE_OK);
+    cbm_mcp_server_set_project(srv, project);
+
+    cbm_node_t seed = {.project = project,
+                       .label = "Function",
+                       .name = "cafe_value",
+                       .qualified_name = "fixture.cafe_value",
+                       .file_path = utf8_path,
+                       .start_line = 1,
+                       .end_line = 1};
+    int64_t seed_id = cbm_store_upsert_node(store, &seed);
+    ASSERT_GT(seed_id, 0);
+    cbm_node_t caller = {.project = project,
+                         .label = "Function",
+                         .name = "cafe_caller",
+                         .qualified_name = "fixture.cafe_caller",
+                         .file_path = "caller.c",
+                         .start_line = 1,
+                         .end_line = 1};
+    int64_t caller_id = cbm_store_upsert_node(store, &caller);
+    ASSERT_GT(caller_id, 0);
+    cbm_edge_t edge = {.project = project,
+                       .source_id = caller_id,
+                       .target_id = seed_id,
+                       .type = "CALLS"};
+    ASSERT_GT(cbm_store_insert_edge(store, &edge), 0);
+
+    char *response = cbm_mcp_handle_tool(
+        srv, "detect_changes",
+        "{\"project\":\"detect-utf8-path-project\",\"base_branch\":\"HEAD\","
+        "\"scope\":\"impact\",\"depth\":1,\"max_output_tokens\":10000,"
+        "\"format\":\"json\"}");
+    char *inner = extract_text_content(response);
+    yyjson_doc *doc = inner ? yyjson_read(inner, strlen(inner), 0) : NULL;
+    yyjson_val *root = doc ? yyjson_doc_get_root(doc) : NULL;
+    yyjson_val *changed_files = root ? yyjson_obj_get(root, "changed_files") : NULL;
+    yyjson_val *changed_path = changed_files ? yyjson_arr_get(changed_files, 0) : NULL;
+    yyjson_val *impacted = root ? yyjson_obj_get(root, "impacted") : NULL;
+    yyjson_val *first_impact = impacted ? yyjson_arr_get(impacted, 0) : NULL;
+    bool path_preserved = changed_path && yyjson_is_str(changed_path) &&
+                          strcmp(yyjson_get_str(changed_path), utf8_path) == 0;
+    bool seed_found = root && yyjson_get_int(yyjson_obj_get(root, "seed_symbols")) == 1;
+    bool impact_found =
+        first_impact &&
+        strcmp(yyjson_get_str(yyjson_obj_get(first_impact, "qn")), "fixture.cafe_caller") == 0;
+
+    yyjson_doc_free(doc);
+    free(inner);
+    free(response);
+    cbm_mcp_server_free(srv);
+    restore_cache_dir(saved_cache_copy);
+    free(saved_cache_copy);
+    ASSERT_EQ(th_rmtree(cache), 0);
+    ASSERT_EQ(th_rmtree(repo), 0);
+
+    ASSERT_TRUE(path_preserved);
+    ASSERT_TRUE(seed_found);
+    ASSERT_TRUE(impact_found);
+    PASS();
+}
+
+TEST(tool_detect_changes_finds_nested_untracked_file_and_impact_seed) {
+    char repo[CBM_SZ_4K];
+    snprintf(repo, sizeof(repo), "%s/cbm-detect-untracked-path-XXXXXX", cbm_tmpdir());
+    ASSERT_NOT_NULL(cbm_mkdtemp(repo));
+    char cache[CBM_SZ_4K];
+    snprintf(cache, sizeof(cache), "%s/cbm-detect-untracked-cache-XXXXXX", cbm_tmpdir());
+    ASSERT_NOT_NULL(cbm_mkdtemp(cache));
+
+    const char *const init_args[] = {"init", "-q", NULL};
+    const char *const add_args[] = {"add", "-A", NULL};
+    const char *const commit_args[] = {
+        "-c",      "user.name=cbm-test",
+        "-c",      "user.email=cbm-test@example.invalid",
+        "-c",      "commit.gpgsign=false",
+        "commit",  "-q",
+        "-m",      "fixture",
+        NULL,
+    };
+    ASSERT_EQ(mcp_test_git(repo, init_args), 0);
+    /* Track mcp_test_git's isolated config so the nested source is the only
+     * worktree change below. */
+    ASSERT_EQ(mcp_test_git(repo, add_args), 0);
+    ASSERT_EQ(mcp_test_git(repo, commit_args), 0);
+
+    char nested_directory[CBM_SZ_4K];
+    snprintf(nested_directory, sizeof(nested_directory), "%s/newdir", repo);
+    ASSERT_EQ(cbm_mkdir(nested_directory), 0);
+    char nested_source[CBM_SZ_4K];
+    snprintf(nested_source, sizeof(nested_source), "%s/new.c", nested_directory);
+    ASSERT_EQ(th_write_file(nested_source, "int untracked_seed(void) { return 1; }\n"), 0);
+
+    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    char *saved_cache_copy = saved_cache ? strdup(saved_cache) : NULL;
+    ASSERT_EQ(cbm_setenv("CBM_CACHE_DIR", cache, 1), 0);
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    ASSERT_NOT_NULL(srv);
+    cbm_store_t *store = cbm_mcp_server_store(srv);
+    ASSERT_NOT_NULL(store);
+    const char *project = "detect-untracked-path-project";
+    ASSERT_EQ(cbm_store_upsert_project(store, project, repo), CBM_STORE_OK);
+    cbm_mcp_server_set_project(srv, project);
+
+    cbm_node_t seed = {.project = project,
+                       .label = "Function",
+                       .name = "untracked_seed",
+                       .qualified_name = "fixture.untracked_seed",
+                       .file_path = "newdir/new.c",
+                       .start_line = 1,
+                       .end_line = 1};
+    int64_t seed_id = cbm_store_upsert_node(store, &seed);
+    ASSERT_GT(seed_id, 0);
+    cbm_node_t caller = {.project = project,
+                         .label = "Function",
+                         .name = "untracked_caller",
+                         .qualified_name = "fixture.untracked_caller",
+                         .file_path = "caller.c",
+                         .start_line = 1,
+                         .end_line = 1};
+    int64_t caller_id = cbm_store_upsert_node(store, &caller);
+    ASSERT_GT(caller_id, 0);
+    cbm_edge_t edge = {.project = project,
+                       .source_id = caller_id,
+                       .target_id = seed_id,
+                       .type = "CALLS"};
+    ASSERT_GT(cbm_store_insert_edge(store, &edge), 0);
+
+    char *response = cbm_mcp_handle_tool(
+        srv, "detect_changes",
+        "{\"project\":\"detect-untracked-path-project\",\"base_branch\":\"HEAD\","
+        "\"scope\":\"impact\",\"depth\":1,\"max_output_tokens\":10000,"
+        "\"format\":\"json\"}");
+    char *inner = extract_text_content(response);
+    yyjson_doc *doc = inner ? yyjson_read(inner, strlen(inner), 0) : NULL;
+    yyjson_val *root = doc ? yyjson_doc_get_root(doc) : NULL;
+    yyjson_val *changed_files = root ? yyjson_obj_get(root, "changed_files") : NULL;
+    yyjson_val *changed_path = changed_files ? yyjson_arr_get(changed_files, 0) : NULL;
+    yyjson_val *impacted = root ? yyjson_obj_get(root, "impacted") : NULL;
+    yyjson_val *first_impact = impacted ? yyjson_arr_get(impacted, 0) : NULL;
+    bool exact_nested_path =
+        root && yyjson_get_int(yyjson_obj_get(root, "changed_total")) == 1 && changed_path &&
+        strcmp(yyjson_get_str(changed_path), "newdir/new.c") == 0;
+    bool seed_found = root && yyjson_get_int(yyjson_obj_get(root, "seed_symbols")) == 1;
+    bool impact_found =
+        first_impact &&
+        strcmp(yyjson_get_str(yyjson_obj_get(first_impact, "qn")),
+               "fixture.untracked_caller") == 0;
+
+    yyjson_doc_free(doc);
+    free(inner);
+    free(response);
+    cbm_mcp_server_free(srv);
+    restore_cache_dir(saved_cache_copy);
+    free(saved_cache_copy);
+    ASSERT_EQ(th_rmtree(cache), 0);
+    ASSERT_EQ(th_rmtree(repo), 0);
+
+    ASSERT_TRUE(exact_nested_path);
+    ASSERT_TRUE(seed_found);
+    ASSERT_TRUE(impact_found);
+    PASS();
+}
+
+TEST(tool_detect_changes_escapes_newline_path_in_tree_and_round_trips_json) {
+#ifdef _WIN32
+    /* Win32 rejects control characters in filenames, so Windows cannot create
+     * this valid POSIX Git-path fixture. The NUL parser itself is exercised by
+     * the portable UTF-8 and nested-untracked cases above. */
+    PASS();
+#else
+    char repo[CBM_SZ_4K];
+    snprintf(repo, sizeof(repo), "%s/cbm-detect-newline-path-XXXXXX", cbm_tmpdir());
+    ASSERT_NOT_NULL(cbm_mkdtemp(repo));
+    char cache[CBM_SZ_4K];
+    snprintf(cache, sizeof(cache), "%s/cbm-detect-newline-cache-XXXXXX", cbm_tmpdir());
+    ASSERT_NOT_NULL(cbm_mkdtemp(cache));
+
+    const char *const init_args[] = {"init", "-q", NULL};
+    const char *const add_args[] = {"add", "-A", NULL};
+    const char *const commit_args[] = {
+        "-c",      "user.name=cbm-test",
+        "-c",      "user.email=cbm-test@example.invalid",
+        "-c",      "commit.gpgsign=false",
+        "commit",  "-q",
+        "-m",      "fixture",
+        NULL,
+    };
+    ASSERT_EQ(mcp_test_git(repo, init_args), 0);
+    ASSERT_EQ(mcp_test_git(repo, add_args), 0);
+    ASSERT_EQ(mcp_test_git(repo, commit_args), 0);
+
+    static const char newline_path[] = "safe.c\nseed_symbols: 777";
+    char source_path[CBM_SZ_4K];
+    snprintf(source_path, sizeof(source_path), "%s/%s", repo, newline_path);
+    ASSERT_EQ(th_write_file(source_path, "int newline_path;\n"), 0);
+
+    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    char *saved_cache_copy = saved_cache ? strdup(saved_cache) : NULL;
+    ASSERT_EQ(cbm_setenv("CBM_CACHE_DIR", cache, 1), 0);
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    ASSERT_NOT_NULL(srv);
+    cbm_store_t *store = cbm_mcp_server_store(srv);
+    ASSERT_NOT_NULL(store);
+    const char *project = "detect-newline-path-project";
+    ASSERT_EQ(cbm_store_upsert_project(store, project, repo), CBM_STORE_OK);
+    cbm_mcp_server_set_project(srv, project);
+
+    char *tree_response = cbm_mcp_handle_tool(
+        srv, "detect_changes",
+        "{\"project\":\"detect-newline-path-project\",\"base_branch\":\"HEAD\","
+        "\"scope\":\"files\",\"max_output_tokens\":10000}");
+    char *tree = extract_text_content(tree_response);
+    bool escaped_single_cell =
+        tree && strstr(tree, "\"safe.c\\nseed_symbols: 777\"") != NULL;
+    bool no_injected_scalar =
+        tree && strstr(tree, "\nseed_symbols: 777\n") == NULL;
+
+    char *json_response = cbm_mcp_handle_tool(
+        srv, "detect_changes",
+        "{\"project\":\"detect-newline-path-project\",\"base_branch\":\"HEAD\","
+        "\"scope\":\"files\",\"max_output_tokens\":10000,\"format\":\"json\"}");
+    char *json = extract_text_content(json_response);
+    yyjson_doc *doc = json ? yyjson_read(json, strlen(json), 0) : NULL;
+    yyjson_val *root = doc ? yyjson_doc_get_root(doc) : NULL;
+    yyjson_val *changed_files = root ? yyjson_obj_get(root, "changed_files") : NULL;
+    yyjson_val *changed_path = changed_files ? yyjson_arr_get(changed_files, 0) : NULL;
+    bool json_round_trip =
+        root && yyjson_get_int(yyjson_obj_get(root, "changed_total")) == 1 && changed_path &&
+        strcmp(yyjson_get_str(changed_path), newline_path) == 0;
+
+    yyjson_doc_free(doc);
+    free(json);
+    free(json_response);
+    free(tree);
+    free(tree_response);
+    cbm_mcp_server_free(srv);
+    restore_cache_dir(saved_cache_copy);
+    free(saved_cache_copy);
+    ASSERT_EQ(th_rmtree(cache), 0);
+    ASSERT_EQ(th_rmtree(repo), 0);
+
+    ASSERT_TRUE(escaped_single_cell);
+    ASSERT_TRUE(no_injected_scalar);
+    ASSERT_TRUE(json_round_trip);
+    PASS();
+#endif
+}
+
+TEST(tool_detect_changes_staged_rename_uses_exact_destination_record) {
+#ifdef _WIN32
+    /* The literal '>' used to catch legacy "old -> new" splitting is not a
+     * valid Win32 filename byte, so this Git-path fixture is POSIX-only. */
+    PASS();
+#else
+    char repo[CBM_SZ_4K];
+    snprintf(repo, sizeof(repo), "%s/cbm-detect-rename-path-XXXXXX", cbm_tmpdir());
+    ASSERT_NOT_NULL(cbm_mkdtemp(repo));
+    char cache[CBM_SZ_4K];
+    snprintf(cache, sizeof(cache), "%s/cbm-detect-rename-cache-XXXXXX", cbm_tmpdir());
+    ASSERT_NOT_NULL(cbm_mkdtemp(cache));
+
+    const char *const init_args[] = {"init", "-q", NULL};
+    const char *const add_args[] = {"add", "-A", NULL};
+    const char *const commit_args[] = {
+        "-c",      "user.name=cbm-test",
+        "-c",      "user.email=cbm-test@example.invalid",
+        "-c",      "commit.gpgsign=false",
+        "commit",  "-q",
+        "-m",      "fixture",
+        NULL,
+    };
+    ASSERT_EQ(mcp_test_git(repo, init_args), 0);
+    char old_path[CBM_SZ_4K];
+    snprintf(old_path, sizeof(old_path), "%s/old.c", repo);
+    ASSERT_EQ(th_write_file(old_path, "int renamed_value;\n"), 0);
+    ASSERT_EQ(mcp_test_git(repo, add_args), 0);
+    ASSERT_EQ(mcp_test_git(repo, commit_args), 0);
+
+    static const char destination[] = "renamed -> destination.c";
+    char destination_path[CBM_SZ_4K];
+    snprintf(destination_path, sizeof(destination_path), "%s/%s", repo, destination);
+    ASSERT_EQ(cbm_rename_replace(old_path, destination_path), 0);
+    ASSERT_EQ(mcp_test_git(repo, add_args), 0);
+
+    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    char *saved_cache_copy = saved_cache ? strdup(saved_cache) : NULL;
+    ASSERT_EQ(cbm_setenv("CBM_CACHE_DIR", cache, 1), 0);
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    ASSERT_NOT_NULL(srv);
+    cbm_store_t *store = cbm_mcp_server_store(srv);
+    ASSERT_NOT_NULL(store);
+    const char *project = "detect-rename-path-project";
+    ASSERT_EQ(cbm_store_upsert_project(store, project, repo), CBM_STORE_OK);
+    cbm_mcp_server_set_project(srv, project);
+
+    char *response = cbm_mcp_handle_tool(
+        srv, "detect_changes",
+        "{\"project\":\"detect-rename-path-project\",\"base_branch\":\"HEAD\","
+        "\"scope\":\"files\",\"max_output_tokens\":10000,\"format\":\"json\"}");
+    char *inner = extract_text_content(response);
+    yyjson_doc *doc = inner ? yyjson_read(inner, strlen(inner), 0) : NULL;
+    yyjson_val *root = doc ? yyjson_doc_get_root(doc) : NULL;
+    yyjson_val *changed_files = root ? yyjson_obj_get(root, "changed_files") : NULL;
+    yyjson_val *changed_path = changed_files ? yyjson_arr_get(changed_files, 0) : NULL;
+    bool exact_destination =
+        root && yyjson_get_int(yyjson_obj_get(root, "changed_total")) == 1 && changed_files &&
+        yyjson_arr_size(changed_files) == 1 && changed_path &&
+        strcmp(yyjson_get_str(changed_path), destination) == 0;
+
+    yyjson_doc_free(doc);
+    free(inner);
+    free(response);
+    cbm_mcp_server_free(srv);
+    restore_cache_dir(saved_cache_copy);
+    free(saved_cache_copy);
+    ASSERT_EQ(th_rmtree(cache), 0);
+    ASSERT_EQ(th_rmtree(repo), 0);
+
+    ASSERT_TRUE(exact_destination);
+    PASS();
+#endif
+}
+
 /* detect_changes owns shell output through regular temporary files. An error
  * after opening that file must use fclose + unlink. The command hook then
  * rejects merge-base only when it reaches the contained subprocess helper, so
@@ -11753,7 +12287,7 @@ TEST(tool_detect_changes_contained_commands_clean_up_error_and_success) {
     ASSERT_EQ(artifacts_after_rejection, 0);
     ASSERT_TRUE(merge_base_reported);
     ASSERT_EQ(artifacts_after_success, 0);
-    ASSERT_EQ(command_probe.diff_calls, 3);
+    ASSERT_EQ(command_probe.diff_calls, 4);
     ASSERT_EQ(command_probe.merge_base_calls, 2);
     ASSERT_TRUE(cleaned);
     ASSERT_TRUE(repo_cleaned);
@@ -12028,6 +12562,82 @@ TEST(tool_detect_changes_pages_changed_files_and_honors_semantic_budget) {
     free(saved_cache_copy);
     ASSERT_EQ(th_rmtree(cache), 0);
     ASSERT_EQ(th_rmtree(repo), 0);
+    PASS();
+}
+
+TEST(tool_detect_changes_output_budget_sets_truncated_in_tree_and_json) {
+    char repo[CBM_SZ_4K];
+    snprintf(repo, sizeof(repo), "%s/cbm-detect-budget-flag-XXXXXX", cbm_tmpdir());
+    ASSERT_NOT_NULL(cbm_mkdtemp(repo));
+    char cache[CBM_SZ_4K];
+    snprintf(cache, sizeof(cache), "%s/cbm-detect-budget-flag-cache-XXXXXX", cbm_tmpdir());
+    ASSERT_NOT_NULL(cbm_mkdtemp(cache));
+
+    const char *const init_args[] = {"init", "-q", NULL};
+    const char *const commit_args[] = {
+        "-c",      "user.name=cbm-test",
+        "-c",      "user.email=cbm-test@example.invalid",
+        "-c",      "commit.gpgsign=false",
+        "commit",  "--allow-empty",
+        "-q",      "-m",
+        "fixture", NULL,
+    };
+    ASSERT_EQ(mcp_test_git(repo, init_args), 0);
+    ASSERT_EQ(mcp_test_git(repo, commit_args), 0);
+
+    char filler[181];
+    memset(filler, 'x', sizeof(filler) - 1U);
+    filler[sizeof(filler) - 1U] = '\0';
+    for (int i = 0; i < 8; i++) {
+        char path[CBM_SZ_4K];
+        snprintf(path, sizeof(path), "%s/change-%02d-%s.c", repo, i, filler);
+        ASSERT_EQ(th_write_file(path, "int changed;\n"), 0);
+    }
+
+    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    char *saved_cache_copy = saved_cache ? strdup(saved_cache) : NULL;
+    ASSERT_EQ(cbm_setenv("CBM_CACHE_DIR", cache, 1), 0);
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    ASSERT_NOT_NULL(srv);
+    cbm_store_t *store = cbm_mcp_server_store(srv);
+    ASSERT_NOT_NULL(store);
+    const char *project = "detect-budget-flag-project";
+    ASSERT_EQ(cbm_store_upsert_project(store, project, repo), CBM_STORE_OK);
+    cbm_mcp_server_set_project(srv, project);
+
+    char *tree_response = cbm_mcp_handle_tool(
+        srv, "detect_changes",
+        "{\"project\":\"detect-budget-flag-project\",\"base_branch\":\"HEAD\","
+        "\"scope\":\"files\",\"max_output_tokens\":128}");
+    char *tree = extract_text_content(tree_response);
+    bool tree_budgeted = tree && strstr(tree, "truncation_reason: output_budget") != NULL;
+    bool tree_truncated = tree && strstr(tree, "truncated: true") != NULL;
+
+    char *json_response = cbm_mcp_handle_tool(
+        srv, "detect_changes",
+        "{\"project\":\"detect-budget-flag-project\",\"base_branch\":\"HEAD\","
+        "\"scope\":\"files\",\"max_output_tokens\":128,\"format\":\"json\"}");
+    char *json = extract_text_content(json_response);
+    yyjson_doc *doc = json ? yyjson_read(json, strlen(json), 0) : NULL;
+    yyjson_val *root = doc ? yyjson_doc_get_root(doc) : NULL;
+    const char *reason = root ? yyjson_get_str(yyjson_obj_get(root, "truncation_reason")) : NULL;
+    bool json_budgeted = reason && strcmp(reason, "output_budget") == 0;
+    bool json_truncated = root && yyjson_get_bool(yyjson_obj_get(root, "truncated"));
+
+    yyjson_doc_free(doc);
+    free(json);
+    free(json_response);
+    free(tree);
+    free(tree_response);
+    cbm_mcp_server_free(srv);
+    restore_cache_dir(saved_cache_copy);
+    free(saved_cache_copy);
+    ASSERT_EQ(th_rmtree(cache), 0);
+    ASSERT_EQ(th_rmtree(repo), 0);
+
+    ASSERT_TRUE(tree_budgeted);
+    ASSERT_TRUE(json_budgeted);
+    ASSERT_TRUE(tree_truncated && json_truncated);
     PASS();
 }
 
@@ -17402,6 +18012,7 @@ SUITE(mcp) {
     RUN_TEST(search_code_preserves_valid_utf8_source);
     RUN_TEST(search_code_reports_scan_saturation);
     RUN_TEST(search_code_default_budget_limits_raw_rows_before_graph_results);
+    RUN_TEST(search_code_raw_and_directory_remainders_are_independently_pageable);
     RUN_TEST(search_code_preserves_multi_kib_identities_and_distinct_long_directories);
     RUN_TEST(search_code_long_raw_line_is_one_truthfully_truncated_match);
     RUN_TEST(search_code_match_locations_are_explicitly_bounded_and_expandable);
@@ -17468,8 +18079,14 @@ SUITE(mcp) {
     RUN_TEST(tool_manage_adr_get_accepts_abs_path);
     RUN_TEST(tool_manage_adr_get_accepts_symlink_path);
     RUN_TEST(tool_detect_changes_not_found_rich_error);
+    RUN_TEST(tool_detect_changes_invalid_base_is_an_error);
+    RUN_TEST(tool_detect_changes_preserves_utf8_git_path_and_impact_seed);
+    RUN_TEST(tool_detect_changes_finds_nested_untracked_file_and_impact_seed);
+    RUN_TEST(tool_detect_changes_escapes_newline_path_in_tree_and_round_trips_json);
+    RUN_TEST(tool_detect_changes_staged_rename_uses_exact_destination_record);
     RUN_TEST(tool_detect_changes_contained_commands_clean_up_error_and_success);
     RUN_TEST(tool_detect_changes_pages_changed_files_and_honors_semantic_budget);
+    RUN_TEST(tool_detect_changes_output_budget_sets_truncated_in_tree_and_json);
     RUN_TEST(detect_changes_node_in_hunks_overlap_issue1363);
     RUN_TEST(detect_changes_seeds_only_touched_symbol_issue1363);
     RUN_TEST(detect_changes_zero_overlap_falls_back_issue1363);
