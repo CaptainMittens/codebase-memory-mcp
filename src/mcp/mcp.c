@@ -524,20 +524,20 @@ static const tool_def_t TOOLS[] = {
      "\"required\":[\"project\"]}"},
 
     {"search_code", "Search code",
-     "Graph-augmented text search. compact (default) returns ranked symbols; full adds bounded "
-     "source; files returns paths. Narrow filters or raise limit when has_more.",
+     "Graph-ranked text search. compact returns symbols; full adds bounded source; files paths.",
      "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"},\"project\":{\"type\":"
      "\"string\"},\"file_pattern\":{\"type\":\"string\"},\"path_filter\":{\"type\":\"string\"},"
      "\"mode\":{\"type\":\"string\","
-     "\"enum\":[\"compact\",\"full\",\"files\"],\"default\":\"compact\",\"description\":\"compact "
-     "rows; full bounded source; files paths.\"},"
+     "\"enum\":[\"compact\",\"full\",\"files\"],\"default\":\"compact\"},"
      "\"context\":{\"type\":\"integer\"},"
      "\"regex\":{\"type\":\"boolean\",\"default\":false},\"limit\":{\"type\":\"integer\","
      "\"default\":10,\"minimum\":1,\"maximum\":500,\"description\":\"Ranked graph rows.\"},"
      "\"raw_limit\":{\"type\":\"integer\",\"default\":5,\"minimum\":0,\"maximum\":100,"
      "\"description\":\"Unclassified grep rows; set 0 to omit.\"},"
+     "\"raw_offset\":{\"type\":\"integer\",\"default\":0,\"minimum\":0},"
      "\"directory_limit\":{\"type\":\"integer\",\"default\":20,\"minimum\":0,"
      "\"maximum\":64,\"description\":\"Directory summary rows; set 0 to omit.\"},"
+     "\"directory_offset\":{\"type\":\"integer\",\"default\":0,\"minimum\":0},"
      "\"match_limit\":{\"type\":\"integer\",\"default\":8,\"minimum\":1,"
      "\"maximum\":500,\"description\":\"Locations per row; exact remainder in matches_omitted.\"},"
      "\"source_max_lines\":{\"type\":\"integer\",\"default\":20,\"minimum\":1,"
@@ -10680,7 +10680,26 @@ static int compute_search_score(const search_result_t *r) {
 static int search_result_cmp(const void *a, const void *b) {
     const search_result_t *ra = (const search_result_t *)a;
     const search_result_t *rb = (const search_result_t *)b;
-    return rb->score - ra->score; /* descending */
+    int score_order = rb->score - ra->score; /* descending */
+    if (score_order != 0) {
+        return score_order;
+    }
+    int qn_order = strcmp(ra->qualified_name ? ra->qualified_name : "",
+                          rb->qualified_name ? rb->qualified_name : "");
+    if (qn_order != 0) {
+        return qn_order;
+    }
+    int file_order = strcmp(ra->file ? ra->file : "", rb->file ? rb->file : "");
+    if (file_order != 0) {
+        return file_order;
+    }
+    if (ra->start_line != rb->start_line) {
+        return ra->start_line < rb->start_line ? -1 : 1;
+    }
+    if (ra->end_line != rb->end_line) {
+        return ra->end_line < rb->end_line ? -1 : 1;
+    }
+    return 0;
 }
 
 /* Build the grep/search command string based on scoped vs recursive mode.
@@ -10759,7 +10778,8 @@ static void build_grep_cmd(char *cmd, size_t cmd_sz, bool use_regex, bool scoped
 
 /* Build deduplicated file list from search results + raw matches. */
 static yyjson_mut_val *build_dedup_files_array(yyjson_mut_doc *doc, search_result_t *sr,
-                                               int output_count, grep_match_t *raw, int raw_count) {
+                                               int output_count, grep_match_t *raw, int raw_start,
+                                               int raw_count) {
     yyjson_mut_val *files_arr = yyjson_mut_arr(doc);
     size_t seen_capacity = (size_t)output_count + (size_t)raw_count;
     const char **seen_files = seen_capacity > 0 ? calloc(seen_capacity, sizeof(*seen_files)) : NULL;
@@ -10782,16 +10802,17 @@ static yyjson_mut_val *build_dedup_files_array(yyjson_mut_doc *doc, search_resul
         }
     }
     for (int fi = 0; fi < raw_count; fi++) {
+        int raw_index = raw_start + fi;
         bool dup = false;
         for (int j = 0; j < seen_count; j++) {
-            if (strcmp(seen_files[j], raw[fi].file) == 0) {
+            if (strcmp(seen_files[j], raw[raw_index].file) == 0) {
                 dup = true;
                 break;
             }
         }
         if (!dup) {
-            seen_files[seen_count++] = raw[fi].file;
-            yyjson_mut_arr_add_str(doc, files_arr, raw[fi].file);
+            seen_files[seen_count++] = raw[raw_index].file;
+            yyjson_mut_arr_add_str(doc, files_arr, raw[raw_index].file);
         }
     }
     free(seen_files);
@@ -10964,10 +10985,11 @@ static char *search_match_lines_text(const search_result_t *result, int match_li
  * distribution table, and the summary scalars. */
 static char *assemble_search_output_toon(search_result_t *sr, int sr_count, grep_match_t *raw,
                                          int raw_count, int gm_count, int output_count,
-                                         int raw_output, int directory_output, int match_limit,
-                                         bool scan_saturated, bool warn_literal_pipe,
-                                         uint64_t elapsed_ms, bool budget_hit,
-                                         int source_lines_returned) {
+                                         int raw_start, int raw_output, int directory_start,
+                                         int directory_output, int raw_limit, int directory_limit,
+                                         int match_limit, bool scan_saturated,
+                                         bool warn_literal_pipe, uint64_t elapsed_ms,
+                                         bool budget_hit, int source_lines_returned) {
     enum { SEARCH_SLOW_MS = 5000 };
     cbm_sb_t sb;
     cbm_sb_init(&sb);
@@ -11046,10 +11068,11 @@ static char *assemble_search_output_toon(search_result_t *sr, int sr_count, grep
             return NULL;
         }
         for (int ri = 0; ri < raw_output; ri++) {
-            snprintf(line_text[ri], sizeof(line_text[ri]), "%d", raw[ri].line);
-            raw_cells[(size_t)ri * 3U] = raw[ri].file;
+            int raw_index = raw_start + ri;
+            snprintf(line_text[ri], sizeof(line_text[ri]), "%d", raw[raw_index].line);
+            raw_cells[(size_t)ri * 3U] = raw[raw_index].file;
             raw_cells[(size_t)ri * 3U + 1U] = line_text[ri];
-            raw_cells[(size_t)ri * 3U + 2U] = raw[ri].content;
+            raw_cells[(size_t)ri * 3U + 2U] = raw[raw_index].content;
         }
         static const bool raw_string_cols[] = {true, false, true};
         static const bool raw_prefix_cols[] = {true, false, false};
@@ -11065,8 +11088,11 @@ static char *assemble_search_output_toon(search_result_t *sr, int sr_count, grep
         cbm_sb_free(&sb);
         return NULL;
     }
-    if (directory_output > dir_n) {
-        directory_output = dir_n;
+    if (directory_start > dir_n) {
+        directory_start = dir_n;
+    }
+    if (directory_output > dir_n - directory_start) {
+        directory_output = dir_n - directory_start;
     }
     if (directory_output > 0) {
         static const char *const dcols[] = {"dir", "hits"};
@@ -11080,8 +11106,10 @@ static char *assemble_search_output_toon(search_result_t *sr, int sr_count, grep
             return NULL;
         }
         for (int d = 0; d < directory_output; d++) {
-            snprintf(count_text[d], sizeof(count_text[d]), "%d", directories[d].count);
-            dir_cells[(size_t)d * 2U] = directories[d].name;
+            int directory_index = directory_start + d;
+            snprintf(count_text[d], sizeof(count_text[d]), "%d",
+                     directories[directory_index].count);
+            dir_cells[(size_t)d * 2U] = directories[directory_index].name;
             dir_cells[(size_t)d * 2U + 1U] = count_text[d];
         }
         static const bool dir_string_cols[] = {true, false};
@@ -11101,20 +11129,39 @@ static char *assemble_search_output_toon(search_result_t *sr, int sr_count, grep
     bool has_more = output_count < sr_count;
     cbm_tree_scalar_bool(&sb, "has_more", has_more);
     cbm_tree_scalar_int(&sb, "raw_returned", raw_output);
-    cbm_tree_scalar_bool(&sb, "raw_has_more", raw_output < raw_count);
+    bool raw_has_more = raw_start + raw_output < raw_count;
+    cbm_tree_scalar_bool(&sb, "raw_has_more", raw_has_more);
+    if (raw_has_more && raw_output > 0) {
+        cbm_tree_scalar_int(&sb, "raw_next_offset", raw_start + raw_output);
+    } else if (raw_has_more) {
+        cbm_tree_scalar_bool(&sb,
+                             raw_limit == 0 ? "raw_continuation_requires_positive_limit"
+                                            : "raw_continuation_requires_higher_budget",
+                             true);
+    }
     int truncated_raw_content = count_truncated_raw_content(raw, raw_count);
     if (truncated_raw_content > 0) {
         cbm_tree_scalar_int(&sb, "raw_content_truncated", truncated_raw_content);
     }
     cbm_tree_scalar_int(&sb, "directories_total", dir_n);
     cbm_tree_scalar_int(&sb, "directories_returned", directory_output);
-    cbm_tree_scalar_bool(&sb, "directories_has_more", directory_output < dir_n);
+    bool directories_has_more = directory_start + directory_output < dir_n;
+    cbm_tree_scalar_bool(&sb, "directories_has_more", directories_has_more);
+    if (directories_has_more && directory_output > 0) {
+        cbm_tree_scalar_int(&sb, "directory_next_offset", directory_start + directory_output);
+    } else if (directories_has_more) {
+        cbm_tree_scalar_bool(&sb,
+                             directory_limit == 0
+                                 ? "directory_continuation_requires_positive_limit"
+                                 : "directory_continuation_requires_higher_budget",
+                             true);
+    }
     if (scan_saturated) {
         cbm_tree_scalar_bool(&sb, "scan_saturated", true);
     }
     cbm_tree_scalar_bool(&sb, "truncated",
-                         has_more || raw_output < raw_count || directory_output < dir_n ||
-                             scan_saturated || budget_hit);
+                         has_more || raw_has_more || directories_has_more || scan_saturated ||
+                             budget_hit);
     if (budget_hit) {
         cbm_tree_scalar_str(&sb, "truncation_reason", "output_budget");
     }
@@ -11138,8 +11185,9 @@ static char *assemble_search_output_toon(search_result_t *sr, int sr_count, grep
 
 /* Phase 4: assemble JSON output from search results */
 static char *assemble_search_output(search_result_t *sr, int sr_count, grep_match_t *raw,
-                                    int raw_count, int gm_count, int output_count, int raw_output,
-                                    int directory_output, int match_limit, int mode,
+                                    int raw_count, int gm_count, int output_count, int raw_start,
+                                    int raw_output, int directory_start, int directory_output,
+                                    int raw_limit, int directory_limit, int match_limit, int mode,
                                     int context_lines, int source_max_lines, const char *root_path,
                                     bool scan_saturated, bool warn_literal_pipe,
                                     uint64_t elapsed_ms, bool budget_hit) {
@@ -11150,7 +11198,8 @@ static char *assemble_search_output(search_result_t *sr, int sr_count, grep_matc
     yyjson_mut_doc_set_root(doc, root_obj);
 
     if (mode == MODE_FILES) {
-        yyjson_mut_val *files = build_dedup_files_array(doc, sr, output_count, raw, raw_output);
+        yyjson_mut_val *files =
+            build_dedup_files_array(doc, sr, output_count, raw, raw_start, raw_output);
         if (!files) {
             yyjson_mut_doc_free(doc);
             return NULL;
@@ -11212,10 +11261,11 @@ static char *assemble_search_output(search_result_t *sr, int sr_count, grep_matc
         yyjson_mut_obj_add_val(doc, raw_obj, "cols", rcols);
         yyjson_mut_val *raw_arr = yyjson_mut_arr(doc);
         for (int ri = 0; ri < raw_output; ri++) {
+            int raw_index = raw_start + ri;
             yyjson_mut_val *row = yyjson_mut_arr(doc);
-            yyjson_mut_arr_add_str(doc, row, raw[ri].file);
-            yyjson_mut_arr_add_int(doc, row, raw[ri].line);
-            yyjson_mut_arr_add_str(doc, row, raw[ri].content);
+            yyjson_mut_arr_add_str(doc, row, raw[raw_index].file);
+            yyjson_mut_arr_add_int(doc, row, raw[raw_index].line);
+            yyjson_mut_arr_add_str(doc, row, raw[raw_index].content);
             yyjson_mut_arr_add_val(raw_arr, row);
         }
         yyjson_mut_obj_add_val(doc, raw_obj, "rows", raw_arr);
@@ -11228,13 +11278,17 @@ static char *assemble_search_output(search_result_t *sr, int sr_count, grep_matc
         yyjson_mut_doc_free(doc);
         return NULL;
     }
-    if (directory_output > dir_total) {
-        directory_output = dir_total;
+    if (directory_start > dir_total) {
+        directory_start = dir_total;
+    }
+    if (directory_output > dir_total - directory_start) {
+        directory_output = dir_total - directory_start;
     }
     yyjson_mut_val *directory_object = yyjson_mut_obj(doc);
     for (int d = 0; d < directory_output; d++) {
-        yyjson_mut_val *key = yyjson_mut_strcpy(doc, directories[d].name);
-        yyjson_mut_val *value = yyjson_mut_int(doc, directories[d].count);
+        int directory_index = directory_start + d;
+        yyjson_mut_val *key = yyjson_mut_strcpy(doc, directories[directory_index].name);
+        yyjson_mut_val *value = yyjson_mut_int(doc, directories[directory_index].count);
         yyjson_mut_obj_add(directory_object, key, value);
     }
     yyjson_mut_obj_add_val(doc, root_obj, "directories", directory_object);
@@ -11249,20 +11303,40 @@ static char *assemble_search_output(search_result_t *sr, int sr_count, grep_matc
     bool has_more = output_count < sr_count;
     yyjson_mut_obj_add_bool(doc, root_obj, "has_more", has_more);
     yyjson_mut_obj_add_int(doc, root_obj, "raw_returned", raw_output);
-    yyjson_mut_obj_add_bool(doc, root_obj, "raw_has_more", raw_output < raw_count);
+    bool raw_has_more = raw_start + raw_output < raw_count;
+    yyjson_mut_obj_add_bool(doc, root_obj, "raw_has_more", raw_has_more);
+    if (raw_has_more && raw_output > 0) {
+        yyjson_mut_obj_add_int(doc, root_obj, "raw_next_offset", raw_start + raw_output);
+    } else if (raw_has_more) {
+        yyjson_mut_obj_add_bool(doc, root_obj,
+                                raw_limit == 0 ? "raw_continuation_requires_positive_limit"
+                                               : "raw_continuation_requires_higher_budget",
+                                true);
+    }
     int truncated_raw_content = count_truncated_raw_content(raw, raw_count);
     if (truncated_raw_content > 0) {
         yyjson_mut_obj_add_int(doc, root_obj, "raw_content_truncated", truncated_raw_content);
     }
     yyjson_mut_obj_add_int(doc, root_obj, "directories_total", dir_total);
     yyjson_mut_obj_add_int(doc, root_obj, "directories_returned", directory_output);
-    yyjson_mut_obj_add_bool(doc, root_obj, "directories_has_more", directory_output < dir_total);
+    bool directories_has_more = directory_start + directory_output < dir_total;
+    yyjson_mut_obj_add_bool(doc, root_obj, "directories_has_more", directories_has_more);
+    if (directories_has_more && directory_output > 0) {
+        yyjson_mut_obj_add_int(doc, root_obj, "directory_next_offset",
+                               directory_start + directory_output);
+    } else if (directories_has_more) {
+        yyjson_mut_obj_add_bool(
+            doc, root_obj,
+            directory_limit == 0 ? "directory_continuation_requires_positive_limit"
+                                 : "directory_continuation_requires_higher_budget",
+            true);
+    }
     if (scan_saturated) {
         yyjson_mut_obj_add_bool(doc, root_obj, "scan_saturated", true);
     }
     yyjson_mut_obj_add_bool(doc, root_obj, "truncated",
-                            has_more || raw_output < raw_count || directory_output < dir_total ||
-                                scan_saturated || budget_hit);
+                            has_more || raw_has_more || directories_has_more || scan_saturated ||
+                                budget_hit);
     if (budget_hit) {
         yyjson_mut_obj_add_str(doc, root_obj, "truncation_reason", "output_budget");
     }
@@ -11313,21 +11387,24 @@ static char *assemble_search_output(search_result_t *sr, int sr_count, grep_matc
  * and qualified-name prefixes can use the response-local directory. Full and
  * files mode first build the canonical JSON model, then project it to tree. */
 static char *render_search_payload(search_result_t *sr, int sr_count, grep_match_t *raw,
-                                   int raw_count, int gm_count, int output_count, int raw_output,
-                                   int directory_output, int match_limit, int mode,
+                                   int raw_count, int gm_count, int output_count, int raw_start,
+                                   int raw_output, int directory_start, int directory_output,
+                                   int raw_limit, int directory_limit, int match_limit, int mode,
                                    int context_lines, int source_max_lines, const char *root_path,
                                    bool scan_saturated, bool warn_literal_pipe, uint64_t elapsed_ms,
                                    bool budget_hit, bool json_format) {
     if (mode == 0 && !json_format) {
         return assemble_search_output_toon(
-            sr, sr_count, raw, raw_count, gm_count, output_count, raw_output, directory_output,
-            match_limit, scan_saturated, warn_literal_pipe, elapsed_ms, budget_hit, -1);
+            sr, sr_count, raw, raw_count, gm_count, output_count, raw_start, raw_output,
+            directory_start, directory_output, raw_limit, directory_limit, match_limit,
+            scan_saturated, warn_literal_pipe, elapsed_ms, budget_hit, -1);
     }
 
-    char *json = assemble_search_output(sr, sr_count, raw, raw_count, gm_count, output_count,
-                                        raw_output, directory_output, match_limit, mode,
-                                        context_lines, source_max_lines, root_path, scan_saturated,
-                                        warn_literal_pipe, elapsed_ms, budget_hit);
+    char *json = assemble_search_output(
+        sr, sr_count, raw, raw_count, gm_count, output_count, raw_start, raw_output,
+        directory_start, directory_output, raw_limit, directory_limit, match_limit, mode,
+        context_lines, source_max_lines, root_path, scan_saturated, warn_literal_pipe, elapsed_ms,
+        budget_hit);
     if (!json || json_format) {
         return json;
     }
@@ -11366,9 +11443,10 @@ char *cbm_mcp_render_search_rows_for_testing(const char *const *qualified_names,
         }
         initialized++;
     }
-    char *payload = render_search_payload(results, row_count, NULL, 0, row_count, row_count, 0,
-                                          row_count, row_count > 0 ? 1 : 0, 0, 0, 0, "", false,
-                                          false, 0, false, json_format);
+    char *payload = render_search_payload(
+        results, row_count, NULL, 0, row_count, row_count, 0, 0, 0, row_count, 0,
+        row_count > 0 ? 1 : 0, row_count > 0 ? 1 : 0, 0, 0, 0, "", false, false, 0, false,
+        json_format);
     free_search_results(results, initialized);
     return payload;
 }
@@ -12018,11 +12096,19 @@ static char *handle_search_code(cbm_mcp_server_t *srv, const char *args) {
     } else if (raw_limit > 100) {
         raw_limit = 100;
     }
+    int raw_offset = cbm_mcp_get_int_arg(args, "raw_offset", 0);
+    if (raw_offset < 0) {
+        raw_offset = 0;
+    }
     int directory_limit = cbm_mcp_get_int_arg(args, "directory_limit", 20);
     if (directory_limit < 0) {
         directory_limit = 0;
     } else if (directory_limit > 64) {
         directory_limit = 64;
+    }
+    int directory_offset = cbm_mcp_get_int_arg(args, "directory_offset", 0);
+    if (directory_offset < 0) {
+        directory_offset = 0;
     }
     int match_limit = cbm_mcp_get_int_arg(args, "match_limit", 8);
     if (match_limit < 1) {
@@ -12316,7 +12402,11 @@ static char *handle_search_code(cbm_mcp_server_t *srv, const char *args) {
     free(sc_format);
 
     int output_count = sr_count < limit ? sr_count : limit;
-    int raw_output = raw_count < raw_limit ? raw_count : raw_limit;
+    int raw_start = raw_offset < raw_count ? raw_offset : raw_count;
+    int raw_output = raw_count - raw_start;
+    if (raw_output > raw_limit) {
+        raw_output = raw_limit;
+    }
     search_dir_count_t *directories = NULL;
     int dir_total = 0;
     if (!aggregate_search_dirs(sr, sr_count, &directories, &dir_total)) {
@@ -12333,20 +12423,26 @@ static char *handle_search_code(cbm_mcp_server_t *srv, const char *args) {
         return cbm_mcp_text_result("out of memory", true);
     }
     free_search_dirs(directories, dir_total);
-    int directory_output = dir_total < directory_limit ? dir_total : directory_limit;
+    int directory_start = directory_offset < dir_total ? directory_offset : dir_total;
+    int directory_output = dir_total - directory_start;
+    if (directory_output > directory_limit) {
+        directory_output = directory_limit;
+    }
     uint64_t elapsed_ms = cbm_now_ms() - search_t0;
     bool warn_literal_pipe = pat_has_pipe && !use_regex;
     char *payload = render_search_payload(
-        sr, sr_count, raw, raw_count, gm_count, output_count, raw_output, directory_output,
-        match_limit, mode, context_lines, source_max_lines, root_path, scan_saturated,
-        warn_literal_pipe, elapsed_ms, false, sc_legacy_json);
+        sr, sr_count, raw, raw_count, gm_count, output_count, raw_start, raw_output,
+        directory_start, directory_output, raw_limit, directory_limit, match_limit, mode,
+        context_lines, source_max_lines, root_path, scan_saturated, warn_literal_pipe, elapsed_ms,
+        false, sc_legacy_json);
 
     if (payload && strlen(payload) > byte_budget) {
         free(payload);
-        payload = render_search_payload(sr, sr_count, raw, raw_count, gm_count, output_count,
-                                        raw_output, directory_output, match_limit, mode,
-                                        context_lines, source_max_lines, root_path, scan_saturated,
-                                        warn_literal_pipe, elapsed_ms, true, sc_legacy_json);
+        payload = render_search_payload(
+            sr, sr_count, raw, raw_count, gm_count, output_count, raw_start, raw_output,
+            directory_start, directory_output, raw_limit, directory_limit, match_limit, mode,
+            context_lines, source_max_lines, root_path, scan_saturated, warn_literal_pipe,
+            elapsed_ms, true, sc_legacy_json);
     }
 
     /* Preserve ranked graph answers. Unclassified raw grep rows and directory
@@ -12354,18 +12450,20 @@ static char *handle_search_code(cbm_mcp_server_t *srv, const char *args) {
     while (payload && strlen(payload) > byte_budget && raw_output > 0) {
         raw_output--;
         free(payload);
-        payload = render_search_payload(sr, sr_count, raw, raw_count, gm_count, output_count,
-                                        raw_output, directory_output, match_limit, mode,
-                                        context_lines, source_max_lines, root_path, scan_saturated,
-                                        warn_literal_pipe, elapsed_ms, true, sc_legacy_json);
+        payload = render_search_payload(
+            sr, sr_count, raw, raw_count, gm_count, output_count, raw_start, raw_output,
+            directory_start, directory_output, raw_limit, directory_limit, match_limit, mode,
+            context_lines, source_max_lines, root_path, scan_saturated, warn_literal_pipe,
+            elapsed_ms, true, sc_legacy_json);
     }
     while (payload && strlen(payload) > byte_budget && directory_output > 0) {
         directory_output--;
         free(payload);
-        payload = render_search_payload(sr, sr_count, raw, raw_count, gm_count, output_count,
-                                        raw_output, directory_output, match_limit, mode,
-                                        context_lines, source_max_lines, root_path, scan_saturated,
-                                        warn_literal_pipe, elapsed_ms, true, sc_legacy_json);
+        payload = render_search_payload(
+            sr, sr_count, raw, raw_count, gm_count, output_count, raw_start, raw_output,
+            directory_start, directory_output, raw_limit, directory_limit, match_limit, mode,
+            context_lines, source_max_lines, root_path, scan_saturated, warn_literal_pipe,
+            elapsed_ms, true, sc_legacy_json);
     }
 
     /* Full source is the next detail tier. Find the largest whole-line window
@@ -12378,9 +12476,10 @@ static char *handle_search_code(cbm_mcp_server_t *srv, const char *args) {
         while (low <= high) {
             int middle = low + (high - low) / 2;
             char *candidate = render_search_payload(
-                sr, sr_count, raw, raw_count, gm_count, output_count, raw_output, directory_output,
-                match_limit, mode, context_lines, middle, root_path, scan_saturated,
-                warn_literal_pipe, elapsed_ms, true, sc_legacy_json);
+                sr, sr_count, raw, raw_count, gm_count, output_count, raw_start, raw_output,
+                directory_start, directory_output, raw_limit, directory_limit, match_limit, mode,
+                context_lines, middle, root_path, scan_saturated, warn_literal_pipe, elapsed_ms,
+                true, sc_legacy_json);
             if (candidate && strlen(candidate) <= byte_budget) {
                 free(best_payload);
                 best_payload = candidate;
@@ -12398,9 +12497,10 @@ static char *handle_search_code(cbm_mcp_server_t *srv, const char *args) {
         } else {
             source_max_lines = 0;
             payload = render_search_payload(
-                sr, sr_count, raw, raw_count, gm_count, output_count, raw_output, directory_output,
-                match_limit, mode, context_lines, source_max_lines, root_path, scan_saturated,
-                warn_literal_pipe, elapsed_ms, true, sc_legacy_json);
+                sr, sr_count, raw, raw_count, gm_count, output_count, raw_start, raw_output,
+                directory_start, directory_output, raw_limit, directory_limit, match_limit, mode,
+                context_lines, source_max_lines, root_path, scan_saturated, warn_literal_pipe,
+                elapsed_ms, true, sc_legacy_json);
         }
     }
 
@@ -12412,9 +12512,10 @@ static char *handle_search_code(cbm_mcp_server_t *srv, const char *args) {
         char *best_payload = NULL;
         for (int candidate_rows = output_count - 1; candidate_rows >= 0; candidate_rows--) {
             char *candidate = render_search_payload(
-                sr, sr_count, raw, raw_count, gm_count, candidate_rows, raw_output,
-                directory_output, match_limit, mode, context_lines, source_max_lines, root_path,
-                scan_saturated, warn_literal_pipe, elapsed_ms, true, sc_legacy_json);
+                sr, sr_count, raw, raw_count, gm_count, candidate_rows, raw_start, raw_output,
+                directory_start, directory_output, raw_limit, directory_limit, match_limit, mode,
+                context_lines, source_max_lines, root_path, scan_saturated, warn_literal_pipe,
+                elapsed_ms, true, sc_legacy_json);
             if (candidate && strlen(candidate) <= byte_budget) {
                 best_payload = candidate;
                 break;
@@ -12776,37 +12877,92 @@ static void detect_emit_impacted_tree(cbm_sb_t *sb, const cbm_traverse_result_t 
     }
 }
 
-/* Portable, allocation-backed line reader. Git permits paths longer than the
- * former 1 KiB stack buffer on supported platforms; splitting one path into
- * several fake files would corrupt both traversal seeds and output. */
-static char *detect_read_line(FILE *stream, bool *oom) {
-    cbm_sb_t line;
-    cbm_sb_init(&line);
-    bool saw_byte = false;
+/* Portable, allocation-backed record reader. Git's -z formats preserve UTF-8
+ * and allow every path byte except NUL, including newlines. A fixed or
+ * line-based buffer would either quote or split valid paths. */
+static char *detect_read_record(FILE *stream, int delimiter, bool *oom, bool *terminated) {
+    cbm_sb_t record;
+    cbm_sb_init(&record);
+    bool saw_input = false;
+    if (terminated) {
+        *terminated = false;
+    }
     for (;;) {
         int ch = fgetc(stream);
         if (ch == EOF) {
             break;
         }
-        saw_byte = true;
+        saw_input = true;
+        if (ch == delimiter) {
+            if (terminated) {
+                *terminated = true;
+            }
+            break;
+        }
         char byte = (char)ch;
-        cbm_sb_append_n(&line, &byte, 1);
-        if (line.oom || ch == '\n') {
+        cbm_sb_append_n(&record, &byte, 1);
+        if (record.oom) {
             break;
         }
     }
-    if (line.oom) {
+    if (record.oom) {
         if (oom) {
             *oom = true;
         }
-        cbm_sb_free(&line);
+        cbm_sb_free(&record);
         return NULL;
     }
-    if (!saw_byte) {
-        cbm_sb_free(&line);
+    if (!saw_input) {
+        cbm_sb_free(&record);
         return NULL;
     }
-    return cbm_sb_finish(&line);
+    return cbm_sb_finish(&record);
+}
+
+static bool detect_add_changed_path(char ***files, int *file_count, int *file_cap,
+                                    const char *path) {
+    if (!path || !path[0]) {
+        return true;
+    }
+    for (int i = 0; i < *file_count; i++) {
+        if (strcmp((*files)[i], path) == 0) {
+            return true;
+        }
+    }
+    if (*file_count >= *file_cap) {
+        int next_cap = *file_cap ? *file_cap * 2 : 16;
+        char **grown = realloc(*files, (size_t)next_cap * sizeof(*grown));
+        if (!grown) {
+            return false;
+        }
+        *files = grown;
+        *file_cap = next_cap;
+    }
+    char *copy = heap_strdup(path);
+    if (!copy) {
+        return false;
+    }
+    (*files)[(*file_count)++] = copy;
+    return true;
+}
+
+static int detect_changed_path_compare(const void *left, const void *right) {
+    const char *const *left_path = left;
+    const char *const *right_path = right;
+    return strcmp(*left_path, *right_path);
+}
+
+static bool detect_valid_object_id(const char *value) {
+    size_t length = value ? strlen(value) : 0;
+    if (length != 40 && length != 64) {
+        return false;
+    }
+    for (size_t i = 0; i < length; i++) {
+        if (!isxdigit((unsigned char)value[i])) {
+            return false;
+        }
+    }
+    return true;
 }
 
 static char *handle_detect_changes(cbm_mcp_server_t *srv, const char *args) {
@@ -12869,69 +13025,6 @@ static char *handle_detect_changes(cbm_mcp_server_t *srv, const char *args) {
         return cbm_mcp_text_result("project path contains invalid characters", true);
     }
 
-    /* Get changed files via git (-C avoids cd + quoting issues on Windows).
-     * Three sources are merged:
-     *   1. committed changes vs base   (diff <base>...HEAD)
-     *   2. unstaged tracked changes    (diff)
-     *   3. untracked + staged-new files (status --porcelain) — these are
-     *      invisible to `git diff` and were silently missed before, so a
-     *      brand-new file never appeared until a manual re-index (#520).
-     * status --porcelain prefixes each path with a 2-char code + space
-     * ("?? path", "A  path"); the prefix is stripped when parsing below. */
-    char cmd[CBM_SZ_2K];
-#ifdef _WIN32
-    snprintf(cmd, sizeof(cmd),
-             "git -C \"%s\" diff --name-only \"%s\"...HEAD 2>NUL & "
-             "git -C \"%s\" diff --name-only 2>NUL & "
-             "git --no-optional-locks -C \"%s\" status --porcelain "
-             "--untracked-files=normal 2>NUL",
-             root_path, base_branch, root_path, root_path);
-#else
-    snprintf(cmd, sizeof(cmd),
-             "{ git -C '%s' diff --name-only '%s'...HEAD 2>/dev/null; "
-             "git -C '%s' diff --name-only 2>/dev/null; "
-             "git --no-optional-locks -C '%s' status --porcelain "
-             "--untracked-files=normal 2>/dev/null; } | sort -u",
-             root_path, base_branch, root_path, root_path);
-#endif
-
-    char output_path[CBM_SZ_2K] = {0};
-    cbm_proc_result_t git_result = {0};
-    int git_run = mcp_run_shell_command_cancellable(srv, cmd, output_path, &git_result);
-    bool git_cancelled = git_result.cancellation_requested || mcp_request_cancelled(srv);
-    if (git_cancelled) {
-        (void)cbm_unlink(output_path);
-        free(root_path);
-        free(project);
-        free(base_branch);
-        free(scope);
-        return cbm_mcp_text_result("detect_changes cancelled for this request", true);
-    }
-    if (git_run != 0) {
-        (void)cbm_unlink(output_path);
-        char errmsg[CBM_SZ_256];
-        snprintf(errmsg, sizeof(errmsg),
-                 "git diff failed: the contained command could not complete. "
-                 "Check that git is installed.");
-        free(root_path);
-        free(project);
-        free(base_branch);
-        free(scope);
-        return cbm_mcp_text_result(errmsg, true);
-    }
-    FILE *fp = cbm_fopen(output_path, "rb");
-    if (!fp) {
-        (void)cbm_unlink(output_path);
-        free(root_path);
-        free(project);
-        free(base_branch);
-        free(scope);
-        return cbm_mcp_text_result("git diff failed: contained output could not be read", true);
-    }
-
-    /* resolve_store already called via get_project_root above */
-    cbm_store_t *store = srv->store;
-
     /* Direction of impact. Default inbound = the BLAST RADIUS: the transitive
      * CALLERS of the changed symbols, which may need review. outbound = what
      * the changed code depends on; both = union. */
@@ -12953,13 +13046,317 @@ static char *handle_detect_changes(cbm_mcp_server_t *srv, const char *args) {
         free(project);
         free(base_branch);
         free(scope);
-        (void)fclose(fp);
-        (void)cbm_unlink(output_path);
         return cbm_mcp_text_result(errbuf, true);
     }
     char *fmt = cbm_mcp_get_string_arg(args, "format");
     bool legacy_json = fmt && strcmp(fmt, "json") == 0;
     free(fmt);
+
+    /* Freeze both endpoints before collecting paths. A failed or unknown base
+     * is a request error, never an exact-looking empty diff, and a concurrent
+     * HEAD advance cannot mix revisions within one answer. */
+    char head_oid[65] = "";
+    char base_oid[65] = "";
+    char resolve_cmd[CBM_SZ_2K];
+#ifdef _WIN32
+    snprintf(resolve_cmd, sizeof(resolve_cmd),
+             "git -C \"%s\" rev-parse \"HEAD^{commit}\" \"%s^{commit}\" 2>NUL", root_path,
+             base_branch);
+#else
+    snprintf(resolve_cmd, sizeof(resolve_cmd),
+             "git -C '%s' rev-parse 'HEAD^{commit}' '%s^{commit}' 2>/dev/null", root_path,
+             base_branch);
+#endif
+    char resolve_output_path[CBM_SZ_2K] = {0};
+    cbm_proc_result_t resolve_result = {0};
+    int resolve_run = mcp_run_shell_command_cancellable(srv, resolve_cmd, resolve_output_path,
+                                                        &resolve_result);
+    bool resolve_cancelled =
+        resolve_result.cancellation_requested || mcp_request_cancelled(srv);
+    bool resolve_oom = false;
+    char *resolved_head = NULL;
+    char *resolved_base = NULL;
+    FILE *resolve_fp = resolve_run == 0 && resolve_result.exit_code == 0 && !resolve_cancelled
+                           ? cbm_fopen(resolve_output_path, "rb")
+                           : NULL;
+    if (resolve_fp) {
+        bool head_terminated = false;
+        bool base_terminated = false;
+        resolved_head = detect_read_record(resolve_fp, '\n', &resolve_oom, &head_terminated);
+        resolved_base =
+            detect_read_record(resolve_fp, '\n', &resolve_oom, &base_terminated);
+        if (resolved_head) {
+            size_t length = strlen(resolved_head);
+            if (length > 0 && resolved_head[length - 1] == '\r') {
+                resolved_head[--length] = '\0';
+            }
+            if (head_terminated && detect_valid_object_id(resolved_head)) {
+                memcpy(head_oid, resolved_head, length + 1U);
+            }
+        }
+        if (resolved_base) {
+            size_t length = strlen(resolved_base);
+            if (length > 0 && resolved_base[length - 1] == '\r') {
+                resolved_base[--length] = '\0';
+            }
+            if (base_terminated && detect_valid_object_id(resolved_base)) {
+                memcpy(base_oid, resolved_base, length + 1U);
+            }
+        }
+        (void)fclose(resolve_fp);
+    }
+    free(resolved_head);
+    free(resolved_base);
+    if (resolve_output_path[0]) {
+        (void)cbm_unlink(resolve_output_path);
+    }
+    if (resolve_cancelled || resolve_run != 0 || resolve_result.exit_code != 0 || resolve_oom ||
+        !head_oid[0] || !base_oid[0]) {
+        free(direction);
+        free(root_path);
+        free(project);
+        free(base_branch);
+        free(scope);
+        if (resolve_cancelled) {
+            return cbm_mcp_text_result("detect_changes cancelled for this request", true);
+        }
+        if (resolve_run != 0) {
+            return cbm_mcp_text_result(
+                "git revision resolution failed: the contained command could not complete", true);
+        }
+        return cbm_mcp_text_result(
+            "git revision resolution failed: base_branch or HEAD is not a commit", true);
+    }
+
+    char merge_base[65] = "";
+    char mbcmd[CBM_SZ_2K];
+#ifdef _WIN32
+    snprintf(mbcmd, sizeof(mbcmd), "git -C \"%s\" merge-base \"%s\" \"%s\" 2>NUL",
+             root_path, base_oid, head_oid);
+#else
+    snprintf(mbcmd, sizeof(mbcmd), "git -C '%s' merge-base '%s' '%s' 2>/dev/null", root_path,
+             base_oid, head_oid);
+#endif
+    char mb_output_path[CBM_SZ_2K] = {0};
+    cbm_proc_result_t mb_result = {0};
+    int mb_run = mcp_run_shell_command_cancellable(srv, mbcmd, mb_output_path, &mb_result);
+    bool mb_cancelled = mb_result.cancellation_requested || mcp_request_cancelled(srv);
+    bool mb_oom = false;
+    bool mb_terminated = false;
+    char *mb_record = NULL;
+    FILE *mbfp = mb_run == 0 && mb_result.exit_code == 0 && !mb_cancelled
+                     ? cbm_fopen(mb_output_path, "rb")
+                     : NULL;
+    if (mbfp) {
+        mb_record = detect_read_record(mbfp, '\n', &mb_oom, &mb_terminated);
+        (void)fclose(mbfp);
+    }
+    if (mb_record) {
+        size_t length = strlen(mb_record);
+        if (length > 0 && mb_record[length - 1] == '\r') {
+            mb_record[--length] = '\0';
+        }
+        if (detect_valid_object_id(mb_record)) {
+            memcpy(merge_base, mb_record, length + 1U);
+        }
+    }
+    free(mb_record);
+    if (mb_output_path[0]) {
+        (void)cbm_unlink(mb_output_path);
+    }
+    if (mb_cancelled || mb_run != 0 || mb_result.exit_code != 0 || mb_oom || !merge_base[0]) {
+        free(direction);
+        free(root_path);
+        free(project);
+        free(base_branch);
+        free(scope);
+        if (mb_cancelled) {
+            return cbm_mcp_text_result("detect_changes cancelled for this request", true);
+        }
+        if (mb_run != 0) {
+            return cbm_mcp_text_result(
+                "git merge-base failed: the contained command could not complete", true);
+        }
+        return cbm_mcp_text_result(
+            "git merge-base failed: base_branch has no common ancestor with HEAD", true);
+    }
+
+    /* Collect exact Git path records. `-z` disables C-style path quoting and
+     * keeps embedded newlines intact. Diff and porcelain status stay separate:
+     * diff emits bare paths, while status emits typed `XY destination` records
+     * and an extra source record for renames/copies. */
+    char **files = NULL;
+    int file_count = 0;
+    int file_cap = 0;
+    bool changed_path_oom = false;
+    bool changed_path_malformed = false;
+
+    char diff_cmd[CBM_SZ_2K];
+#ifdef _WIN32
+    snprintf(diff_cmd, sizeof(diff_cmd),
+             "git -c core.quotePath=false -C \"%s\" diff --name-only -z \"%s\" \"%s\" -- 2>NUL "
+             "&& git -c core.quotePath=false -C \"%s\" diff --name-only -z -- 2>NUL",
+             root_path, merge_base, head_oid, root_path);
+#else
+    snprintf(diff_cmd, sizeof(diff_cmd),
+             "git -c core.quotePath=false -C '%s' diff --name-only -z '%s' '%s' -- 2>/dev/null "
+             "&& git -c core.quotePath=false -C '%s' diff --name-only -z -- 2>/dev/null",
+             root_path, merge_base, head_oid, root_path);
+#endif
+    char diff_output_path[CBM_SZ_2K] = {0};
+    cbm_proc_result_t diff_result = {0};
+    int diff_run =
+        mcp_run_shell_command_cancellable(srv, diff_cmd, diff_output_path, &diff_result);
+    bool diff_cancelled = diff_result.cancellation_requested || mcp_request_cancelled(srv);
+    FILE *diff_fp = diff_run == 0 && diff_result.exit_code == 0 && !diff_cancelled
+                        ? cbm_fopen(diff_output_path, "rb")
+                        : NULL;
+    bool diff_output_opened = diff_fp != NULL;
+    if (diff_fp) {
+        for (;;) {
+            bool terminated = false;
+            char *record = detect_read_record(diff_fp, '\0', &changed_path_oom, &terminated);
+            if (!record) {
+                break;
+            }
+            if (!terminated) {
+                changed_path_malformed = true;
+                free(record);
+                break;
+            }
+            if (!detect_add_changed_path(&files, &file_count, &file_cap, record)) {
+                changed_path_oom = true;
+                free(record);
+                break;
+            }
+            free(record);
+        }
+        (void)fclose(diff_fp);
+    }
+    if (diff_output_path[0]) {
+        (void)cbm_unlink(diff_output_path);
+    }
+    if (diff_cancelled || diff_run != 0 || diff_result.exit_code != 0 || !diff_output_opened ||
+        changed_path_oom || changed_path_malformed) {
+        for (int i = 0; i < file_count; i++) {
+            free(files[i]);
+        }
+        free(files);
+        free(direction);
+        free(root_path);
+        free(project);
+        free(base_branch);
+        free(scope);
+        if (diff_cancelled) {
+            return cbm_mcp_text_result("detect_changes cancelled for this request", true);
+        }
+        if (changed_path_oom) {
+            return cbm_mcp_text_result("out of memory while reading changed paths", true);
+        }
+        if (changed_path_malformed) {
+            return cbm_mcp_text_result("git diff returned a malformed path record", true);
+        }
+        return cbm_mcp_text_result(
+            diff_run != 0 ? "git diff failed: the contained command could not complete"
+                          : "git diff failed while collecting changed paths",
+            true);
+    }
+
+    char status_cmd[CBM_SZ_2K];
+#ifdef _WIN32
+    snprintf(status_cmd, sizeof(status_cmd),
+             "git --no-optional-locks -c core.quotePath=false -C \"%s\" status "
+             "--porcelain=v1 -z --untracked-files=all -- 2>NUL",
+             root_path);
+#else
+    snprintf(status_cmd, sizeof(status_cmd),
+             "git --no-optional-locks -c core.quotePath=false -C '%s' status "
+             "--porcelain=v1 -z --untracked-files=all -- 2>/dev/null",
+             root_path);
+#endif
+    char status_output_path[CBM_SZ_2K] = {0};
+    cbm_proc_result_t status_result = {0};
+    int status_run =
+        mcp_run_shell_command_cancellable(srv, status_cmd, status_output_path, &status_result);
+    bool status_cancelled =
+        status_result.cancellation_requested || mcp_request_cancelled(srv);
+    FILE *status_fp = status_run == 0 && status_result.exit_code == 0 && !status_cancelled
+                          ? cbm_fopen(status_output_path, "rb")
+                          : NULL;
+    bool status_output_opened = status_fp != NULL;
+    if (status_fp) {
+        for (;;) {
+            bool terminated = false;
+            char *record = detect_read_record(status_fp, '\0', &changed_path_oom, &terminated);
+            if (!record) {
+                break;
+            }
+            size_t length = strlen(record);
+            bool typed = terminated && length > PAIR_LEN + 1U && record[PAIR_LEN] == ' ';
+            bool rename_or_copy =
+                typed && (record[0] == 'R' || record[0] == 'C' || record[1] == 'R' ||
+                          record[1] == 'C');
+            if (!typed) {
+                changed_path_malformed = true;
+                free(record);
+                break;
+            }
+            if (!detect_add_changed_path(&files, &file_count, &file_cap,
+                                         record + PAIR_LEN + 1U)) {
+                changed_path_oom = true;
+                free(record);
+                break;
+            }
+            free(record);
+            if (rename_or_copy) {
+                bool source_terminated = false;
+                char *source = detect_read_record(status_fp, '\0', &changed_path_oom,
+                                                  &source_terminated);
+                if (!source || !source_terminated || !source[0]) {
+                    free(source);
+                    changed_path_malformed = !changed_path_oom;
+                    break;
+                }
+                free(source);
+            }
+        }
+        (void)fclose(status_fp);
+    }
+    if (status_output_path[0]) {
+        (void)cbm_unlink(status_output_path);
+    }
+    if (status_cancelled || status_run != 0 || status_result.exit_code != 0 ||
+        !status_output_opened ||
+        changed_path_oom || changed_path_malformed) {
+        for (int i = 0; i < file_count; i++) {
+            free(files[i]);
+        }
+        free(files);
+        free(direction);
+        free(root_path);
+        free(project);
+        free(base_branch);
+        free(scope);
+        if (status_cancelled) {
+            return cbm_mcp_text_result("detect_changes cancelled for this request", true);
+        }
+        if (changed_path_oom) {
+            return cbm_mcp_text_result("out of memory while reading changed paths", true);
+        }
+        if (changed_path_malformed) {
+            return cbm_mcp_text_result("git status returned a malformed path record", true);
+        }
+        return cbm_mcp_text_result(
+            status_run != 0 ? "git status failed: the contained command could not complete"
+                            : "git status failed while collecting changed paths",
+            true);
+    }
+    if (file_count > 1) {
+        qsort(files, (size_t)file_count, sizeof(*files), detect_changed_path_compare);
+    }
+
+    /* resolve_store already called via get_project_root above */
+    cbm_store_t *store = srv->store;
 
     /* Per-symbol impact page size. Engine saturation makes the reported total
      * an explicit lower bound, while impact_offset continues every materialized
@@ -13002,11 +13399,7 @@ static char *handle_detect_changes(cbm_mcp_server_t *srv, const char *args) {
         max_output_tokens = 1000000;
     }
 
-    /* Collect changed file paths into a C array (drives seeds, the rollup, and
-     * both output encodings). */
-    char **files = NULL;
-    int file_count = 0;
-    int file_cap = 0;
+    /* Changed paths drive traversal seeds and both output encodings. */
     int64_t *seeds = NULL;
     int seed_count = 0;
     int seed_cap = 0;
@@ -13032,21 +13425,23 @@ static char *handle_detect_changes(cbm_mcp_server_t *srv, const char *args) {
         char hunk_cmd[CBM_SZ_2K];
 #ifdef _WIN32
         snprintf(hunk_cmd, sizeof(hunk_cmd),
-                 "git -C \"%s\" diff --unified=0 \"%s\"...HEAD 2>NUL & "
-                 "git -C \"%s\" diff --unified=0 2>NUL",
-                 root_path, base_branch, root_path);
+                 "git -C \"%s\" diff --unified=0 \"%s\" \"%s\" -- 2>NUL && "
+                 "git -C \"%s\" diff --unified=0 -- 2>NUL",
+                 root_path, merge_base, head_oid, root_path);
 #else
         snprintf(hunk_cmd, sizeof(hunk_cmd),
-                 "{ git -C '%s' diff --unified=0 '%s'...HEAD 2>/dev/null; "
-                 "git -C '%s' diff --unified=0 2>/dev/null; }",
-                 root_path, base_branch, root_path);
+                 "git -C '%s' diff --unified=0 '%s' '%s' -- 2>/dev/null && "
+                 "git -C '%s' diff --unified=0 -- 2>/dev/null",
+                 root_path, merge_base, head_oid, root_path);
 #endif
         char hunk_output_path[CBM_SZ_2K] = {0};
         cbm_proc_result_t hunk_result = {0};
         int hunk_run =
             mcp_run_shell_command_cancellable(srv, hunk_cmd, hunk_output_path, &hunk_result);
         bool hunk_cancelled = hunk_result.cancellation_requested || mcp_request_cancelled(srv);
-        FILE *hfp = (!hunk_cancelled && hunk_run == 0) ? cbm_fopen(hunk_output_path, "rb") : NULL;
+        FILE *hfp = (!hunk_cancelled && hunk_run == 0 && hunk_result.exit_code == 0)
+                        ? cbm_fopen(hunk_output_path, "rb")
+                        : NULL;
         if (hfp) {
             (void)fseek(hfp, 0, SEEK_END);
             long hsz = ftell(hfp);
@@ -13081,127 +13476,13 @@ static char *handle_detect_changes(cbm_mcp_server_t *srv, const char *args) {
         }
     }
 
-    bool changed_line_oom = false;
-    for (;;) {
-        char *line = detect_read_line(fp, &changed_line_oom);
-        if (!line) {
-            break;
-        }
-        size_t len = strlen(line);
-        while (len > 0 && (line[len - SKIP_ONE] == '\n' || line[len - SKIP_ONE] == '\r')) {
-            line[--len] = '\0';
-        }
-        if (len == 0) {
-            free(line);
-            continue;
-        }
-        /* Strip the `git status --porcelain` 2-char code + space; for a rename
-         * ("R  old -> new") keep the destination path. */
-        char *path_line = line;
-        if (len > PAIR_LEN && line[PAIR_LEN] == ' ' && strchr(" MADRCU?!", line[0]) &&
-            strchr(" MADRCU?!", line[1])) {
-            path_line = line + PAIR_LEN + SKIP_ONE;
-            char *arrow = strstr(path_line, " -> ");
-            if (arrow) {
-                enum { ARROW_LEN = 4 };
-                path_line = arrow + ARROW_LEN;
-            }
-        }
-        if (path_line[0] == '\0') {
-            free(line);
-            continue;
-        }
-        /* Dedup: the three git sources are sorted+unioned on POSIX but not on
-         * Windows (separate commands), and a path can repeat. */
-        bool dup = false;
+    /* Hunk parsing is deliberately best-effort, but path collection is not.
+     * Seed after both are complete so every exact path uses the same scoping
+     * decision. */
+    if (want_symbols) {
         for (int i = 0; i < file_count; i++) {
-            if (strcmp(files[i], path_line) == 0) {
-                dup = true;
-                break;
-            }
-        }
-        if (dup) {
-            free(line);
-            continue;
-        }
-        if (file_count >= file_cap) {
-            file_cap = file_cap ? file_cap * 2 : 16;
-            files = safe_realloc(files, (size_t)file_cap * sizeof(char *));
-        }
-        files[file_count++] = heap_strdup(path_line);
-        if (want_symbols) {
-            detect_collect_seeds(store, project, path_line, hunks, hunk_count, &seeds, &seed_count,
+            detect_collect_seeds(store, project, files[i], hunks, hunk_count, &seeds, &seed_count,
                                  &seed_cap);
-        }
-        free(line);
-    }
-    (void)fclose(fp);
-    (void)cbm_unlink(output_path);
-    if (changed_line_oom) {
-        for (int i = 0; i < file_count; i++) {
-            free(files[i]);
-        }
-        free(files);
-        free(seeds);
-        free(hunks);
-        free(direction);
-        free(root_path);
-        free(project);
-        free(base_branch);
-        free(scope);
-        return cbm_mcp_text_result("out of memory while reading changed paths", true);
-    }
-    int git_status = git_result.exit_code;
-
-    /* merge-base SHA: the exact commit the diff is measured against, so the
-     * result is reproducible even as base_branch advances. Best-effort. */
-    char merge_base[64] = "";
-    {
-        char mbcmd[CBM_SZ_2K];
-#ifdef _WIN32
-        snprintf(mbcmd, sizeof(mbcmd), "git -C \"%s\" merge-base \"%s\" HEAD 2>NUL", root_path,
-                 base_branch);
-#else
-        snprintf(mbcmd, sizeof(mbcmd), "git -C '%s' merge-base '%s' HEAD 2>/dev/null", root_path,
-                 base_branch);
-#endif
-        char mb_output_path[CBM_SZ_2K] = {0};
-        cbm_proc_result_t mb_result = {0};
-        int mb_run = mcp_run_shell_command_cancellable(srv, mbcmd, mb_output_path, &mb_result);
-        bool mb_cancelled = mb_result.cancellation_requested || mcp_request_cancelled(srv);
-        bool mb_containment_failed = mb_run != 0 && mb_output_path[0] != '\0';
-        FILE *mbfp =
-            mb_run == 0 && mb_result.exit_code == 0 ? cbm_fopen(mb_output_path, "rb") : NULL;
-        if (mbfp && !mb_cancelled) {
-            if (fgets(merge_base, sizeof(merge_base), mbfp)) {
-                size_t l = strlen(merge_base);
-                while (l > 0 && (merge_base[l - 1] == '\n' || merge_base[l - 1] == '\r')) {
-                    merge_base[--l] = '\0';
-                }
-            }
-        }
-        if (mbfp) {
-            (void)fclose(mbfp);
-        }
-        if (mb_output_path[0]) {
-            (void)cbm_unlink(mb_output_path);
-        }
-        if (mb_cancelled || mb_containment_failed) {
-            for (int i = 0; i < file_count; i++) {
-                free(files[i]);
-            }
-            free(files);
-            free(seeds);
-            free(hunks);
-            free(direction);
-            free(root_path);
-            free(project);
-            free(base_branch);
-            free(scope);
-            return cbm_mcp_text_result(
-                mb_cancelled ? "detect_changes cancelled for this request"
-                             : "git merge-base failed: the contained command could not complete",
-                true);
         }
     }
 
@@ -13213,7 +13494,6 @@ static char *handle_detect_changes(cbm_mcp_server_t *srv, const char *args) {
                                   MCP_BFS_LIMIT_MAX, &impact, &truncated);
     }
 
-    bool is_error = (git_status != 0 && file_count == 0);
     int changed_start = changed_offset < file_count ? changed_offset : file_count;
     int changed_returned = file_count - changed_start;
     if (changed_returned > changed_limit) {
@@ -13265,13 +13545,6 @@ render_detect_output:
         if (output_budget_floor_exceeded) {
             cbm_tree_scalar_bool(&sb, "output_budget_floor_exceeded", true);
         }
-        if (is_error) {
-            char hint_buf[CBM_SZ_256];
-            snprintf(hint_buf, sizeof(hint_buf),
-                     "git diff exited with status %d. Check that branch '%s' exists.", git_status,
-                     base_branch);
-            cbm_tree_scalar_str(&sb, "hint", hint_buf);
-        }
         /* Changed files are independently pageable: traversal still used every
          * file, so paging affects presentation only, never the graph answer. */
         cbm_tree_scalar_int(&sb, "changed_total", file_count);
@@ -13286,14 +13559,23 @@ render_detect_output:
                                                     : "changed_continuation_requires_higher_budget",
                                  true);
         }
-        char cf[CBM_SZ_64];
-        snprintf(cf, sizeof(cf), "changed_files: %d\n", changed_returned);
-        cbm_sb_append(&sb, cf);
-        for (int i = changed_start; i < changed_start + changed_returned; i++) {
-            cbm_sb_append(&sb, "  ");
-            cbm_sb_append(&sb, files[i]);
-            cbm_sb_append(&sb, "\n");
+        static const char *const changed_columns[] = {"path"};
+        const char **changed_cells =
+            changed_returned > 0 ? calloc((size_t)changed_returned, sizeof(*changed_cells)) : NULL;
+        if (changed_returned == 0 || changed_cells) {
+            for (int row = 0; row < changed_returned; row++) {
+                changed_cells[row] = files[changed_start + row];
+            }
+            static const bool changed_string_columns[] = {true};
+            static const bool changed_prefix_columns[] = {true};
+            cbm_tree_table_rows_profiled(&sb, "changed_files", changed_returned, changed_columns,
+                                         1, changed_cells, changed_string_columns,
+                                         changed_prefix_columns);
+        } else {
+            cbm_tree_table_header(&sb, "changed_files", 0, changed_columns, 1);
+            cbm_tree_scalar_str(&sb, "changed_files_render_error", "out_of_memory");
         }
+        free(changed_cells);
         cbm_tree_scalar_int(&sb, "seed_symbols", seed_count);
         if (want_symbols) {
             detect_emit_impacted_tree(&sb, &impact, imp_start, imp_returned, truncated);
@@ -13337,11 +13619,13 @@ render_detect_output:
             free(count_text);
             free(cells);
             if (truncated) {
-                cbm_tree_scalar_bool(&sb, "truncated", true);
                 cbm_tree_scalar_str(&sb, "hint",
                                     "impact hit the safety ceiling — narrow with a lower "
                                     "'depth' or a smaller diff");
             }
+        }
+        if (truncated || output_budget_hit) {
+            cbm_tree_scalar_bool(&sb, "truncated", true);
         }
         out_str = cbm_sb_finish(&sb);
     } else {
@@ -13439,14 +13723,7 @@ render_detect_output:
             }
             yyjson_mut_obj_add_val(doc, root_obj, "impacted_modules", rollup);
         }
-        yyjson_mut_obj_add_bool(doc, root_obj, "truncated", truncated);
-        if (is_error) {
-            char hint_buf[CBM_SZ_256];
-            snprintf(hint_buf, sizeof(hint_buf),
-                     "git diff exited with status %d. Check that branch '%s' exists.", git_status,
-                     base_branch);
-            yyjson_mut_obj_add_strcpy(doc, root_obj, "hint", hint_buf);
-        }
+        yyjson_mut_obj_add_bool(doc, root_obj, "truncated", truncated || output_budget_hit);
         out_str = yy_doc_to_str(doc);
         yyjson_mut_doc_free(doc);
     }
@@ -13475,6 +13752,7 @@ render_detect_output:
                 cbm_sb_t floor;
                 cbm_sb_init(&floor);
                 cbm_tree_scalar_str(&floor, "truncation_reason", "output_budget");
+                cbm_tree_scalar_bool(&floor, "truncated", true);
                 cbm_tree_scalar_bool(&floor, "output_budget_floor_exceeded", true);
                 cbm_tree_scalar_int(&floor, "max_output_bytes", (long long)output_budget_bytes);
                 cbm_tree_scalar_str(&floor, "hint",
@@ -13486,6 +13764,7 @@ render_detect_output:
                 yyjson_mut_val *floor = yyjson_mut_obj(floor_doc);
                 yyjson_mut_doc_set_root(floor_doc, floor);
                 yyjson_mut_obj_add_str(floor_doc, floor, "truncation_reason", "output_budget");
+                yyjson_mut_obj_add_bool(floor_doc, floor, "truncated", true);
                 yyjson_mut_obj_add_bool(floor_doc, floor, "output_budget_floor_exceeded", true);
                 yyjson_mut_obj_add_uint(floor_doc, floor, "max_output_bytes", output_budget_bytes);
                 yyjson_mut_obj_add_str(
@@ -13518,7 +13797,7 @@ detect_output_done:
     free(base_branch);
     free(scope);
 
-    char *result = cbm_mcp_text_result(out_str, is_error);
+    char *result = cbm_mcp_text_result(out_str, false);
     free(out_str);
     return result;
 }
