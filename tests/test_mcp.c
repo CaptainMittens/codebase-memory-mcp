@@ -574,12 +574,14 @@ static void mcp_replacing_mutation_guard_end(void *context, const char *project)
     }
 }
 
-TEST(tree_cell_sanitizes_control_and_invalid_utf8) {
+TEST(tree_cell_reversibly_encodes_invalid_utf8) {
     /* One raw control or invalid-UTF8 byte in a cell poisons LINE-ORIENTED
      * consumers of the ENTIRE output (BSD grep treats all of it as
      * unmatchable binary — the macos-15-intel release-smoke B3 class), so
-     * cell emission guarantees valid UTF-8: control bytes escape as \u00XX,
-     * invalid sequences become U+FFFD, and both force the quoted form. */
+     * cell emission guarantees valid UTF-8 without losing identity: an
+     * invalid string is encoded in full as @bytes:<lowercase hex>. A valid
+     * string beginning with that reserved prefix is escaped as @utf8:<text>,
+     * so a consumer can always distinguish data from an encoded byte string. */
     cbm_sb_t sb;
     cbm_sb_init(&sb);
     cbm_tree_cell_str(&sb,
@@ -588,8 +590,14 @@ TEST(tree_cell_sanitizes_control_and_invalid_utf8) {
                       true);
     char *out = cbm_sb_finish(&sb);
     ASSERT_NOT_NULL(out);
-    ASSERT_STR_EQ(out, "\"evil\\u0001name\xEF\xBF\xBD"
-                       "end\"");
+    ASSERT_STR_EQ(out, "@bytes:6576696c016e616d65ff656e64");
+    free(out);
+
+    cbm_sb_init(&sb);
+    cbm_tree_cell_str(&sb, "@bytes:ff", true);
+    out = cbm_sb_finish(&sb);
+    ASSERT_NOT_NULL(out);
+    ASSERT_STR_EQ(out, "@utf8:@bytes:ff");
     free(out);
 
     cbm_sb_init(&sb);
@@ -1445,6 +1453,39 @@ TEST(mcp_text_result_omits_structured_content_for_plain_text) {
     /* The payload is still delivered — exactly once. */
     ASSERT_NOT_NULL(strstr(json, "\"text\":\"plain text\""));
     ASSERT_NOT_NULL(strstr(json, "\"isError\":false"));
+    free(json);
+    PASS();
+}
+
+TEST(mcp_text_result_reversibly_encodes_invalid_utf8_as_standard_json) {
+    const char invalid[] = {'n', 'a', 'm', 'e', (char)0xff, '\0'};
+    char *json = cbm_mcp_text_result(invalid, false);
+    ASSERT_NOT_NULL(json);
+
+    /* Strict parsing is the interoperability contract: never rely on
+     * YYJSON_WRITE_ALLOW_INVALID_UNICODE's non-standard byte passthrough. */
+    yyjson_doc *doc = yyjson_read(json, strlen(json), 0);
+    ASSERT_NOT_NULL(doc);
+    yyjson_val *root = yyjson_doc_get_root(doc);
+    yyjson_val *content = yyjson_obj_get(root, "content");
+    yyjson_val *item = yyjson_arr_get_first(content);
+    yyjson_val *text_value = item ? yyjson_obj_get(item, "text") : NULL;
+    ASSERT_TRUE(yyjson_is_str(text_value));
+    ASSERT_STR_EQ(yyjson_get_str(text_value), "@bytes:6e616d65ff");
+    yyjson_doc_free(doc);
+    free(json);
+
+    json = cbm_mcp_text_result("@bytes:6e616d65ff", false);
+    ASSERT_NOT_NULL(json);
+    doc = yyjson_read(json, strlen(json), 0);
+    ASSERT_NOT_NULL(doc);
+    root = yyjson_doc_get_root(doc);
+    content = yyjson_obj_get(root, "content");
+    item = yyjson_arr_get_first(content);
+    text_value = item ? yyjson_obj_get(item, "text") : NULL;
+    ASSERT_TRUE(yyjson_is_str(text_value));
+    ASSERT_STR_EQ(yyjson_get_str(text_value), "@utf8:@bytes:6e616d65ff");
+    yyjson_doc_free(doc);
     free(json);
     PASS();
 }
@@ -14432,7 +14473,7 @@ SUITE(mcp) {
     RUN_TEST(jsonrpc_parse_request);
     RUN_TEST(jsonrpc_parse_notification);
     RUN_TEST(jsonrpc_parse_invalid);
-    RUN_TEST(tree_cell_sanitizes_control_and_invalid_utf8);
+    RUN_TEST(tree_cell_reversibly_encodes_invalid_utf8);
     RUN_TEST(json_to_tree_uses_header_once_rows_without_losing_metadata);
     RUN_TEST(json_to_tree_keeps_multiline_source_readable);
     RUN_TEST(json_to_tree_quotes_dynamic_keys_without_line_injection);
@@ -14467,6 +14508,7 @@ SUITE(mcp) {
     RUN_TEST(mcp_get_architecture_aspects_schema_enum_pr560);
     RUN_TEST(mcp_text_result);
     RUN_TEST(mcp_text_result_omits_structured_content_for_plain_text);
+    RUN_TEST(mcp_text_result_reversibly_encodes_invalid_utf8_as_standard_json);
     RUN_TEST(mcp_every_tool_result_is_duplication_free);
     RUN_TEST(mcp_cancel_matches_request_id);
     RUN_TEST(mcp_text_result_error);

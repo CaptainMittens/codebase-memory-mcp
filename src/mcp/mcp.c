@@ -143,13 +143,70 @@ static char *heap_strdup(const char *s) {
     return d;
 }
 
-/* Write yyjson_mut_doc to heap-allocated JSON string.
- * ALLOW_INVALID_UNICODE: some database strings may contain non-UTF-8 bytes
- * from older indexing runs — don't fail serialization over it. */
+/* Replace non-UTF-8 strings inside a mutable document before standard JSON
+ * serialization. Payload documents also escape literal reserved prefixes;
+ * final JSON-RPC envelopes preserve already-normalized payload strings so
+ * structuredContent does not acquire a second @utf8: layer. */
+static bool yy_mut_normalize_output_text(yyjson_mut_doc *doc, yyjson_mut_val *value,
+                                         bool escape_reserved) {
+    if (yyjson_mut_is_str(value)) {
+        char *encoded = NULL;
+        size_t encoded_len = 0;
+        if (!cbm_output_encode_text(yyjson_mut_get_str(value), yyjson_mut_get_len(value), &encoded,
+                                    &encoded_len)) {
+            return false;
+        }
+        if (!encoded) {
+            return true;
+        }
+        if (!escape_reserved && strncmp(encoded, "@utf8:", 6) == 0) {
+            free(encoded);
+            return true;
+        }
+        yyjson_mut_val *owned = yyjson_mut_strncpy(doc, encoded, encoded_len);
+        free(encoded);
+        return owned && yyjson_mut_set_strn(value, yyjson_mut_get_str(owned), encoded_len);
+    }
+    if (yyjson_mut_is_arr(value)) {
+        size_t index;
+        size_t maximum;
+        yyjson_mut_val *item;
+        yyjson_mut_arr_foreach(value, index, maximum, item) {
+            if (!yy_mut_normalize_output_text(doc, item, escape_reserved)) {
+                return false;
+            }
+        }
+    } else if (yyjson_mut_is_obj(value)) {
+        size_t index;
+        size_t maximum;
+        yyjson_mut_val *key;
+        yyjson_mut_val *item;
+        yyjson_mut_obj_foreach(value, index, maximum, key, item) {
+            if (!yy_mut_normalize_output_text(doc, key, escape_reserved) ||
+                !yy_mut_normalize_output_text(doc, item, escape_reserved)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+static char *yy_doc_write_output(yyjson_mut_doc *doc, bool escape_reserved) {
+    yyjson_mut_val *root = doc ? yyjson_mut_doc_get_root(doc) : NULL;
+    if (!root || !yy_mut_normalize_output_text(doc, root, escape_reserved)) {
+        return NULL;
+    }
+    return yyjson_mut_write(doc, 0, NULL);
+}
+
+/* Tool payloads are the first encoding boundary. */
 static char *yy_doc_to_str(yyjson_mut_doc *doc) {
-    size_t len = 0;
-    char *s = yyjson_mut_write(doc, YYJSON_WRITE_ALLOW_INVALID_UNICODE, &len);
-    return s;
+    return yy_doc_write_output(doc, true);
+}
+
+/* Payloads embedded in a JSON-RPC envelope have already crossed that boundary. */
+static char *yy_final_doc_to_str(yyjson_mut_doc *doc) {
+    return yy_doc_write_output(doc, false);
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -252,7 +309,7 @@ char *cbm_jsonrpc_format_response(const cbm_jsonrpc_response_t *resp) {
         yyjson_mut_obj_add_null(doc, root, "result");
     }
 
-    char *out = yy_doc_to_str(doc);
+    char *out = yy_final_doc_to_str(doc);
     yyjson_mut_doc_free(doc);
     return out;
 }
@@ -265,13 +322,23 @@ char *cbm_jsonrpc_format_error(int64_t id, int code, const char *message) {
     yyjson_mut_obj_add_str(doc, root, "jsonrpc", "2.0");
     yyjson_mut_obj_add_int(doc, root, "id", id);
 
+    char *encoded_message = NULL;
+    size_t encoded_message_len = 0;
+    const char *raw_message = message ? message : "";
+    if (!cbm_output_encode_text(raw_message, strlen(raw_message), &encoded_message,
+                                &encoded_message_len)) {
+        yyjson_mut_doc_free(doc);
+        return NULL;
+    }
+
     yyjson_mut_val *err = yyjson_mut_obj(doc);
     yyjson_mut_obj_add_int(doc, err, "code", code);
-    yyjson_mut_obj_add_str(doc, err, "message", message);
+    yyjson_mut_obj_add_str(doc, err, "message", encoded_message ? encoded_message : raw_message);
     yyjson_mut_obj_add_val(doc, root, "error", err);
 
-    char *out = yy_doc_to_str(doc);
+    char *out = yy_final_doc_to_str(doc);
     yyjson_mut_doc_free(doc);
+    free(encoded_message);
     return out;
 }
 
@@ -280,6 +347,19 @@ char *cbm_jsonrpc_format_error(int64_t id, int code, const char *message) {
  * ══════════════════════════════════════════════════════════════════ */
 
 char *cbm_mcp_text_result(const char *text, bool is_error) {
+    yyjson_doc *structured_doc = text ? yyjson_read(text, strlen(text), 0) : NULL;
+    yyjson_val *structured_root = structured_doc ? yyjson_doc_get_root(structured_doc) : NULL;
+    bool structured_object = structured_root && yyjson_is_obj(structured_root);
+    char *encoded_text = NULL;
+    size_t encoded_text_len = 0;
+    const char *raw_text = text ? text : "";
+    if (!structured_object &&
+        !cbm_output_encode_text(raw_text, strlen(raw_text), &encoded_text, &encoded_text_len)) {
+        yyjson_doc_free(structured_doc);
+        return NULL;
+    }
+    const char *wire_text = encoded_text ? encoded_text : raw_text;
+
     yyjson_mut_doc *doc = yyjson_mut_doc_new(NULL);
     yyjson_mut_val *root = yyjson_mut_obj(doc);
     yyjson_mut_doc_set_root(doc, root);
@@ -287,23 +367,16 @@ char *cbm_mcp_text_result(const char *text, bool is_error) {
     yyjson_mut_val *content = yyjson_mut_arr(doc);
     yyjson_mut_val *item = yyjson_mut_obj(doc);
     yyjson_mut_obj_add_str(doc, item, "type", "text");
-    yyjson_mut_obj_add_str(doc, item, "text", text ? text : "");
+    yyjson_mut_obj_add_str(doc, item, "text", wire_text);
     yyjson_mut_arr_add_val(content, item);
     yyjson_mut_obj_add_val(doc, root, "content", content);
 
     bool has_structured_content = false;
-    if (text) {
-        yyjson_doc *structured_doc = yyjson_read(text, strlen(text), 0);
-        if (structured_doc) {
-            yyjson_val *structured_root = yyjson_doc_get_root(structured_doc);
-            if (yyjson_is_obj(structured_root)) {
-                yyjson_mut_val *structured = yyjson_val_mut_copy(doc, structured_root);
-                if (structured) {
-                    yyjson_mut_obj_add_val(doc, root, "structuredContent", structured);
-                    has_structured_content = true;
-                }
-            }
-            yyjson_doc_free(structured_doc);
+    if (structured_object) {
+        yyjson_mut_val *structured = yyjson_val_mut_copy(doc, structured_root);
+        if (structured) {
+            yyjson_mut_obj_add_val(doc, root, "structuredContent", structured);
+            has_structured_content = true;
         }
     }
     if (!has_structured_content && is_error) {
@@ -331,13 +404,15 @@ char *cbm_mcp_text_result(const char *text, bool is_error) {
          * tests/test_mcp.c binds all three branches; scripts/smoke-test.sh
          * asserts the same contract on the shipped binary. */
         yyjson_mut_val *structured = yyjson_mut_obj(doc);
-        yyjson_mut_obj_add_str(doc, structured, "error", text ? text : "");
+        yyjson_mut_obj_add_str(doc, structured, "error", wire_text);
         yyjson_mut_obj_add_val(doc, root, "structuredContent", structured);
     }
     yyjson_mut_obj_add_bool(doc, root, "isError", is_error);
 
-    char *out = yy_doc_to_str(doc);
+    char *out = yy_final_doc_to_str(doc);
     yyjson_mut_doc_free(doc);
+    yyjson_doc_free(structured_doc);
+    free(encoded_text);
     return out;
 }
 
@@ -14573,8 +14648,9 @@ bool cbm_mcp_jsonrpc_response_prepend_notice(char **response_io, const char *not
         yyjson_mut_doc_free(mutable_document);
         return false;
     }
-    char *replacement =
-        yyjson_mut_write(mutable_document, YYJSON_WRITE_ALLOW_INVALID_UNICODE, NULL);
+    /* The response was already normalized at its JSON-RPC boundary; preserve
+     * those strings while adding the valid UTF-8 notice. */
+    char *replacement = yyjson_mut_write(mutable_document, 0, NULL);
     yyjson_mut_doc_free(mutable_document);
     if (!replacement) {
         return false;

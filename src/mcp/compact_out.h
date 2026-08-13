@@ -33,6 +33,13 @@ void cbm_sb_append(cbm_sb_t *sb, const char *s);
 char *cbm_sb_finish(cbm_sb_t *sb);
 void cbm_sb_free(cbm_sb_t *sb);
 
+/* Make an arbitrary byte string safe for both standard JSON and the compact
+ * tree without losing identity. Valid UTF-8 is left untouched (`*encoded` is
+ * NULL). Invalid input becomes `@bytes:<lowercase hex>`; valid strings that
+ * begin with the reserved `@bytes:` or `@utf8:` prefixes become
+ * `@utf8:<original>`. The caller frees a non-NULL `*encoded`. */
+bool cbm_output_encode_text(const char *data, size_t len, char **encoded, size_t *encoded_len);
+
 /* `key: value` scalar lines (top-level, no indent). */
 void cbm_tree_scalar_str(cbm_sb_t *sb, const char *key, const char *val);
 void cbm_tree_scalar_int(cbm_sb_t *sb, const char *key, long long v);
