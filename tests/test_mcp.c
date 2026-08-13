@@ -8501,6 +8501,73 @@ TEST(search_code_fails_closed_when_complete_scan_is_impossible) {
     PASS();
 }
 
+TEST(search_code_scoped_scan_uses_canonical_file_nodes) {
+    char tmp[256];
+    snprintf(tmp, sizeof(tmp), "%s/cbm_srch_folder_XXXXXX", cbm_tmpdir());
+    ASSERT_NOT_NULL(cbm_mkdtemp(tmp));
+
+    char source_dir[512];
+    char source_path[640];
+    snprintf(source_dir, sizeof(source_dir), "%s/src", tmp);
+    snprintf(source_path, sizeof(source_path), "%s/main.c", source_dir);
+    ASSERT_EQ(cbm_mkdir(source_dir), 0);
+    ASSERT_EQ(th_write_file(source_path, "int FOLDER_SCOPE_NEEDLE = 1;\n"), 0);
+
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    ASSERT_NOT_NULL(srv);
+    cbm_store_t *store = cbm_mcp_server_store(srv);
+    ASSERT_NOT_NULL(store);
+    const char *project = "search-folder-scope";
+    cbm_mcp_server_set_project(srv, project);
+    ASSERT_EQ(cbm_store_upsert_project(store, project, tmp), CBM_STORE_OK);
+
+    /* Graph-only nodes may carry directory or synthetic file_path identities.
+     * Neither belongs in the content scanner's canonical File-node set. */
+    cbm_node_t folder = {.project = project,
+                         .label = "Folder",
+                         .name = "src",
+                         .qualified_name = "search-folder-scope.src",
+                         .file_path = "src"};
+    cbm_node_t builtin = {.project = project,
+                          .label = "Function",
+                          .name = "len",
+                          .qualified_name = "builtins.len",
+                          .file_path = "<python-builtins>",
+                          .start_line = 1,
+                          .end_line = 1};
+    cbm_node_t file = {.project = project,
+                       .label = "File",
+                       .name = "main.c",
+                       .qualified_name = "search-folder-scope.src.main.c",
+                       .file_path = "src/main.c"};
+    cbm_node_t symbol = {.project = project,
+                         .label = "Variable",
+                         .name = "FOLDER_SCOPE_NEEDLE",
+                         .qualified_name = "search-folder-scope.src.FOLDER_SCOPE_NEEDLE",
+                         .file_path = "src/main.c",
+                         .start_line = 1,
+                         .end_line = 1};
+    ASSERT_GT(cbm_store_upsert_node(store, &folder), 0);
+    ASSERT_GT(cbm_store_upsert_node(store, &builtin), 0);
+    ASSERT_GT(cbm_store_upsert_node(store, &file), 0);
+    ASSERT_GT(cbm_store_upsert_node(store, &symbol), 0);
+
+    char *response = cbm_mcp_handle_tool(
+        srv, "search_code",
+        "{\"pattern\":\"FOLDER_SCOPE_NEEDLE\",\"project\":\"search-folder-scope\","
+        "\"format\":\"json\"}");
+    ASSERT_NOT_NULL(response);
+    ASSERT_NULL(strstr(response, "\"isError\":true"));
+    ASSERT_NOT_NULL(strstr(response, "search-folder-scope.src.FOLDER_SCOPE_NEEDLE"));
+
+    free(response);
+    cbm_mcp_server_free(srv);
+    cbm_unlink(source_path);
+    cbm_rmdir(source_dir);
+    cbm_rmdir(tmp);
+    PASS();
+}
+
 TEST(search_code_recursive_fallback_propagates_discovery_failures) {
 #ifdef _WIN32
     SKIP_PLATFORM("POSIX find/sort/xargs fallback contract");
@@ -19695,6 +19762,7 @@ SUITE(mcp) {
     RUN_TEST(search_code_preserves_valid_utf8_source);
     RUN_TEST(search_code_scans_complete_stream_and_ranks_globally);
     RUN_TEST(search_code_fails_closed_when_complete_scan_is_impossible);
+    RUN_TEST(search_code_scoped_scan_uses_canonical_file_nodes);
     RUN_TEST(search_code_recursive_fallback_propagates_discovery_failures);
     RUN_TEST(search_code_default_budget_limits_raw_rows_before_graph_results);
     RUN_TEST(search_code_raw_and_directory_remainders_are_independently_pageable);

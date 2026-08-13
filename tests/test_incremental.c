@@ -916,6 +916,16 @@ TEST(incr_perf_single_file_fast) {
     }
 
     delete_file_at("fastapi/incr_perf_probe.py");
+    /* Publish the cleanup too. search_code now consumes the complete scoped
+     * file list and fails closed when the graph names a source file that grep
+     * cannot read; leaving this probe indexed would make every later matching
+     * search correctly report an incomplete snapshot instead of exercising
+     * the search parameter contract this fixture is meant to cover. The
+     * cleanup reindex is deliberately outside the measured interval above. */
+    resp = index_repo();
+    ASSERT(resp != NULL);
+    ASSERT(strstr(resp, "indexed") != NULL);
+    free(resp);
     PASS();
 }
 
