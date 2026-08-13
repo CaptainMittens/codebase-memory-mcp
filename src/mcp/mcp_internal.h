@@ -64,6 +64,12 @@ void cbm_mcp_server_set_snapshot_read_test_hook(cbm_mcp_server_t *srv,
 char *cbm_mcp_render_search_rows_for_testing(const char *const *qualified_names,
                                              const char *const *file_paths, int row_count,
                                              bool json_format);
+
+/* Drive the production raw-source slicer and renderer without relying on an
+ * external grep/PowerShell text decoder. This keeps malformed-byte paging
+ * deterministic on every test platform. */
+char *cbm_mcp_render_raw_preview_for_testing(const char *content, bool content_offset_set,
+                                             size_t content_offset, bool json_format);
 #endif
 
 #endif
