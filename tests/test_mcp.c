@@ -3696,6 +3696,140 @@ TEST(tool_search_graph_bm25_reports_candidate_saturation) {
     PASS();
 }
 
+/* `query` selects the BM25 fast path, which returns before semantic_query is
+ * evaluated. Accepting both therefore used to report success while silently
+ * discarding one of the caller's two requested result sets. The contract is
+ * deliberately fail-closed: callers choose one ranking model per request. */
+TEST(tool_search_graph_rejects_bm25_and_semantic_query_together) {
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    ASSERT_NOT_NULL(srv);
+    cbm_store_t *store = cbm_mcp_server_store(srv);
+    ASSERT_NOT_NULL(store);
+    const char *project = "mixed-search-modes";
+    cbm_mcp_server_set_project(srv, project);
+    ASSERT_EQ(cbm_store_upsert_project(store, project, "/tmp/mixed-search-modes"), CBM_STORE_OK);
+
+    cbm_node_t node = {.project = project,
+                       .label = "Function",
+                       .name = "mixedneedle",
+                       .qualified_name = "mixed-search-modes.mixedneedle",
+                       .file_path = "mixed.c",
+                       .start_line = 1,
+                       .end_line = 1};
+    ASSERT_GT(cbm_store_upsert_node(store, &node), 0);
+    ASSERT_EQ(cbm_store_exec(store, "INSERT INTO nodes_fts(nodes_fts) VALUES('delete-all');"),
+              CBM_STORE_OK);
+    ASSERT_EQ(cbm_store_exec(store, "INSERT INTO nodes_fts(rowid, name, qualified_name, label, "
+                                    "file_path) SELECT id, cbm_camel_split(name), qualified_name, "
+                                    "label, file_path FROM nodes;"),
+              CBM_STORE_OK);
+
+    char *response = cbm_mcp_handle_tool(
+        srv, "search_graph",
+        "{\"project\":\"mixed-search-modes\",\"query\":\"mixedneedle\","
+        "\"semantic_query\":[\"meaning\"],\"format\":\"json\"}");
+    ASSERT_NOT_NULL(response);
+    ASSERT_NOT_NULL(strstr(response, "\"isError\":true"));
+    ASSERT_NOT_NULL(strstr(response, "query and semantic_query are mutually exclusive"));
+    ASSERT_NULL(strstr(response, "\"search_mode\":\"bm25\""));
+    free(response);
+
+    char *tools = cbm_mcp_tools_list();
+    ASSERT_NOT_NULL(tools);
+    ASSERT_NOT_NULL(strstr(tools, "Not with query"));
+    free(tools);
+
+    cbm_mcp_server_free(srv);
+    PASS();
+}
+
+/* The public schema accepts semantic_offset only through 99,998. A page at
+ * that boundary used to emit semantic_next_offset:99,999; the handler then
+ * clamped replay back to 99,998, repeating the same row forever. At the engine
+ * boundary we must report an explicit lower-bound saturation and no cursor. */
+TEST(tool_search_graph_semantic_ceiling_never_emits_unusable_continuation) {
+    char *json = cbm_mcp_render_semantic_paging_for_testing(100000, 99998, 1, 1, false, true);
+    ASSERT_NOT_NULL(json);
+    yyjson_doc *doc = yyjson_read(json, strlen(json), 0);
+    ASSERT_NOT_NULL(doc);
+    yyjson_val *root = yyjson_doc_get_root(doc);
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(root, "semantic_total_relation")), "gte");
+    ASSERT_FALSE(yyjson_get_bool(yyjson_obj_get(root, "semantic_has_more")));
+    ASSERT_TRUE(yyjson_get_bool(yyjson_obj_get(root, "semantic_engine_saturated")));
+    ASSERT_TRUE(yyjson_get_bool(yyjson_obj_get(root, "semantic_continuation_unavailable")));
+    ASSERT_NULL(yyjson_obj_get(root, "semantic_next_offset"));
+    ASSERT_FALSE(yyjson_get_bool(yyjson_obj_get(root, "has_more")));
+    ASSERT_NULL(yyjson_obj_get(root, "next_offset"));
+    ASSERT_TRUE(yyjson_get_bool(yyjson_obj_get(root, "truncated")));
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(root, "truncation_reason")), "engine_limit");
+    yyjson_doc_free(doc);
+    free(json);
+
+    /* Even a fully materialized total becomes a lower-bound report when the
+     * byte budget returns too few rows to reach it with a legal next offset. */
+    json = cbm_mcp_render_semantic_paging_for_testing(100000, 99998, 1, 2, true, true);
+    ASSERT_NOT_NULL(json);
+    doc = yyjson_read(json, strlen(json), 0);
+    ASSERT_NOT_NULL(doc);
+    root = yyjson_doc_get_root(doc);
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(root, "semantic_total_relation")), "gte");
+    ASSERT_TRUE(yyjson_get_bool(yyjson_obj_get(root, "semantic_engine_saturated")));
+    ASSERT_NULL(yyjson_obj_get(root, "semantic_next_offset"));
+    ASSERT_NULL(yyjson_obj_get(root, "next_offset"));
+    yyjson_doc_free(doc);
+    free(json);
+
+    char *tree = cbm_mcp_render_semantic_paging_for_testing(100000, 99998, 1, 1, false, false);
+    ASSERT_NOT_NULL(tree);
+    ASSERT_NOT_NULL(strstr(tree, "semantic_total_relation: gte"));
+    ASSERT_NOT_NULL(strstr(tree, "semantic_has_more: false"));
+    ASSERT_NOT_NULL(strstr(tree, "semantic_engine_saturated: true"));
+    ASSERT_NOT_NULL(strstr(tree, "semantic_continuation_unavailable: true"));
+    ASSERT_NULL(strstr(tree, "semantic_next_offset:"));
+    ASSERT_NOT_NULL(strstr(tree, "has_more: false"));
+    ASSERT_NULL(strstr(tree, "next_offset:"));
+    ASSERT_NOT_NULL(strstr(tree, "truncated: true"));
+    ASSERT_NOT_NULL(strstr(tree, "truncation_reason: engine_limit"));
+    free(tree);
+
+    /* One row earlier, next=99,998 is still valid and must remain available. */
+    json = cbm_mcp_render_semantic_paging_for_testing(100000, 99997, 1, 1, false, true);
+    ASSERT_NOT_NULL(json);
+    doc = yyjson_read(json, strlen(json), 0);
+    ASSERT_NOT_NULL(doc);
+    root = yyjson_doc_get_root(doc);
+    ASSERT_TRUE(yyjson_get_bool(yyjson_obj_get(root, "semantic_has_more")));
+    ASSERT_EQ(yyjson_get_int(yyjson_obj_get(root, "semantic_next_offset")), 99998);
+    ASSERT_NULL(yyjson_obj_get(root, "semantic_engine_saturated"));
+    ASSERT_NULL(yyjson_obj_get(root, "semantic_continuation_unavailable"));
+    yyjson_doc_free(doc);
+    free(json);
+
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    ASSERT_NOT_NULL(srv);
+    cbm_store_t *store = cbm_mcp_server_store(srv);
+    ASSERT_NOT_NULL(store);
+    cbm_mcp_server_set_project(srv, "semantic-ceiling");
+    ASSERT_EQ(cbm_store_upsert_project(store, "semantic-ceiling", "/tmp/semantic-ceiling"),
+              CBM_STORE_OK);
+    char *response = cbm_mcp_handle_tool(
+        srv, "search_graph",
+        "{\"project\":\"semantic-ceiling\",\"semantic_query\":[\"x\"],"
+        "\"semantic_offset\":99999,\"format\":\"json\"}");
+    ASSERT_NOT_NULL(response);
+    ASSERT_NOT_NULL(strstr(response, "\"isError\":true"));
+    ASSERT_NOT_NULL(strstr(response, "semantic_offset maximum is 99998"));
+    free(response);
+    cbm_mcp_server_free(srv);
+
+    char *tools = cbm_mcp_tools_list();
+    ASSERT_NOT_NULL(tools);
+    ASSERT_NOT_NULL(strstr(tools, "\"semantic_offset\":{\"type\":\"integer\",\"default\":0,"
+                                  "\"minimum\":0,\"maximum\":99998}"));
+    free(tools);
+    PASS();
+}
+
 enum { MCP_TEST_SEMANTIC_VECTOR_DIM = 768 };
 
 static int mcp_test_insert_semantic_vector(cbm_store_t *store, const char *table,
@@ -18915,6 +19049,8 @@ SUITE(mcp) {
     RUN_TEST(tool_output_byte_budgets);
     RUN_TEST(tool_search_graph_query_honors_file_pattern_issue552);
     RUN_TEST(tool_search_graph_bm25_reports_candidate_saturation);
+    RUN_TEST(tool_search_graph_rejects_bm25_and_semantic_query_together);
+    RUN_TEST(tool_search_graph_semantic_ceiling_never_emits_unusable_continuation);
     RUN_TEST(tool_search_graph_semantic_pagination_is_lossless_and_independent);
     RUN_TEST(tool_search_graph_budget_preserves_long_values_and_continuation);
     RUN_TEST(mcp_resource_discovery_methods_return_empty_lists);
