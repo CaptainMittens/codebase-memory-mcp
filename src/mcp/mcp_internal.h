@@ -70,6 +70,12 @@ char *cbm_mcp_render_search_rows_for_testing(const char *const *qualified_names,
  * deterministic on every test platform. */
 char *cbm_mcp_render_raw_preview_for_testing(const char *content, bool content_offset_set,
                                              size_t content_offset, bool json_format);
+
+/* Exercise search_graph's semantic continuation metadata without allocating
+ * a 100k-row vector fixture. The production emitters remain the code under
+ * test; this seam only supplies their already-ranked page descriptor. */
+char *cbm_mcp_render_semantic_paging_for_testing(int total, int offset, int returned, int limit,
+                                                 bool total_exact, bool json_format);
 #endif
 
 #endif
