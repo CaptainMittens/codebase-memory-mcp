@@ -50,8 +50,69 @@ static void progress_sink_mutex_ensure(void) {
     while (atomic_load_explicit(&s_sink_mutex_state, memory_order_acquire) != LOCK_READY) {}
 }
 
-bool cbm_cli_progress_enabled(bool explicitly_requested, bool stderr_is_tty) {
-    return explicitly_requested || stderr_is_tty;
+bool cbm_cli_output_flags_parse(int *argc, char **argv, cbm_cli_output_flags_t *flags, char *error,
+                                size_t error_size) {
+    if (!argc || !argv || !flags) {
+        return false;
+    }
+    memset(flags, 0, sizeof(*flags));
+    if (error && error_size > 0) {
+        error[0] = '\0';
+    }
+
+    /* --quiet and --progress are reserved process controls wherever they
+     * appear, matching the existing --progress behavior. --verbose remains
+     * outer-only because tools such as index_status own a verbose input. */
+    bool before_tool = true;
+    int output_index = 0;
+    for (int input_index = 0; input_index < *argc; input_index++) {
+        char *arg = argv[input_index];
+        bool quiet = arg && strcmp(arg, "--quiet") == 0;
+        bool progress = arg && strcmp(arg, "--progress") == 0;
+        bool verbose = before_tool && arg && strcmp(arg, "--verbose") == 0;
+        if (quiet) {
+            flags->quiet_requested = true;
+        } else if (progress) {
+            flags->progress_requested = true;
+        } else if (verbose) {
+            flags->verbose_requested = true;
+        } else {
+            argv[output_index++] = arg;
+            if (before_tool && arg && arg[0] != '-') {
+                before_tool = false;
+            }
+        }
+    }
+    *argc = output_index;
+
+    if (flags->quiet_requested && (flags->progress_requested || flags->verbose_requested)) {
+        if (error && error_size > 0) {
+            (void)snprintf(error, error_size,
+                           "--quiet cannot be combined with --progress or outer --verbose; "
+                           "use --quiet for errors-only stderr, --progress for lifecycle "
+                           "feedback, or --verbose for informational diagnostics");
+        }
+        return false;
+    }
+    return true;
+}
+
+void cbm_cli_diagnostics_configure(bool quiet_requested, bool verbose_requested) {
+    if (quiet_requested) {
+        /* Keep ERROR records visible while suppressing DEBUG/INFO/WARN. An
+         * explicit CBM_LOG_LEVEL=none remains stronger than --quiet. */
+        if (cbm_log_get_level() < CBM_LOG_ERROR) {
+            cbm_log_set_level(CBM_LOG_ERROR);
+        }
+        return;
+    }
+    if (verbose_requested && cbm_log_get_level() > CBM_LOG_INFO) {
+        cbm_log_set_level(CBM_LOG_INFO);
+    }
+}
+
+bool cbm_cli_progress_enabled(bool explicitly_requested, bool quiet_requested, bool stderr_is_tty) {
+    return !quiet_requested && (explicitly_requested || stderr_is_tty);
 }
 
 static void progress_tool_name(const char *tool_name, char out[CBM_SZ_64]) {

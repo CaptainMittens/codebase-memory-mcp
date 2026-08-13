@@ -59,9 +59,123 @@ int cbm_cli_build_yaml_stdio_mcp_block_for_test(const char *binary_path, bool go
 bool cbm_cli_stdin_allowed_for_schema_for_test(const char *schema_str);
 
 TEST(cli_progress_visibility_policy) {
-    ASSERT_TRUE(cbm_cli_progress_enabled(true, false));
-    ASSERT_TRUE(cbm_cli_progress_enabled(false, true));
-    ASSERT_FALSE(cbm_cli_progress_enabled(false, false));
+    ASSERT_TRUE(cbm_cli_progress_enabled(true, false, false));
+    ASSERT_TRUE(cbm_cli_progress_enabled(false, false, true));
+    ASSERT_FALSE(cbm_cli_progress_enabled(false, false, false));
+    ASSERT_FALSE(cbm_cli_progress_enabled(false, true, true));
+    ASSERT_FALSE(cbm_cli_progress_enabled(true, true, true));
+    PASS();
+}
+
+TEST(cli_quiet_is_stripped_before_tool_argument_forwarding) {
+    char *argv[] = {"search_graph", "--project", "demo", "--quiet"};
+    int argc = (int)(sizeof(argv) / sizeof(argv[0]));
+    cbm_cli_output_flags_t flags;
+    char error[256] = {0};
+
+    ASSERT_TRUE(cbm_cli_output_flags_parse(&argc, argv, &flags, error, sizeof(error)));
+    ASSERT_TRUE(flags.quiet_requested);
+    ASSERT_FALSE(flags.progress_requested);
+    ASSERT_FALSE(flags.verbose_requested);
+    ASSERT_EQ(argc, 3);
+    ASSERT_STR_EQ(argv[0], "search_graph");
+    ASSERT_STR_EQ(argv[1], "--project");
+    ASSERT_STR_EQ(argv[2], "demo");
+
+    char *build_error = NULL;
+    char *json = cbm_cli_build_args_json(argv[0], argc - 1, argv + 1, &build_error);
+    ASSERT_NOT_NULL(json);
+    ASSERT_NULL(build_error);
+    ASSERT_NOT_NULL(strstr(json, "\"project\":\"demo\""));
+    ASSERT_NULL(strstr(json, "quiet"));
+    free(json);
+    PASS();
+}
+
+TEST(cli_quiet_rejects_other_outer_output_modes_with_guidance) {
+    char *progress_argv[] = {"--quiet", "--progress", "search_graph"};
+    int progress_argc = (int)(sizeof(progress_argv) / sizeof(progress_argv[0]));
+    cbm_cli_output_flags_t progress_flags;
+    char progress_error[256] = {0};
+    ASSERT_FALSE(cbm_cli_output_flags_parse(&progress_argc, progress_argv, &progress_flags,
+                                            progress_error, sizeof(progress_error)));
+    ASSERT_NOT_NULL(strstr(progress_error, "--quiet"));
+    ASSERT_NOT_NULL(strstr(progress_error, "--progress"));
+    ASSERT_NOT_NULL(strstr(progress_error, "errors-only"));
+
+    char *verbose_argv[] = {"--quiet", "--verbose", "index_status"};
+    int verbose_argc = (int)(sizeof(verbose_argv) / sizeof(verbose_argv[0]));
+    cbm_cli_output_flags_t verbose_flags;
+    char verbose_error[256] = {0};
+    ASSERT_FALSE(cbm_cli_output_flags_parse(&verbose_argc, verbose_argv, &verbose_flags,
+                                            verbose_error, sizeof(verbose_error)));
+    ASSERT_NOT_NULL(strstr(verbose_error, "--verbose"));
+    ASSERT_NOT_NULL(strstr(verbose_error, "informational diagnostics"));
+
+    /* Existing progress plus verbose behavior remains valid; only quiet is
+     * exclusive with the two output-expanding controls. */
+    char *compatible_argv[] = {"--progress", "--verbose", "search_graph"};
+    int compatible_argc = (int)(sizeof(compatible_argv) / sizeof(compatible_argv[0]));
+    cbm_cli_output_flags_t compatible_flags;
+    char compatible_error[256] = {0};
+    ASSERT_TRUE(cbm_cli_output_flags_parse(&compatible_argc, compatible_argv, &compatible_flags,
+                                           compatible_error, sizeof(compatible_error)));
+    ASSERT_TRUE(compatible_flags.progress_requested);
+    ASSERT_TRUE(compatible_flags.verbose_requested);
+    ASSERT_FALSE(compatible_flags.quiet_requested);
+    ASSERT_EQ(compatible_argc, 1);
+    ASSERT_STR_EQ(compatible_argv[0], "search_graph");
+    PASS();
+}
+
+TEST(cli_quiet_preserves_tool_level_verbose_argument) {
+    char *argv[] = {"--quiet", "index_status", "--verbose"};
+    int argc = (int)(sizeof(argv) / sizeof(argv[0]));
+    cbm_cli_output_flags_t flags;
+    char error[256] = {0};
+
+    ASSERT_TRUE(cbm_cli_output_flags_parse(&argc, argv, &flags, error, sizeof(error)));
+    ASSERT_TRUE(flags.quiet_requested);
+    ASSERT_FALSE(flags.verbose_requested);
+    ASSERT_EQ(argc, 2);
+    ASSERT_STR_EQ(argv[0], "index_status");
+    ASSERT_STR_EQ(argv[1], "--verbose");
+    PASS();
+}
+
+static FILE *s_cli_quiet_log_capture;
+
+static void cli_quiet_log_capture(const char *line) {
+    if (s_cli_quiet_log_capture && line) {
+        (void)fprintf(s_cli_quiet_log_capture, "%s\n", line);
+    }
+}
+
+TEST(cli_quiet_suppresses_ordinary_diagnostics_but_preserves_errors) {
+    FILE *out = tmpfile();
+    ASSERT_NOT_NULL(out);
+    CBMLogLevel previous_level = cbm_log_get_level();
+    CBMLogFormat previous_format = cbm_log_get_format();
+    cbm_log_set_level(CBM_LOG_DEBUG);
+    cbm_log_set_format(CBM_LOG_FORMAT_TEXT);
+    s_cli_quiet_log_capture = out;
+    cbm_log_set_sink(cli_quiet_log_capture);
+
+    cbm_cli_diagnostics_configure(true, false);
+    cbm_log_info("quiet.info", "detail", "drop");
+    cbm_log_warn("quiet.warning", "detail", "drop");
+    cbm_log_error("quiet.error", "detail", "keep");
+
+    cbm_log_set_sink(NULL);
+    s_cli_quiet_log_capture = NULL;
+    cbm_log_set_level(previous_level);
+    cbm_log_set_format(previous_format);
+    ASSERT_EQ(fseek(out, 0, SEEK_SET), 0);
+    char rendered[512] = {0};
+    size_t rendered_size = fread(rendered, 1, sizeof(rendered) - 1, out);
+    (void)fclose(out);
+    ASSERT_TRUE(rendered_size > 0);
+    ASSERT_STR_EQ(rendered, "level=error msg=quiet.error detail=keep\n");
     PASS();
 }
 
@@ -14185,6 +14299,10 @@ SUITE(cli) {
 #endif
     RUN_TEST(cli_index_restart_cap_honours_zero_and_refuses_junk);
     RUN_TEST(cli_progress_visibility_policy);
+    RUN_TEST(cli_quiet_is_stripped_before_tool_argument_forwarding);
+    RUN_TEST(cli_quiet_rejects_other_outer_output_modes_with_guidance);
+    RUN_TEST(cli_quiet_preserves_tool_level_verbose_argument);
+    RUN_TEST(cli_quiet_suppresses_ordinary_diagnostics_but_preserves_errors);
     RUN_TEST(cli_raw_mcp_result_preserves_tool_error_status);
     RUN_TEST(cli_maintenance_cancellation_forces_failure_status);
     RUN_TEST(cli_progress_sink_accepts_worker_json_logs);

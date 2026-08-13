@@ -629,7 +629,7 @@ Every MCP tool can be invoked as a local, one-shot command. CLI tools neither st
 
 Commands that mutate graph data use shared OS-backed, per-project locks. This serializes conflicting work from CLI and MCP sessions on the same project while allowing unrelated projects to proceed independently.
 
-When stderr is an interactive terminal, the CLI automatically shows lifecycle and indexing progress. Pass `--progress` to force the same feedback when stderr is redirected or the command is run non-interactively. Routine informational logs are quiet by default; pass outer `cli --verbose` to include them. Progress and logs use stderr while stdout remains reserved for the command result. Read tools return a compact tree by default; pass a tool's `--format json` for machine-readable payload JSON, or outer `--json` for the full MCP envelope.
+When stderr is an interactive terminal, the CLI automatically shows lifecycle and indexing progress. Pass `--progress` to force the same feedback when stderr is redirected or the command is run non-interactively. Pass `--quiet` to disable automatic terminal progress and ordinary diagnostics while retaining errors; it cannot be combined with `--progress` or outer `cli --verbose`. Routine informational logs are quiet by default; pass outer `cli --verbose` to include them. Progress and logs use stderr while stdout remains reserved for the command result. Read tools return a compact tree by default; pass a tool's `--format json` for machine-readable payload JSON, or outer `--json` for the full MCP envelope.
 
 Large compact-tree tables may start with a response-local `<section>_refs` directory and an explicit `<section>_ref_rule`. A cell such as `@0+handler.go` reconstructs to ref `0`'s prefix plus `handler.go`. References are local to that sibling `<section>` table and expansion is non-recursive: entries inside `<section>_refs` are always literal prefixes. This is limited to declared path and qualified-name columns and activates only when that table is at least 15% and 64 bytes smaller. Search and trace likewise render direct and prefix-grouped tree shapes and keep the smaller complete representation, so singleton or scattered answers do not pay directory overhead. Keys are declared once per table but never cryptically abbreviated, and `--format json` keeps stable literal strings for machine consumers. These are deterministic model-neutral byte savings that normally reduce tokens; exact token counts still depend on the caller's tokenizer.
 
@@ -650,6 +650,8 @@ codebase-memory-mcp cli query_graph --project my-project --query 'MATCH (f:Funct
 
 # Force human-readable progress without contaminating stdout.
 codebase-memory-mcp cli --progress index_repository --repo-path /path/to/repo
+# Suppress automatic terminal progress and non-error diagnostics.
+codebase-memory-mcp cli --quiet list_projects --format json
 codebase-memory-mcp cli search_graph --project my-project --label Function --format json
 codebase-memory-mcp cli list_projects --format json --detail stats | jq '.projects[].name'
 ```
