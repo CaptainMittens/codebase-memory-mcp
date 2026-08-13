@@ -10445,6 +10445,10 @@ TEST(tool_detect_changes_pages_changed_files_and_honors_semantic_budget) {
     ASSERT_TRUE(yyjson_get_bool(yyjson_obj_get(root, "changed_has_more")));
     ASSERT_EQ(yyjson_get_int(yyjson_obj_get(root, "changed_next_offset")), 20);
     ASSERT_EQ(yyjson_arr_size(yyjson_obj_get(root, "changed_files")), 20);
+    yyjson_val *changed_cursor_value = yyjson_obj_get(root, "changed_next_cursor");
+    ASSERT_TRUE(yyjson_is_str(changed_cursor_value));
+    char *changed_cursor = strdup(yyjson_get_str(changed_cursor_value));
+    ASSERT_NOT_NULL(changed_cursor);
     yyjson_doc_free(doc);
     free(inner);
     free(response);
@@ -10468,6 +10472,7 @@ TEST(tool_detect_changes_pages_changed_files_and_honors_semantic_budget) {
     ASSERT_EQ(yyjson_get_int(yyjson_obj_get(root, "impacted_shown")), 1);
     ASSERT_TRUE(yyjson_get_bool(yyjson_obj_get(root, "impacted_has_more")));
     ASSERT_EQ(yyjson_get_int(yyjson_obj_get(root, "impacted_next_offset")), 1);
+    ASSERT_TRUE(yyjson_is_str(yyjson_obj_get(root, "impacted_next_cursor")));
     yyjson_val *first_impacted = yyjson_arr_get_first(yyjson_obj_get(root, "impacted"));
     ASSERT_NOT_NULL(first_impacted);
     ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(first_impacted, "qn")), long_detect_qn);
@@ -10477,6 +10482,7 @@ TEST(tool_detect_changes_pages_changed_files_and_honors_semantic_budget) {
     ASSERT_EQ(yyjson_get_int(yyjson_obj_get(root, "module_returned")), 20);
     ASSERT_TRUE(yyjson_get_bool(yyjson_obj_get(root, "module_has_more")));
     ASSERT_EQ(yyjson_get_int(yyjson_obj_get(root, "module_next_offset")), 20);
+    ASSERT_TRUE(yyjson_is_str(yyjson_obj_get(root, "module_next_cursor")));
     ASSERT_EQ(yyjson_arr_size(yyjson_obj_get(root, "impacted_modules")), 20);
     yyjson_doc_free(doc);
     free(inner);
@@ -10598,6 +10604,39 @@ TEST(tool_detect_changes_pages_changed_files_and_honors_semantic_budget) {
     yyjson_doc_free(doc);
     free(inner);
     free(response);
+
+    char cursor_args[CBM_SZ_2K];
+    snprintf(cursor_args, sizeof(cursor_args),
+             "{\"project\":\"detect-pages-project\",\"base_branch\":\"HEAD\","
+             "\"scope\":\"files\",\"changed_cursor\":\"%s\",\"format\":\"json\"}",
+             changed_cursor);
+    response = cbm_mcp_handle_tool(srv, "detect_changes", cursor_args);
+    ASSERT_NOT_NULL(response);
+    inner = extract_text_content(response);
+    ASSERT_NOT_NULL(inner);
+    doc = yyjson_read(inner, strlen(inner), 0);
+    ASSERT_NOT_NULL(doc);
+    root = yyjson_doc_get_root(doc);
+    ASSERT_EQ(yyjson_get_int(yyjson_obj_get(root, "changed_returned")), 5);
+    ASSERT_FALSE(yyjson_get_bool(yyjson_obj_get(root, "changed_has_more")));
+    yyjson_doc_free(doc);
+    free(inner);
+    free(response);
+
+    /* The same path set with changed bytes is a different live snapshot. The
+     * old opaque cursor must fail loudly instead of applying offset 20 to the
+     * new ordering/impact model. */
+    char mutated_path[CBM_SZ_4K];
+    snprintf(mutated_path, sizeof(mutated_path), "%s/change-00-%s.c", repo, filler);
+    ASSERT_EQ(th_write_file(mutated_path, "int changed_again;\n"), 0);
+    response = cbm_mcp_handle_tool(srv, "detect_changes", cursor_args);
+    ASSERT_NOT_NULL(response);
+    inner = extract_text_content(response);
+    ASSERT_NOT_NULL(inner);
+    ASSERT_NOT_NULL(strstr(inner, "snapshot_changed"));
+    free(inner);
+    free(response);
+    free(changed_cursor);
 
     cbm_mcp_server_free(srv);
     free(long_detect_file);
