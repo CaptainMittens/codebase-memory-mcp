@@ -4225,7 +4225,7 @@ static bool win_runtime_directory_secure(const wchar_t *runtime_dir) {
     DWORD secure_result = ERROR_ACCESS_DENIED;
     bool already_correct =
         valid_handle && owner_exact &&
-        win_file_security_secure(&security, directory, true, win_private_mutation_rights(), false);
+        win_file_security_secure(&security, directory, true, win_private_mutation_rights());
     if (already_correct) {
         secure_result = ERROR_SUCCESS;
     } else if (valid_handle && owner_ok) {
