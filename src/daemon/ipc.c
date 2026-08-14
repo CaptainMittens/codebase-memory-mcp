@@ -4204,8 +4204,31 @@ static bool win_runtime_directory_secure(const wchar_t *runtime_dir) {
      * refused, and the final validation below still demands the exact user. */
     bool owner_ok = owner_exact || (valid_handle && can_write_owner &&
                                     win_file_owner_secure(&security, directory, false));
+    /* Re-stamp only when the directory is not ALREADY correct.
+     *
+     * This used to fire on every process start, whether or not anything was
+     * wrong. Two costs, both observed in the field:
+     *
+     *  - It rewrites the security descriptor of a directory that already has
+     *    the right one, and Windows propagates that to children. #1601 counted
+     *    ELEVEN "Security change" USN records against a single _config.db in
+     *    one day, none of which changed anything.
+     *  - Every rewrite is a window. #1620 loses an atomic publish to exactly
+     *    this: MoveFileEx needs DELETE on the destination, and a concurrent
+     *    re-protect of the parent is a chance to be refused for a state that is
+     *    about to be correct again anyway.
+     *
+     * The repair is what matters, not the ritual. If the owner is already the
+     * exact current user and the DACL already passes the private-directory
+     * check, there is nothing to fix and the correct action is to leave it
+     * alone. When it IS wrong we still repair exactly as before. */
     DWORD secure_result = ERROR_ACCESS_DENIED;
-    if (valid_handle && owner_ok) {
+    bool already_correct =
+        valid_handle && owner_exact &&
+        win_file_security_secure(&security, directory, true, win_private_mutation_rights(), false);
+    if (already_correct) {
+        secure_result = ERROR_SUCCESS;
+    } else if (valid_handle && owner_ok) {
         secure_result = security.set_security_info(
             directory, SE_FILE_OBJECT,
             (owner_exact ? 0U : (DWORD)OWNER_SECURITY_INFORMATION) | DACL_SECURITY_INFORMATION |
