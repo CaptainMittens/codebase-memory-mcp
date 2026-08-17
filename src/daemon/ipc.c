@@ -991,8 +991,6 @@ cbm_private_file_lock_status_t cbm_daemon_ipc_private_lock_directory_new(
         *directory_out = NULL;
     }
     if (!directory_out || !endpoint_runtime_still_valid(endpoint)) {
-        fprintf(stderr, "[dbgacl] lockdir UNSAFE still_valid=%d\n",
-                endpoint ? (endpoint_runtime_still_valid(endpoint) ? 1 : 0) : -1);
         return CBM_PRIVATE_FILE_LOCK_UNSAFE;
     }
 #ifdef F_DUPFD_CLOEXEC
@@ -1010,7 +1008,6 @@ cbm_private_file_lock_status_t cbm_daemon_ipc_private_lock_directory_new(
     cbm_private_file_lock_status_t status =
         cbm_private_lock_directory_adopt_posix(duplicate, endpoint->runtime_dir, directory_out);
     if (status != CBM_PRIVATE_FILE_LOCK_OK) {
-        fprintf(stderr, "[dbgacl] lockdir adopt status=%d\n", (int)status);
         (void)close(duplicate);
     }
     return status;
@@ -3368,6 +3365,8 @@ typedef BOOL(WINAPI *initialize_security_descriptor_fn)(PSECURITY_DESCRIPTOR, DW
 typedef BOOL(WINAPI *set_security_descriptor_dacl_fn)(PSECURITY_DESCRIPTOR, BOOL, PACL, BOOL);
 typedef BOOL(WINAPI *set_security_descriptor_owner_fn)(PSECURITY_DESCRIPTOR, PSID, BOOL);
 typedef BOOL(WINAPI *get_acl_information_fn)(PACL, LPVOID, DWORD, ACL_INFORMATION_CLASS);
+typedef BOOL(WINAPI *get_security_descriptor_control_fn)(PSECURITY_DESCRIPTOR,
+                                                         PSECURITY_DESCRIPTOR_CONTROL, LPDWORD);
 typedef BOOL(WINAPI *get_ace_fn)(PACL, DWORD, LPVOID *);
 typedef DWORD(WINAPI *get_security_info_fn)(HANDLE, SE_OBJECT_TYPE, SECURITY_INFORMATION, PSID *,
                                             PSID *, PACL *, PACL *, PSECURITY_DESCRIPTOR *);
@@ -3396,6 +3395,7 @@ typedef struct {
     set_security_descriptor_dacl_fn set_security_descriptor_dacl;
     set_security_descriptor_owner_fn set_security_descriptor_owner;
     get_acl_information_fn get_acl_information;
+    get_security_descriptor_control_fn get_security_descriptor_control;
     get_ace_fn get_ace;
     get_security_info_fn get_security_info;
     set_security_info_fn set_security_info;
@@ -3682,6 +3682,8 @@ static bool win_security_init(win_security_t *security) {
                           "SetSecurityDescriptorOwner");
     RESOLVE_ADVAPI_MEMBER(security, get_acl_information, get_acl_information_fn,
                           "GetAclInformation");
+    RESOLVE_ADVAPI_MEMBER(security, get_security_descriptor_control,
+                          get_security_descriptor_control_fn, "GetSecurityDescriptorControl");
     RESOLVE_ADVAPI_MEMBER(security, get_ace, get_ace_fn, "GetAce");
     RESOLVE_ADVAPI_MEMBER(security, get_security_info, get_security_info_fn, "GetSecurityInfo");
     RESOLVE_ADVAPI_MEMBER(security, set_security_info, set_security_info_fn, "SetSecurityInfo");
@@ -4179,6 +4181,57 @@ static bool win_file_security_secure(win_security_t *security, HANDLE file,
  * It needs its own test because win_file_acl_secure() cannot detect it: that
  * function scans ACEs for untrusted mutation grants, and a DACL with zero ACEs
  * trivially has none, so damage reads as compliance. */
+/* The lock-directory ADOPTION predicate (private_win_owner_only_dacl in the
+ * foundation layer) demands a PROTECTED DACL whose single non-inherited ACE
+ * grants the CURRENT USER full access — strictly narrower than "no untrusted
+ * mutation rights", which also admits SYSTEM/Administrators ACEs. The
+ * already-correct fast path below must apply the CONSUMER'S predicate: a
+ * directory that merely passes the general secure() check but is not
+ * owner-only would skip the re-stamp and then strand every subsequent lock
+ * adoption (observed as 59 daemon-suite failures on a fresh runtime dir whose
+ * inherited DACL carried SYSTEM+Administrators). */
+static bool win_file_dacl_is_owner_only(win_security_t *security, HANDLE file) {
+    if (!security->get_security_descriptor_control) {
+        return false;
+    }
+    PSID owner = NULL;
+    PACL dacl = NULL;
+    PSECURITY_DESCRIPTOR descriptor = NULL;
+    if (security->get_security_info(file, SE_FILE_OBJECT,
+                                    OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, &owner,
+                                    NULL, &dacl, NULL, &descriptor) != ERROR_SUCCESS) {
+        return false;
+    }
+    SECURITY_DESCRIPTOR_CONTROL control = 0;
+    DWORD revision = 0;
+    ACL_SIZE_INFORMATION information;
+    memset(&information, 0, sizeof(information));
+    LPVOID opaque_ace = NULL;
+    bool valid = descriptor && owner && dacl && security->is_valid_sid(owner) &&
+                 security->equal_sid(owner, security->user_sid) &&
+                 security->get_security_descriptor_control(descriptor, &control, &revision) &&
+                 (control & SE_DACL_PRESENT) != 0 && (control & SE_DACL_PROTECTED) != 0 &&
+                 security->is_valid_acl(dacl) &&
+                 security->get_acl_information(dacl, &information, sizeof(information),
+                                               AclSizeInformation) &&
+                 information.AceCount == 1U && security->get_ace(dacl, 0, &opaque_ace) &&
+                 opaque_ace;
+    if (valid) {
+        ACCESS_ALLOWED_ACE *ace = (ACCESS_ALLOWED_ACE *)opaque_ace;
+        PSID ace_sid = (PSID)&ace->SidStart;
+        valid = ace->Header.AceType == ACCESS_ALLOWED_ACE_TYPE &&
+                ace->Header.AceSize >= sizeof(ACCESS_ALLOWED_ACE) &&
+                (ace->Header.AceFlags & (INHERITED_ACE | INHERIT_ONLY_ACE)) == 0 &&
+                security->is_valid_sid(ace_sid) &&
+                security->equal_sid(ace_sid, security->user_sid) &&
+                (ace->Mask == FILE_ALL_ACCESS || ace->Mask == GENERIC_ALL);
+    }
+    if (descriptor) {
+        (void)LocalFree(descriptor);
+    }
+    return valid;
+}
+
 static bool win_file_dacl_is_empty(win_security_t *security, HANDLE file) {
     PACL dacl = NULL;
     PSECURITY_DESCRIPTOR descriptor = NULL;
@@ -4369,8 +4422,7 @@ static bool win_runtime_directory_secure(const wchar_t *runtime_dir) {
      * alone. When it IS wrong we still repair exactly as before. */
     DWORD secure_result = ERROR_ACCESS_DENIED;
     bool already_correct =
-        valid_handle && owner_exact &&
-        win_file_security_secure(&security, directory, true, win_private_mutation_rights(), false);
+        valid_handle && owner_exact && win_file_dacl_is_owner_only(&security, directory);
     if (already_correct) {
         secure_result = ERROR_SUCCESS;
     } else if (valid_handle && owner_ok) {
@@ -4394,12 +4446,6 @@ static bool win_runtime_directory_secure(const wchar_t *runtime_dir) {
     if (final_private) {
         win_repair_runtime_children(&security, runtime_dir);
     }
-    fprintf(stderr,
-            "[dbgacl] valid=%d owner_exact=%d owner_ok=%d already=%d secure_result=%lu "
-            "final=%d detail=%s\n",
-            valid_handle ? 1 : 0, owner_exact ? 1 : 0, owner_ok ? 1 : 0,
-            already_correct ? 1 : 0, (unsigned long)secure_result, final_private ? 1 : 0,
-            cbm_daemon_ipc_validation_detail());
     (void)CloseHandle(directory);
     win_security_destroy(&security);
     return valid_handle && owner_ok && final_private;
