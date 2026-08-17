@@ -4391,6 +4391,12 @@ static bool win_runtime_directory_secure(const wchar_t *runtime_dir) {
     if (final_private) {
         win_repair_runtime_children(&security, runtime_dir);
     }
+    fprintf(stderr,
+            "[dbgacl] valid=%d owner_exact=%d owner_ok=%d already=%d secure_result=%lu "
+            "final=%d detail=%s\n",
+            valid_handle ? 1 : 0, owner_exact ? 1 : 0, owner_ok ? 1 : 0,
+            already_correct ? 1 : 0, (unsigned long)secure_result, final_private ? 1 : 0,
+            cbm_daemon_ipc_validation_detail());
     (void)CloseHandle(directory);
     win_security_destroy(&security);
     return valid_handle && owner_ok && final_private;
