@@ -991,6 +991,8 @@ cbm_private_file_lock_status_t cbm_daemon_ipc_private_lock_directory_new(
         *directory_out = NULL;
     }
     if (!directory_out || !endpoint_runtime_still_valid(endpoint)) {
+        fprintf(stderr, "[dbgacl] lockdir UNSAFE still_valid=%d\n",
+                endpoint ? (endpoint_runtime_still_valid(endpoint) ? 1 : 0) : -1);
         return CBM_PRIVATE_FILE_LOCK_UNSAFE;
     }
 #ifdef F_DUPFD_CLOEXEC
@@ -1008,6 +1010,7 @@ cbm_private_file_lock_status_t cbm_daemon_ipc_private_lock_directory_new(
     cbm_private_file_lock_status_t status =
         cbm_private_lock_directory_adopt_posix(duplicate, endpoint->runtime_dir, directory_out);
     if (status != CBM_PRIVATE_FILE_LOCK_OK) {
+        fprintf(stderr, "[dbgacl] lockdir adopt status=%d\n", (int)status);
         (void)close(duplicate);
     }
     return status;
