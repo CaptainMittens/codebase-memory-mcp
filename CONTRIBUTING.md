@@ -153,7 +153,7 @@ If in doubt, open an issue and ask.
 
 We take security seriously. All PRs go through:
 - Manual security review (dangerous calls, network access, file writes, prompt injection)
-- Automated 8-layer security audit in CI
+- Automated 9-layer security audit in CI
 - Vendored dependency integrity checks
 
 If you add a new `system()`, `popen()`, `fork()`, or network call, it must be justified and added to `scripts/security-allowlist.txt`.

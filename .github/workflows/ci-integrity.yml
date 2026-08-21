@@ -1,0 +1,111 @@
+name: CI integrity
+
+# Refuses any pull request that modifies how CI itself works.
+#
+# WHY THIS EXISTS — the circularity problem. Every other check in this repo is
+# defined by files inside the pull request. Under the `pull_request` trigger
+# GitHub runs the workflow as it exists in the MERGE COMMIT, so a hostile PR
+# does not need to defeat a gate: it edits the gate, or deletes the step that
+# calls it, and CI reports green over the change that disabled it. `ci-ok` is no
+# help, because its own `needs:` list lives in the PR too.
+#
+# SECURITY — this uses `pull_request_target`, which runs the workflow definition
+# from the BASE branch instead of the pull request. That is the entire point:
+# this file cannot be edited by the PR it is judging. Deleting it in the PR does
+# nothing, because the base copy is the one that runs.
+#
+# The safety rule that makes `pull_request_target` sound here: this job NEVER
+# checks out, builds, or executes pull-request code. It does not check out
+# anything at all. It asks the API for the LIST of changed paths and compares
+# strings. No PR content is interpolated into a shell command; paths arrive as
+# newline-delimited data on stdin and are matched with `case`, not `eval`.
+# Do not add `actions/checkout`, do not add a `ref:`, do not add a build step.
+#
+# WHY `Makefile.cbm` IS NOT GUARDED — the security gates are invoked directly
+# from workflow YAML (`run: scripts/security-audit.sh`), never through a make
+# target, so the Makefile cannot silently neuter one. Guarding it would block
+# nearly every feature PR, because adding a source file edits it.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  ci-integrity:
+    name: ci-integrity
+    runs-on: ubuntu-latest
+    steps:
+      - name: Refuse pull-request changes to CI-defining paths
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # Paths that define or are executed by CI. Under-covering is the
+          # dangerous direction: anything CI runs can neuter a gate, so this
+          # list is deliberately broad rather than precise.
+          is_guarded() {
+              case "$1" in
+                  .github/*)             return 0 ;;
+                  scripts/*)             return 0 ;;
+                  test-infrastructure/*) return 0 ;;
+                  tests/*.sh)            return 0 ;;
+                  *)                     return 1 ;;
+              esac
+          }
+
+          changed="$(gh api --paginate \
+              "repos/$REPO/pulls/$PR_NUMBER/files" \
+              --jq '.[].filename')"
+
+          hits=""
+          while IFS= read -r path; do
+              [ -n "$path" ] || continue
+              if is_guarded "$path"; then
+                  hits="${hits}${path}"$'\n'
+              fi
+          done <<< "$changed"
+
+          if [ -z "$hits" ]; then
+              echo "OK: this pull request does not modify CI-defining paths."
+              exit 0
+          fi
+
+          echo "=== CI INTEGRITY GATE: REFUSED ==="
+          echo
+          echo "This pull request modifies files that define or are executed by CI:"
+          echo
+          # `if` rather than `[ … ] && …`: under `set -e` the && form returns 1
+          # on the trailing empty line, which would abort the script on exactly
+          # the refusal path this message exists to explain.
+          while IFS= read -r path; do
+              if [ -n "$path" ]; then
+                  printf '    %s\n' "$path"
+              fi
+          done <<< "$hits"
+          echo
+          echo "A pull request cannot be allowed to change the checks that judge it."
+          echo "That is not a statement about this change or its author -- the gate"
+          echo "cannot tell intent, so it refuses the whole class."
+          echo
+          echo "HOW THIS LANDS:"
+          echo "  A maintainer reviews the CI change on its own merits and merges it"
+          echo "  under the break-glass protocol. Contributors do not need to do"
+          echo "  anything differently: open the PR as normal and say in the"
+          echo "  description what the CI change does and why."
+          echo
+          echo "  To exercise a branch's own CI definitions before that happens, a"
+          echo "  maintainer can dispatch them explicitly:"
+          echo "      gh workflow run dry-run.yml --ref <branch>"
+          echo
+          echo "  Keeping CI changes in their own pull request, separate from the"
+          echo "  feature work, makes both halves reviewable and is the fastest"
+          echo "  route through this gate."
+          exit 1

@@ -489,7 +489,8 @@ const CBMType *php_parse_type_node(PHPLSPContext *ctx, TSNode node) {
 
 /* ── PHPDoc minimal parser ──────────────────────────────────────── */
 
-/* Strip leading "/**", trailing "*​/", and per-line "*" prefixes. Returns a
+/* Strip the leading "/**", the trailing star-slash, and per-line "*" prefixes.
+ * Returns a
  * mutable arena-allocated cleaned copy. */
 static char *phpdoc_clean(CBMArena *a, const char *raw) {
     if (!raw)
@@ -788,7 +789,7 @@ static void bind_phpdoc_var(PHPLSPContext *ctx, const char *docstring) {
 }
 
 /* Walk siblings backwards from `node` to find a leading PHPDoc comment
- * ("/**...*​/"). Returns cleaned doc text or NULL. */
+ * (a "/**" ... star-slash block). Returns cleaned doc text or NULL. */
 static char *fetch_leading_phpdoc(PHPLSPContext *ctx, TSNode node) {
     TSNode parent = ts_node_parent(node);
     if (ts_node_is_null(parent))

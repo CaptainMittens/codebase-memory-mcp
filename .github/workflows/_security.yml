@@ -15,6 +15,10 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: "Layer 0: Hidden-instruction self-test"
+        run: scripts/security-injection.py --selftest
+      - name: "Layer 0: Hidden-instruction audit"
+        run: scripts/security-injection.py
       - name: "Layer 1: Static allow-list audit"
         run: scripts/security-audit.sh
       - name: "Layer 6: UI security audit"
