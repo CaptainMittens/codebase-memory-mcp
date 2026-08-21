@@ -231,7 +231,8 @@ FRAMING_TOKENS = [
 INJECTION_PHRASES = [
     (re.compile(r"(?:ignore|disregard|forget)\s+(?:all\s+|any\s+)?"
                 r"(?:previous|prior|earlier|above|preceding)\s+"
-                r"(?:instructions|prompts|rules|directives)", re.I),
+                r"(?:instructions|prompts|rules|directives|tasks|context|"
+                r"conversation)", re.I),
      "override-prior-instructions phrasing"),
     (re.compile(r"\byou\s+are\s+now\s+(?:an?|the)\s+\w+", re.I),
      "role-reassignment phrasing"),
