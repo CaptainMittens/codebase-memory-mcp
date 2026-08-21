@@ -101,7 +101,10 @@ This project implements multiple layers of security verification. Every release 
 
 - **9-layer security audit suite** runs on every build:
   - Layer 0: Hidden-instruction audit (invisible/bidi/tag Unicode tree-wide;
-    prose smuggled into generated parser symbol tables)
+    homoglyphs, letter-spacing, compatibility forms; prose smuggled into
+    generated parser symbol tables). Gating in CI, so a payload cannot LAND.
+    `scripts/fetch-scanned.sh` applies the same rules at READ time, so a
+    payload already present cannot be consumed unnoticed.
   - Layer 1: Static allow-list for dangerous calls (`system`/`popen`/`fork`) + hardcoded URLs
   - Layer 2: Binary string audit (URLs, credentials, dangerous commands)
   - Layer 3: Network egress monitoring via strace (Linux)
