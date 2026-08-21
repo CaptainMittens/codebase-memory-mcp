@@ -51,19 +51,47 @@ jobs:
           # Paths that define or are executed by CI. Under-covering is the
           # dangerous direction: anything CI runs can neuter a gate, so this
           # list is deliberately broad rather than precise.
+          # Matching is CASE-INSENSITIVE. `Scripts/evil.sh` and `.GitHub/`
+          # slipped past a case-sensitive test, and on a case-insensitive
+          # checkout they are the same files as the guarded ones anyway.
           is_guarded() {
+              # Character classes rather than a lowercase expansion: `${v,,}`
+              # needs bash 4, and `tr` is an external command. This form is
+              # POSIX, depends on nothing, and can be tested on any shell --
+              # which matters more than elegance for a gate nobody can run
+              # locally the way CI runs it.
               case "$1" in
-                  .github/*)             return 0 ;;
-                  scripts/*)             return 0 ;;
-                  test-infrastructure/*) return 0 ;;
-                  tests/*.sh)            return 0 ;;
-                  *)                     return 1 ;;
+                  .[Gg][Ii][Tt][Hh][Uu][Bb]/*)                     return 0 ;;
+                  [Ss][Cc][Rr][Ii][Pp][Tt][Ss]/*)                  return 0 ;;
+                  [Tt][Ee][Ss][Tt]-[Ii][Nn][Ff][Rr][Aa][Ss][Tt][Rr][Uu][Cc][Tt][Uu][Rr][Ee]/*)
+                                                                   return 0 ;;
+                  [Tt][Ee][Ss][Tt][Ss]/*.[Ss][Hh])                 return 0 ;;
+                  *)                                               return 1 ;;
               esac
           }
 
           changed="$(gh api --paginate \
               "repos/$REPO/pulls/$PR_NUMBER/files" \
               --jq '.[].filename')"
+
+          # FAIL CLOSED ON TRUNCATION. The files endpoint is capped at 3000
+          # entries, so a pull request padded past that limit could hide a CI
+          # change in the tail and this gate would never see it. Compare what
+          # we received against the count the PR itself reports, and refuse
+          # rather than pass when they disagree.
+          declared="$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.changed_files')"
+          received="$(printf '%s\n' "$changed" | grep -c . || true)"
+          if [ "$received" -lt "$declared" ]; then
+              echo "=== CI INTEGRITY GATE: REFUSED ==="
+              echo
+              echo "The pull request reports $declared changed files but the API"
+              echo "returned only $received. GitHub caps that endpoint at 3000"
+              echo "entries, so part of this change set is invisible to the gate"
+              echo "and a CI modification could be hiding in the tail."
+              echo
+              echo "Split the pull request into reviewable pieces."
+              exit 1
+          fi
 
           hits=""
           while IFS= read -r path; do

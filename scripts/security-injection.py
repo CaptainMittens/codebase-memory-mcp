@@ -372,6 +372,41 @@ def obfuscation_findings(rel, text):
         )
 
 
+# Extensions whose contents a human or an agent reads as text. A file with one
+# of these that is NOT valid UTF-8 is itself the finding: a single stray byte
+# used to make this gate skip the entire file, payload included, which was a
+# complete one-byte evasion.
+TEXT_EXTENSIONS = frozenset({
+    ".c", ".h", ".cc", ".cpp", ".hpp", ".py", ".sh", ".bash", ".ps1", ".js",
+    ".ts", ".tsx", ".jsx", ".json", ".jsonc", ".yml", ".yaml", ".toml", ".ini",
+    ".cfg", ".md", ".txt", ".rst", ".html", ".css", ".sql", ".nix", ".mk",
+    ".cmake", ".gradle", ".rb", ".go", ".rs", ".java", ".kt", ".swift", ".php",
+    ".pl", ".lua", ".vim", ".el", ".patch", ".diff", ".man", ".xml", ".svg",
+})
+
+
+def decode_for_scan(rel, raw):
+    """Return (text, finding) for a file's bytes.
+
+    A NUL byte means genuinely binary -- git's own heuristic -- and those are
+    not a review surface, so they are skipped. Everything else is decoded with
+    replacement rather than abandoned: refusing to decode a file was itself the
+    evasion, because one invalid byte hid every readable line around it.
+    """
+    if b"\x00" in raw:
+        return None, None
+    try:
+        return raw.decode("utf-8"), None
+    except UnicodeDecodeError as exc:
+        text = raw.decode("utf-8", errors="replace")
+        if Path(rel).suffix.lower() in TEXT_EXTENSIONS:
+            return text, (
+                f"text file is not valid UTF-8 at byte {exc.start} -- a stray "
+                f"byte makes readers skip content they would otherwise show"
+            )
+        return text, None
+
+
 def scan_tree(root):
     """Walk the tree ONCE, running every tier per file.
 
@@ -386,23 +421,17 @@ def scan_tree(root):
             raw = (root / rel).read_bytes()
         except (OSError, ValueError):
             continue
-        text = None
+        text, decode_finding = decode_for_scan(rel, raw)
+        if text is None:
+            continue  # NUL bytes: genuinely binary, not a review surface
+        if decode_finding:
+            yield "phrase", rel, 1, "", decode_finding
         if not raw.isascii():
-            try:
-                text = raw.decode("utf-8")
-            except UnicodeDecodeError:
-                continue  # binary; not a review surface
             if any(classify(ord(ch)) for ch in text):
                 for line_no, line in enumerate(text.split("\n"), 1):
                     found = [(c, classify(ord(c))) for c in line if classify(ord(c))]
                     if found:
                         yield "carrier", rel, line_no, line, found
-        if text is None:
-            try:
-                text = raw.decode("utf-8")
-            except UnicodeDecodeError:
-                continue
-
         if rel.startswith("internal/cbm/vendored/grammars/") and rel.endswith("parser.c"):
             for m in _LITERAL.finditer(text):
                 lit = m.group(1)
@@ -602,6 +631,20 @@ def selftest():
         ("\u4e2d\u6587 \u8a9e\u8a00\u5207\u63db", "ordinary CJK UI strings"),
     ]:
         check(not caught(text), f"false positive on {what}")
+
+    # DECODE HARDENING. A single invalid byte used to make the gate skip an
+    # entire file, hiding every readable line around it -- a one-byte evasion.
+    text, finding = decode_for_scan("notes.md", b"hello \xff world")
+    check(text is not None, "invalid UTF-8 in a text file must still be scanned")
+    check(finding is not None, "invalid UTF-8 in a text file must be reported")
+    check(
+        "world" in (text or ""),
+        "content after an invalid byte must remain visible to the scanner",
+    )
+    _, png = decode_for_scan("image.png", b"\x89PNG\r\n\xff\xfe")
+    check(png is None, "invalid UTF-8 in a binary extension must not be reported")
+    binary, _ = decode_for_scan("blob.bin", b"a\x00b")
+    check(binary is None, "NUL bytes must be treated as binary and skipped")
 
     # A blessed line is pinned by content: changing it must invalidate the entry.
     line = 'x = "a\u200bb";'
