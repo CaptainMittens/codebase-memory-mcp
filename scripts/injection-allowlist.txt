@@ -1,0 +1,16 @@
+# Hidden-instruction allowlist -- see scripts/security-injection.py.
+#
+# Each entry pins the sha256 of ONE line, located by content rather than by
+# line number. Unrelated edits elsewhere in the file never disturb an entry;
+# editing the blessed line itself invalidates it and the gate fails. That is
+# deliberate: an attacker appending to an already-blessed region must also
+# update a checksum, which turns an invisible edit into a visible diff.
+#
+# PREFER REPHRASING. An entry here is a permanent exception. The two zero-width
+# spaces this gate found in php_lsp.c were rewritten as "star-slash" rather than
+# blessed, because zero exceptions is a stronger position than one.
+#
+# `--update` emits a TODO placeholder that this gate REJECTS, so an entry can
+# never be produced mechanically. Write the justification by hand.
+
+b25765f3c0f71896c0d8777adf5d580b9b295a4f15d80a166483ef98954c0796  tests/test_cli.c  # deliberate injection fixture: feeds an untrusted PROJECT NAME containing this phrase through cbm_store_upsert_project to prove it cannot reach agent-facing output. The literal is the payload under test; rephrasing it would delete the coverage.
