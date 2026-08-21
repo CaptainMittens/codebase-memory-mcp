@@ -385,6 +385,66 @@ TEXT_EXTENSIONS = frozenset({
 })
 
 
+# ── Pull-request metadata ──────────────────────────────────────────────
+#
+# Title, body and commit messages are the surface an agent reads FIRST when
+# it looks at a pull request, and until now nothing scanned them at all -- the
+# file gate reads `git ls-files`, which never sees them.
+#
+# Metadata gets a STRICTER ruleset than repository files, and it can afford
+# one. A PR body legitimately contains prose, code fences and checklists;
+# none of it needs concealment. Measured across 120 real pull requests in this
+# repository, every rule below fires zero times, so gating costs nothing that
+# a contributor actually does.
+METADATA_RULES = [
+    (re.compile(r"<!--"),
+     "HTML comment -- invisible in the rendered pull request, but present in "
+     "the raw text an agent reads"),
+    (re.compile(r"<details\b", re.I),
+     "collapsed <details> section -- hidden from a reader by default"),
+    (re.compile(r"<(?:script|iframe|object|embed)\b", re.I),
+     "embedded markup that does not belong in a description"),
+    (re.compile(r"<img[^>]*\son(?:error|load)\s*=", re.I),
+     "image with an event handler"),
+    (re.compile(r"(?:javascript|data):[^\s)]{10,}", re.I),
+     "javascript: or data: URI"),
+]
+
+
+def scan_metadata(text):
+    """Yield (line_no, line, detail) for pull-request metadata.
+
+    Applies every tree-wide detector plus the stricter metadata rules. Nothing
+    here executes or interpolates the text: it arrives as data and leaves as a
+    report.
+    """
+    norm = unicodedata.normalize("NFKC", text)
+    lines = text.split("\n")
+
+    def line_at(offset, source):
+        n = source.count("\n", 0, offset) + 1
+        return n, (lines[n - 1] if n <= len(lines) else "")
+
+    for i, line in enumerate(lines, 1):
+        found = [(c, classify(ord(c))) for c in line if classify(ord(c))]
+        if found:
+            names = ", ".join(f"U+{ord(c):04X} ({lbl})" for c, lbl in found)
+            yield i, line, f"hidden character in metadata: {names}"
+
+    for _n, line, detail in obfuscation_findings("<pr-metadata>", text):
+        yield _n, line, detail
+
+    for pattern, label in _OVERRIDE + OTHER_PHRASES + FRAMING_TOKENS:
+        for m in pattern.finditer(norm):
+            n, line = line_at(m.start(), norm)
+            yield n, line, f"{label}: {m.group(0)[:60]!r}"
+
+    for pattern, detail in METADATA_RULES:
+        for m in pattern.finditer(text):
+            n, line = line_at(m.start(), text)
+            yield n, line, detail
+
+
 def decode_for_scan(rel, raw):
     """Return (text, finding) for a file's bytes.
 
@@ -666,6 +726,28 @@ def selftest():
 def main(argv):
     if "--selftest" in argv:
         return selftest()
+
+    if "--metadata" in argv:
+        target = Path(argv[argv.index("--metadata") + 1])
+        text = target.read_text(encoding="utf-8", errors="replace")
+        findings = list(scan_metadata(text))
+        if not findings:
+            print(f"OK: no hidden-instruction findings in pull-request metadata "
+                  f"({len(text)} chars scanned).")
+            return 0
+        print("=== PULL-REQUEST METADATA: REFUSED ===\n")
+        for line_no, line, detail in findings:
+            shown = "".join(
+                f"<U+{ord(c):04X}>" if classify(ord(c)) else c for c in line
+            ).strip()
+            print(f"metadata line {line_no}: {detail}")
+            print(f"    {shown[:120]}\n")
+        print("The title, body and commit messages of a pull request are read by")
+        print("agents and by people. Content that hides from one of them is not")
+        print("acceptable in either.\n")
+        print("If this is a false positive, say so on the pull request -- metadata")
+        print("has no allowlist by design, because it costs nothing to reword.")
+        return 1
 
     update = "--update" in argv
     rest = [a for a in argv if not a.startswith("--")]

@@ -15,11 +15,15 @@ name: CI integrity
 # nothing, because the base copy is the one that runs.
 #
 # The safety rule that makes `pull_request_target` sound here: this job NEVER
-# checks out, builds, or executes pull-request code. It does not check out
-# anything at all. It asks the API for the LIST of changed paths and compares
-# strings. No PR content is interpolated into a shell command; paths arrive as
-# newline-delimited data on stdin and are matched with `case`, not `eval`.
-# Do not add `actions/checkout`, do not add a `ref:`, do not add a build step.
+# checks out, builds, or executes pull-request code. `actions/checkout` under
+# this trigger resolves to the BASE commit, so the scanner it runs is main's
+# copy -- which is the point, because a scanner shipped by the pull request
+# could simply be edited to approve itself. Pull-request content only ever
+# arrives as DATA: paths are matched with `case`, and the metadata is written
+# to a file and passed by path, never interpolated into a command.
+#
+# Do NOT add a `ref:` pointing at the pull-request head, and do NOT add a build
+# step. Those two changes are what turn this pattern into a pwn-request.
 #
 # WHY `Makefile.cbm` IS NOT GUARDED — the security gates are invoked directly
 # from workflow YAML (`run: scripts/security-audit.sh`), never through a make
@@ -40,6 +44,33 @@ jobs:
     name: ci-integrity
     runs-on: ubuntu-latest
     steps:
+      - name: Check out the BASE commit (never the pull request)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # No `ref:` -- the default under pull_request_target is the base
+          # commit, which is exactly what we want: main's scanner, not theirs.
+          persist-credentials: false
+
+      - name: Refuse hidden instructions in pull-request metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # Title, body and commit messages are what an agent reads first, and
+          # nothing scanned them before: the file gate reads `git ls-files`,
+          # which never sees them. Written to a file and passed by PATH so no
+          # attacker-controlled string is ever expanded by the shell.
+          meta="$(mktemp)"
+          gh api "repos/$REPO/pulls/$PR_NUMBER" \
+              --jq '.title, .body' > "$meta"
+          gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/commits" \
+              --jq '.[].commit.message' >> "$meta"
+
+          python3 scripts/security-injection.py --metadata "$meta"
+
       - name: Refuse pull-request changes to CI-defining paths
         env:
           GH_TOKEN: ${{ github.token }}
