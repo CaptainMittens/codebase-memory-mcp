@@ -88,35 +88,6 @@ def tracked_files(root):
     return [p.decode() for p in out.split(b"\0") if p]
 
 
-def scan(root):
-    """Yield (path, line_no, line_text, sha256_of_line, [(char, label), ...])."""
-    for rel in tracked_files(root):
-        full = root / rel
-        try:
-            raw = full.read_bytes()
-        except (OSError, ValueError):
-            continue
-        # Fast path: a pure-ASCII file cannot hold a carrier. `bytes.isascii`
-        # is a C-level scan; the equivalent Python loop more than doubles the
-        # runtime of the whole gate on this tree.
-        if raw.isascii():
-            continue
-        try:
-            text = raw.decode("utf-8")
-        except UnicodeDecodeError:
-            continue  # binary; not a review surface
-        # Second fast path: check the file once before doing per-line work.
-        if not any(classify(ord(ch)) for ch in text):
-            continue
-        for line_no, line in enumerate(text.split("\n"), 1):
-            found = [
-                (ch, classify(ord(ch))) for ch in line if classify(ord(ch))
-            ]
-            if found:
-                digest = hashlib.sha256(line.encode("utf-8")).hexdigest()
-                yield rel, line_no, line, digest, found
-
-
 # ── Tier 2: scoped structural checks ───────────────────────────────────
 #
 # Every threshold here was MEASURED against this tree before being gated, not
@@ -170,43 +141,6 @@ def _longest_nonascii_letter_run(text):
 _LITERAL = re.compile(r'"((?:[^"\\\n]|\\.)*)"')
 
 
-def tier2_findings(root):
-    """Yield (path, line_no, detail) for prose smuggled into generated parsers."""
-    for rel in tracked_files(root):
-        full = root / rel
-        is_parser = rel.startswith("internal/cbm/vendored/grammars/") and rel.endswith(
-            "parser.c"
-        )
-        try:
-            raw = full.read_bytes()
-        except (OSError, ValueError):
-            continue
-        try:
-            text = raw.decode("utf-8")
-        except UnicodeDecodeError:
-            continue
-
-        if is_parser:
-            for m in _LITERAL.finditer(text):
-                lit = m.group(1)
-                words = [w for w in lit.split(" ") if w]
-                run = _longest_nonascii_letter_run(lit)
-                reason = None
-                if len(words) >= PARSER_PROSE_WORDS:
-                    reason = f"{len(words)}-word"
-                elif run >= PARSER_PROSE_SCRIPT_RUN:
-                    reason = f"{run}-character non-Latin"
-                if reason:
-                    line_no = text.count("\n", 0, m.start()) + 1
-                    yield rel, line_no, (
-                        f"generated parser holds a {reason} string literal "
-                        f"(prose does not belong in a symbol table): "
-                        f"{lit[:80]!r}"
-                    )
-            continue
-
-
-
 # ── Tier 3: agent-directed content outside the places we author it ─────
 #
 # 3a is language-INDEPENDENT by construction: these are chat-template and
@@ -222,18 +156,117 @@ FRAMING_TOKENS = [
     (re.compile(r"^\s*(?:Human|Assistant)\s*:", re.M), "dialogue turn marker"),
 ]
 
+# The scope-reset intent -- telling a model to discard what came before --
+# expressed across the languages an
+# attacker is most likely to reach for. Written as a TABLE rather than a regex
+# soup so a native speaker can review one row without parsing the whole thing.
+#
+# Structure is (verb-alternatives, noun-alternatives): a match needs BOTH, in
+# either order, within a short window. Requiring the pair is what keeps this
+# from firing on ordinary text -- "ignore" alone is a common English word, and
+# so are its equivalents elsewhere.
+#
+# HONEST LIMITS, because this list invites false confidence:
+#   * These translations have NOT been checked by native speakers. Treat a hit
+#     as evidence, never as proof, and a miss as expected.
+#   * Only the CJK rows are measurable against the corpora we benchmark on
+#     (152 CJK samples); Cyrillic and Arabic appear once each, so those rows
+#     are unverified against real attack text.
+#   * ~20 languages out of thousands. This is breadth of evidence. The
+#     structural layers -- carrier Unicode, script runs, framing tokens,
+#     location -- are what actually carry the weight.
+OVERRIDE_INTENT = [
+    ("en", r"ignore|disregard|forget|override",
+           r"previous|prior|earlier|above|preceding|all|any|the\s+last",
+           r"instructions?|prompts?|rules?|directives?|tasks?|context|conversation"),
+    ("de", r"ignorier\w*|vergiss|vergessen|missacht\w*",
+           r"vorherige\w*|obige\w*|alle|bisherige\w*|vorangegangen\w*",
+           r"anweisung\w*|aufgabe\w*|regeln|anleitung\w*"),
+    ("es", r"ignor\w+|olvid\w+|desestim\w+",
+           r"anterior\w*|previa\w*|todas?|los\s+anteriores",
+           r"instruccion\w*|tarea\w*|reglas|indicacion\w*"),
+    ("fr", r"ignor\w+|oubli\w+|neglige\w*|néglige\w*",
+           r"pr[eé]c[eé]dent\w*|ci-dessus|toutes?|ant[eé]rieur\w*",
+           r"instructions?|t[aâ]ches?|r[eè]gles|consignes?"),
+    ("pt", r"ignor\w+|esque[çc]\w+|desconsider\w+",
+           r"anterior\w*|pr[eé]vi\w*|todas?",
+           r"instru[çc][õo]es|tarefas?|regras"),
+    ("it", r"ignor\w+|dimentic\w+",
+           r"precedent\w*|sopra|tutte?",
+           r"istruzion\w*|compit\w*|regole"),
+    ("nl", r"negeer|vergeet|negeren",
+           r"vorige|bovenstaande|alle",
+           r"instructies?|opdracht\w*|regels"),
+    ("ru", r"игнорир\w*|забуд\w*|пренебрег\w*",
+           r"предыдущ\w*|вышеуказанн\w*|все",
+           r"инструкц\w*|указан\w*|задан\w*|правил\w*"),
+    ("uk", r"ігнор\w*|забудь",
+           r"попередн\w*|усі|всі",
+           r"інструкц\w*|завдання|правил\w*"),
+    ("pl", r"zignoruj|ignoruj|zapomnij|pomi[nń]",
+           r"poprzedni\w*|powy[żz]sz\w*|wszystkie",
+           r"instrukcj\w*|polece[nń]\w*|zasad\w*|zadani\w*"),
+    ("tr", r"yoksay\w*|g[oö]rmezden|unut\w*",
+           r"[oö]nceki|yukar[ıi]daki|t[uü]m",
+           r"talimat\w*|kural\w*|g[oö]rev\w*"),
+    ("zh", r"忽略|忽视|无视|忘记|忘掉|不要理会",
+           r"之前|以上|前面|所有|全部|先前|上述",
+           r"指令|指示|命令|任务|规则|提示词|上文|之前"),
+    ("ja", r"無視|忘れ\w*|破棄",
+           r"以前|上記|すべて|全て|これまで",
+           r"指示|命令|指令|ルール|タスク|プロンプト"),
+    ("ko", r"무시|잊어|잊고",
+           r"이전|위의|모든",
+           r"지시|명령|규칙|작업|프롬프트"),
+    ("ar", r"تجاهل|انسَ|انس|أهمل",
+           r"السابق\w*|أعلاه|جميع|كل",
+           r"التعليمات|الأوامر|القواعد|المهام"),
+    ("hi", r"अनदेखा|भूल\w*|नज़रअंदाज़",
+           r"पिछले|उपरोक्त|सभी",
+           r"निर्देश\w*|आदेश\w*|नियम\w*"),
+    ("vi", r"b[oỏ] qua|qu[eê]n|ph[oớ]t l[oờ]",
+           r"tr[uư][oớ]c|[oở]\s*tr[eê]n|t[aấ]t c[aả]",
+           r"h[uư][oớ]ng d[aẫ]n|ch[iỉ] d[aẫ]n|l[eệ]nh|quy t[aắ]c"),
+    ("th", r"เพิกเฉย|ละเลย|ลืม",
+           r"ก่อนหน้า|ข้างต้น|ทั้งหมด",
+           r"คำสั่ง|คำแนะนำ|กฎ"),
+    ("id", r"abaikan|lupakan|acuhkan",
+           r"sebelumnya|di\s*atas|semua",
+           r"instruksi|perintah|aturan|tugas"),
+    ("fa", r"نادیده|فراموش",
+           r"قبلی|بالا|همه",
+           r"دستورالعمل|دستورات|قوانین"),
+]
+
+# Both parts within ~40 characters of each other, either order. The window is
+# what stops "ignore" in one sentence pairing with "rules" three paragraphs
+# later; it must be short enough to mean a single phrase.
+# All three of verb, SCOPE QUALIFIER and noun must appear inside a short
+# window. The qualifier is what separates an override from an ordinary
+# sentence: a verb next to a noun is a .gitignore comment or sqlite3.c's
+# `int ignoreJump /* Instruction ... */`, both of which this gate fired on
+# before the qualifier was required. It is mandatory, not optional.
+#
+# TWO ORDERINGS, because word order is not universal. SVO languages put the
+# verb first; Japanese, Korean, Turkish and Hindi are verb-final, so
+# "<qualifier> no <noun> wo <verb>" is the natural phrasing there. Matching
+# only verb-first silently excluded every SOV language -- which was caught by
+# testing Japanese and Korean rather than by reasoning about it.
+_OVERRIDE = [
+    (re.compile(
+        rf"(?:{v})[^\n]{{0,20}}?(?:{q})[^\n]{{0,20}}?(?:{n})"
+        rf"|(?:{q})[^\n]{{0,20}}?(?:{n})[^\n]{{0,20}}?(?:{v})", re.I),
+     f"scope-reset phrasing [{lang}]")
+    for lang, v, q, n in OVERRIDE_INTENT
+]
+
 # 3b is the persuasion layer, and it is a SECONDARY signal by design. A phrase
 # list cannot be complete -- an attacker switches language or substitutes
 # homoglyphs and walks past it. It earns its place only because the location
 # rule shrinks the surface: cbm authors agent-directed prose in exactly three
 # places, so this pattern appearing anywhere else is anomalous regardless of
 # what it says. Entries here are for breadth of evidence, never for coverage.
-INJECTION_PHRASES = [
-    (re.compile(r"(?:ignore|disregard|forget)\s+(?:all\s+|any\s+)?"
-                r"(?:previous|prior|earlier|above|preceding)\s+"
-                r"(?:instructions|prompts|rules|directives|tasks|context|"
-                r"conversation)", re.I),
-     "override-prior-instructions phrasing"),
+OTHER_PHRASES = [
     (re.compile(r"\byou\s+are\s+now\s+(?:an?|the)\s+\w+", re.I),
      "role-reassignment phrasing"),
     (re.compile(r"\bdo\s+not\s+(?:tell|reveal|mention|inform|disclose)\b", re.I),
@@ -241,11 +274,6 @@ INJECTION_PHRASES = [
     (re.compile(r"(?:reveal|print|output|repeat|show)\s+(?:your\s+)?"
                 r"(?:system\s+)?(?:prompt|instructions)", re.I),
      "prompt-disclosure phrasing"),
-    (re.compile(r"ignorier\w*\s+(?:alle\s+)?(?:vorherige|obige)", re.I), "DE"),
-    (re.compile(r"ignor\w*\s+(?:las\s+)?instrucciones", re.I), "ES"),
-    (re.compile(r"ignor\w*\s+les\s+instructions", re.I), "FR"),
-    (re.compile(r"\u5ffd\u7565(?:\u4e4b\u524d|\u4ee5\u4e0a|\u524d\u9762)"), "ZH"),
-    (re.compile(r"\u0438\u0433\u043d\u043e\u0440\u0438\u0440\u0443\w*", re.I), "RU"),
 ]
 
 # The only places this project deliberately writes agent-directed prose. Text
@@ -259,21 +287,96 @@ AGENT_INSTRUCTION_FILES = frozenset({
 })
 
 
-def tier3_findings(root):
-    """Yield (path, line_no, line, detail) for agent-directed content."""
+# Running 20 windowed patterns over 1.33 GB costs minutes; the same scan with a
+# cheap substring pre-filter costs seconds. These are the shortest distinctive
+# fragments of the verb column above -- if none appears, no override pattern can
+# match, so the expensive regexes never run. Keep this in sync when adding a
+# language row; the selftest pins that correspondence.
+OVERRIDE_ANCHORS = (
+    "ignor", "disregard", "forget", "override", "vergiss", "vergessen",
+    "missacht", "olvid", "desestim", "oubli", "neglige", "néglige", "esque",
+    "desconsider", "dimentic", "negeer", "vergeet", "negeren", "игнор",
+    "забуд", "пренебрег", "ігнор", "забудь", "zignoruj", "ignoruj",
+    "zapomnij", "pomi", "yoksay", "görmezden", "gormezden", "unut",
+    "忽略", "忽视", "无视", "忘记", "忘掉", "無視", "忘れ", "破棄",
+    "무시", "잊어", "잊고", "تجاهل", "انس", "أهمل", "अनदेखा", "भूल",
+    "नज़रअंदाज़", "bo qua", "bỏ qua", "quen", "quên", "phot lo", "phớt lờ",
+    "เพิกเฉย", "ละเลย", "ลืม", "abaikan", "lupakan", "acuhkan",
+    "نادیده", "فراموش",
+)
+
+
+def scan_tree(root):
+    """Walk the tree ONCE, running every tier per file.
+
+    Each tier used to walk independently, which meant four full read+decode
+    passes over 1.33 GB and turned a seven-second gate into a multi-minute one.
+    Reading is the dominant cost here, not matching, so the tiers share a pass.
+
+    Yields (tier, rel, line_no, line, detail).
+    """
     for rel in tracked_files(root):
         try:
-            text = (root / rel).read_bytes().decode("utf-8")
-        except (OSError, ValueError, UnicodeDecodeError):
+            raw = (root / rel).read_bytes()
+        except (OSError, ValueError):
             continue
+        text = None
+        if not raw.isascii():
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                continue  # binary; not a review surface
+            if any(classify(ord(ch)) for ch in text):
+                for line_no, line in enumerate(text.split("\n"), 1):
+                    found = [(c, classify(ord(c))) for c in line if classify(ord(c))]
+                    if found:
+                        yield "carrier", rel, line_no, line, found
+        if text is None:
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+
+        if rel.startswith("internal/cbm/vendored/grammars/") and rel.endswith("parser.c"):
+            for m in _LITERAL.finditer(text):
+                lit = m.group(1)
+                words = [w for w in lit.split(" ") if w]
+                run = _longest_nonascii_letter_run(lit) if not lit.isascii() else 0
+                reason = None
+                if len(words) >= PARSER_PROSE_WORDS:
+                    reason = f"{len(words)}-word"
+                elif run >= PARSER_PROSE_SCRIPT_RUN:
+                    reason = f"{run}-character non-Latin"
+                if reason:
+                    line_no = text.count("\n", 0, m.start()) + 1
+                    yield "parser-prose", rel, line_no, "", (
+                        f"generated parser holds a {reason} string literal "
+                        f"(prose does not belong in a symbol table): {lit[:80]!r}"
+                    )
+            continue  # Tier 2 owns these files; prose rules add nothing here
+
+        # The PHRASE layer does not run on vendored third-party source. It was
+        # firing on sqlite3.c's `int ignoreJump /* Instruction to jump to ... */`
+        # -- "ignor" and "Instruction" inside forty characters, in a database
+        # engine that has nothing to do with agents. That is this layer's
+        # inherent weakness demonstrated on real code, and the honest fix is to
+        # narrow its scope rather than bless the hit. Vendored bytes keep the
+        # carrier scan, the parser-prose rule, and the checksum gate in
+        # security-vendored.sh; only the natural-language heuristic is dropped.
+        if "/vendored/" in rel or rel.startswith("vendored/"):
+            continue
+
         checks = list(FRAMING_TOKENS)
         if rel not in AGENT_INSTRUCTION_FILES:
-            checks += INJECTION_PHRASES
+            checks += OTHER_PHRASES
+            lowered = text.lower()
+            if any(a in lowered for a in OVERRIDE_ANCHORS):
+                checks += _OVERRIDE
         for pattern, label in checks:
             for m in pattern.finditer(text):
                 line_no = text.count("\n", 0, m.start()) + 1
                 line = text.split("\n")[line_no - 1]
-                yield rel, line_no, line, f"{label}: {m.group(0)[:60]!r}"
+                yield "phrase", rel, line_no, line, f"{label}: {m.group(0)[:60]!r}"
 
 
 def load_allowlist(root):
@@ -391,7 +494,17 @@ def main(argv):
     root = Path(rest[0]).resolve() if rest else Path.cwd()
 
     allowed, malformed = load_allowlist(root)
-    hits = list(scan(root))
+
+    carrier, prose, phrase = [], [], []
+    for tier, rel, line_no, line, detail in scan_tree(root):
+        if tier == "carrier":
+            digest = hashlib.sha256(line.encode("utf-8")).hexdigest()
+            carrier.append((rel, line_no, line, digest, detail))
+        elif tier == "parser-prose":
+            prose.append((rel, line_no, detail))
+        else:
+            digest = hashlib.sha256(line.encode("utf-8")).hexdigest()
+            phrase.append((rel, line_no, line, digest, detail))
 
     if update:
         lines = [
@@ -401,11 +514,13 @@ def main(argv):
             "# justification; the gate rejects placeholders.",
             "",
         ]
-        for rel, line_no, _line, digest, found in hits:
+        for rel, _n, _l, digest, found in carrier:
             names = ", ".join(sorted({render(c) for c, _ in found}))
             lines.append(f"{digest}  {rel}  # TODO: why is {names} safe here?")
+        for rel, _n, _l, digest, detail in phrase:
+            lines.append(f"{digest}  {rel}  # TODO: why is this safe here? ({detail[:50]})")
         (root / ALLOWLIST).write_text("\n".join(lines) + "\n", encoding="utf-8")
-        print(f"wrote {len(hits)} entries to {ALLOWLIST}")
+        print(f"wrote {len(carrier) + len(phrase)} entries to {ALLOWLIST}")
         print("Each still needs a written justification before the gate will pass.")
         return 0
 
@@ -414,62 +529,43 @@ def main(argv):
         print(f"FAIL: {ALLOWLIST}:{raw_no}: {why}\n    {line}")
         problems += 1
 
-    unexplained = []
-    for rel, line_no, line, digest, found in hits:
-        if (digest, rel) in allowed:
-            continue
-        unexplained.append((rel, line_no, line, digest, found))
-
-    if unexplained:
-        print("=== HIDDEN-INSTRUCTION AUDIT: REFUSED ===\n")
-        for rel, line_no, line, digest, found in unexplained:
-            names = ", ".join(f"{render(c)} ({lbl})" for c, lbl in found)
-            shown = "".join(
-                f"<{render(c)}>" if classify(ord(c)) else c for c in line
-            ).strip()
-            print(f"{rel}:{line_no}: {names}")
-            print(f"    {shown}")
-            print(f"    sha256 {digest}\n")
-        print("These characters are invisible in an editor and in a diff, but a")
-        print("model reading the file still consumes them.\n")
-        print("PREFERRED FIX: rephrase so the character is not needed. An")
-        print("allowlist entry is a permanent exception and should be rare.")
-        print(f"If it is genuinely required, add to {ALLOWLIST}:\n")
-        for rel, _n, _l, digest, _f in unexplained:
-            print(f"    {digest}  {rel}  # <why this is safe>")
-        problems += len(unexplained)
-
-    for rel, line_no, line, detail in tier3_findings(root):
-        digest = hashlib.sha256(line.encode("utf-8")).hexdigest()
-        if (digest, rel) in allowed:
-            continue
+    def banner():
         if problems == 0:
             print("=== HIDDEN-INSTRUCTION AUDIT: REFUSED ===\n")
-        print(f"{rel}:{line_no}: {detail}")
-        print(f"    {line.strip()[:100]}")
-        print(f"    sha256 {digest}\n")
+
+    for rel, line_no, line, digest, found in carrier:
+        if (digest, rel) in allowed:
+            continue
+        banner()
+        names = ", ".join(f"{render(c)} ({lbl})" for c, lbl in found)
+        shown = "".join(f"<{render(c)}>" if classify(ord(c)) else c for c in line).strip()
+        print(f"{rel}:{line_no}: {names}\n    {shown}\n    sha256 {digest}\n")
         problems += 1
 
-    for rel, line_no, detail in tier2_findings(root):
-        if problems == 0:
-            print("=== HIDDEN-INSTRUCTION AUDIT: REFUSED ===\n")
+    for rel, line_no, line, digest, detail in phrase:
+        if (digest, rel) in allowed:
+            continue
+        banner()
+        print(f"{rel}:{line_no}: {detail}\n    {line.strip()[:100]}\n    sha256 {digest}\n")
+        problems += 1
+
+    for rel, line_no, detail in prose:
+        banner()
         print(f"{rel}:{line_no}: {detail}\n")
         problems += 1
 
-    live = {(d, r) for r, _n, _l, d, _f in hits}
-    live |= {
-        (hashlib.sha256(line.encode("utf-8")).hexdigest(), rel)
-        for rel, _n, line, _d in tier3_findings(root)
+    live = {(d, r) for r, _n, _l, d, _f in carrier} | {
+        (d, r) for r, _n, _l, d, _f in phrase
     }
-    stale = set(allowed) - live
-    for digest, rel in sorted(stale):
+    for digest, rel in sorted(set(allowed) - live):
         print(f"FAIL: stale allowlist entry (line no longer present): {digest}  {rel}")
         problems += 1
 
     if problems:
         return 1
-    print(f"OK: no hidden-instruction carriers outside the allowlist "
-          f"({len(allowed)} allowed, {len(hits)} occurrence(s) total).")
+    print(f"OK: no hidden-instruction findings outside the allowlist "
+          f"({len(allowed)} allowed, "
+          f"{len(carrier) + len(phrase) + len(prose)} occurrence(s) total).")
     return 0
 
 

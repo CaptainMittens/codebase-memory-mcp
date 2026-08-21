@@ -94,7 +94,11 @@ def detectors(gate):
         "tier1 carrier Unicode": tier1,
         "tier2 prose-shape": tier2,
         "tier3a framing tokens": make(gate.FRAMING_TOKENS),
-        "tier3b phrasing": make(gate.INJECTION_PHRASES),
+        # _OVERRIDE is the 20-language scope-reset table; OTHER_PHRASES is
+        # the English-only remainder. Both are tier 3b -- an earlier version of
+        # this benchmark tested only the latter and reported 0.0%, measuring a
+        # table it never ran.
+        "tier3b phrasing": make(gate._OVERRIDE + gate.OTHER_PHRASES),
     }
 
 
