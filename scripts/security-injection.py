@@ -44,6 +44,7 @@ this gate rejects, so an allowlist entry cannot be produced mechanically.
 """
 
 import hashlib
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -114,6 +115,68 @@ def scan(root):
             if found:
                 digest = hashlib.sha256(line.encode("utf-8")).hexdigest()
                 yield rel, line_no, line, digest, found
+
+
+# ── Tier 2: scoped structural checks ───────────────────────────────────
+#
+# Every threshold here was MEASURED against this tree before being gated, not
+# guessed. A rule with a false-positive rate becomes noise, gets whitelisted,
+# and then gets ignored -- so a rule that cannot be made clean is left out
+# rather than shipped loose.
+
+# A generated LR parser's string table holds grammar symbol names and
+# punctuation terminals. Multi-word keywords are real ("is not", "not in",
+# "static get"), so a bare space is NOT a signal. Measured across all 159
+# vendored grammars: 48,271 literals, 63 contain a space, and the longest
+# legitimate one is three words ("hide empty description"). Prose needs more.
+# Four is therefore the tightest threshold with zero false positives today, and
+# it still catches a four-word instruction like "ignore all previous
+# instructions".
+PARSER_PROSE_WORDS = 4
+
+# DEFERRED -- hiding constructs (`display:none`, `visibility:hidden`, HTML
+# comments, `<script`) are NOT checked here, because measurement showed the
+# rule cannot be made clean at tree scope. `<!--` and `<script` have 61
+# legitimate uses across PR templates, docs and HTML-parsing tests, and
+# `display:none` is ordinary styling in docs/index.html, the project website.
+# The real concern is a hiding construct inside AGENT-FACING content, which is
+# a location question rather than a pattern question -- it belongs with the
+# Tier 3 location rule, once the set of places we deliberately instruct agents
+# is enumerated. Shipping it loose here would produce a rule that needs
+# excuses, and a rule that needs excuses gets switched off.
+
+_LITERAL = re.compile(r'"((?:[^"\\\n]|\\.)*)"')
+
+
+def tier2_findings(root):
+    """Yield (path, line_no, detail) for prose smuggled into generated parsers."""
+    for rel in tracked_files(root):
+        full = root / rel
+        is_parser = rel.startswith("internal/cbm/vendored/grammars/") and rel.endswith(
+            "parser.c"
+        )
+        try:
+            raw = full.read_bytes()
+        except (OSError, ValueError):
+            continue
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+
+        if is_parser:
+            for m in _LITERAL.finditer(text):
+                lit = m.group(1)
+                words = [w for w in lit.split(" ") if w]
+                if len(words) >= PARSER_PROSE_WORDS:
+                    line_no = text.count("\n", 0, m.start()) + 1
+                    yield rel, line_no, (
+                        f"generated parser holds a {len(words)}-word string "
+                        f"literal (prose does not belong in a symbol table): "
+                        f"{lit[:80]!r}"
+                    )
+            continue
+
 
 
 def load_allowlist(root):
@@ -262,6 +325,12 @@ def main(argv):
         for rel, _n, _l, digest, _f in unexplained:
             print(f"    {digest}  {rel}  # <why this is safe>")
         problems += len(unexplained)
+
+    for rel, line_no, detail in tier2_findings(root):
+        if problems == 0:
+            print("=== HIDDEN-INSTRUCTION AUDIT: REFUSED ===\n")
+        print(f"{rel}:{line_no}: {detail}\n")
+        problems += 1
 
     stale = set(allowed) - {(d, r) for r, _n, _l, d, _f in hits}
     for digest, rel in sorted(stale):

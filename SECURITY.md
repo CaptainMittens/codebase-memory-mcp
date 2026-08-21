@@ -100,7 +100,8 @@ This project implements multiple layers of security verification. Every release 
 ### Build-Time (CI — every commit)
 
 - **9-layer security audit suite** runs on every build:
-  - Layer 0: Hidden-instruction audit (invisible/bidi/tag Unicode across the whole tree)
+  - Layer 0: Hidden-instruction audit (invisible/bidi/tag Unicode tree-wide;
+    prose smuggled into generated parser symbol tables)
   - Layer 1: Static allow-list for dangerous calls (`system`/`popen`/`fork`) + hardcoded URLs
   - Layer 2: Binary string audit (URLs, credentials, dangerous commands)
   - Layer 3: Network egress monitoring via strace (Linux)
