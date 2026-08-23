@@ -1709,6 +1709,50 @@ static yyjson_val *json_unique_member(yyjson_val *object, const char *name) {
     return found;
 }
 
+/* Tools the browser may call through /rpc: the read-only query surface and
+ * nothing that mutates the index. Writes (index_repository, delete_project,
+ * ingest_traces, manage_adr updates) stay on the dedicated /api routes or the
+ * MCP transport, where the daemon's mutation guard applies. CBM Atlas is the
+ * human's window on the graph; this list is what that window may see. */
+static const char *const UI_RPC_READ_TOOLS[] = {
+    "list_projects",     "get_code_snippet", "get_graph_schema",     "search_graph",
+    "search_code",       "trace_path",       "trace_call_path",      "get_architecture",
+    "query_graph",       "detect_changes",   "check_index_coverage", "index_status",
+};
+
+static bool rpc_tool_is_read_only(const char *name) {
+    for (size_t i = 0; i < sizeof(UI_RPC_READ_TOOLS) / sizeof(UI_RPC_READ_TOOLS[0]); i++) {
+        if (strcmp(name, UI_RPC_READ_TOOLS[i]) == 0)
+            return true;
+    }
+    return false;
+}
+
+/* manage_adr is read-only only in its "get" (the default) and "sections"
+ * modes; anything else writes the document and is refused here. A duplicated
+ * or non-string "mode" is ambiguous and refused the same way. */
+static bool rpc_manage_adr_is_read(yyjson_val *params) {
+    yyjson_val *arguments = json_unique_member(params, "arguments");
+    if (!arguments)
+        return true; /* no arguments → default mode "get" */
+    if (!yyjson_is_obj(arguments))
+        return false;
+    bool mode_seen = false;
+    size_t index, maximum;
+    yyjson_val *key, *value;
+    yyjson_obj_foreach(arguments, index, maximum, key, value) {
+        if (strcmp(yyjson_get_str(key), "mode") != 0)
+            continue;
+        if (mode_seen || !yyjson_is_str(value))
+            return false;
+        mode_seen = true;
+        const char *mode_text = yyjson_get_str(value);
+        if (strcmp(mode_text, "get") != 0 && strcmp(mode_text, "sections") != 0)
+            return false;
+    }
+    return true;
+}
+
 static bool rpc_is_allowed_for_ui(const char *body, size_t body_len) {
     yyjson_doc *document = yyjson_read(body, body_len, 0);
     if (!document)
@@ -1719,9 +1763,13 @@ static bool rpc_is_allowed_for_ui(const char *body, size_t body_len) {
     yyjson_val *name = json_unique_member(params, "name");
     const char *method_text = yyjson_is_str(method) ? yyjson_get_str(method) : NULL;
     const char *name_text = yyjson_is_str(name) ? yyjson_get_str(name) : NULL;
-    bool allowed =
-        method_text && strcmp(method_text, "tools/call") == 0 && name_text &&
-        (strcmp(name_text, "list_projects") == 0 || strcmp(name_text, "get_code_snippet") == 0);
+    bool allowed = false;
+    if (method_text && strcmp(method_text, "tools/call") == 0 && name_text) {
+        if (rpc_tool_is_read_only(name_text))
+            allowed = true;
+        else if (strcmp(name_text, "manage_adr") == 0)
+            allowed = rpc_manage_adr_is_read(params);
+    }
     yyjson_doc_free(document);
     return allowed;
 }

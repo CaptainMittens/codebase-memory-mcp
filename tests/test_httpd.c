@@ -1086,22 +1086,36 @@ TEST(ui_server_mutations_require_json_content_type) {
 TEST(ui_server_rpc_allows_only_ui_read_tools) {
     th_server_t ts;
     ASSERT_EQ(th_server_start(&ts), 0);
-    const char *body = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\","
-                       "\"params\":{\"name\":\"list_projects\",\"arguments\":{}}}";
+    /* CBM Atlas reads the graph through /rpc: every read-only query tool must
+     * pass the allowlist (a 403 on get_graph_schema is #1663). HTTP 200 means
+     * "allowed and dispatched" — tool-level argument errors still ride inside
+     * a 200 JSON-RPC envelope. */
+    static const char *allowed_tools[] = {
+        "list_projects",  "get_code_snippet", "get_graph_schema",     "search_graph",
+        "search_code",    "trace_path",       "trace_call_path",      "get_architecture",
+        "query_graph",    "detect_changes",   "check_index_coverage", "index_status",
+    };
     char req[1024];
-    snprintf(req, sizeof(req),
-             "POST /rpc HTTP/1.1\r\n"
-             "Content-Type: application/json\r\n"
-             "Content-Length: %d\r\n\r\n%s",
-             (int)strlen(body), body);
     char resp[8192];
-    int n = th_http(cbm_http_server_port(ts.srv), req, resp, sizeof(resp));
-    ASSERT_GT(n, 0);
-    ASSERT_EQ(th_status(resp), 200);
-    ASSERT_NOT_NULL(strstr(resp, "\"jsonrpc\""));
+    int n;
+    for (size_t i = 0; i < sizeof(allowed_tools) / sizeof(allowed_tools[0]); i++) {
+        char body[512];
+        snprintf(body, sizeof(body),
+                 "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\","
+                 "\"params\":{\"name\":\"%s\",\"arguments\":{}}}",
+                 allowed_tools[i]);
+        snprintf(req, sizeof(req),
+                 "POST /rpc HTTP/1.1\r\n"
+                 "Content-Type: application/json\r\n"
+                 "Content-Length: %d\r\n\r\n%s",
+                 (int)strlen(body), body);
+        n = th_http(cbm_http_server_port(ts.srv), req, resp, sizeof(resp));
+        ASSERT_GT(n, 0);
+        ASSERT_EQ(th_status(resp), 200);
+        ASSERT_NOT_NULL(strstr(resp, "\"jsonrpc\""));
+    }
 
-    static const char *blocked_tools[] = {"delete_project", "manage_adr", "ingest_traces",
-                                          "index_repository"};
+    static const char *blocked_tools[] = {"delete_project", "ingest_traces", "index_repository"};
     for (size_t i = 0; i < sizeof(blocked_tools) / sizeof(blocked_tools[0]); i++) {
         char blocked_body[512];
         snprintf(blocked_body, sizeof(blocked_body),
@@ -1115,6 +1129,34 @@ TEST(ui_server_rpc_allows_only_ui_read_tools) {
         n = th_http(cbm_http_server_port(ts.srv), req, resp, sizeof(resp));
         ASSERT_GT(n, 0);
         ASSERT_EQ(th_status(resp), 403);
+    }
+
+    /* manage_adr: the read modes pass, everything that writes is refused. */
+    static const struct {
+        const char *arguments;
+        int expected_status;
+    } adr_cases[] = {
+        {"{}", 200},                          /* no mode → default "get" */
+        {"{\"mode\":\"get\"}", 200},          /* explicit read */
+        {"{\"mode\":\"sections\"}", 200},     /* header listing */
+        {"{\"mode\":\"update\"}", 403},       /* write */
+        {"{\"mode\":\"store\"}", 403},        /* legacy write alias */
+        {"{\"mode\":1}", 403},                /* non-string mode */
+        {"{\"mode\":\"get\",\"mode\":\"update\"}", 403}, /* smuggled duplicate */
+    };
+    for (size_t i = 0; i < sizeof(adr_cases) / sizeof(adr_cases[0]); i++) {
+        char adr_body[512];
+        snprintf(adr_body, sizeof(adr_body),
+                 "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/call\","
+                 "\"params\":{\"name\":\"manage_adr\",\"arguments\":%s}}",
+                 adr_cases[i].arguments);
+        snprintf(req, sizeof(req),
+                 "POST /rpc HTTP/1.1\r\nContent-Type: application/json\r\n"
+                 "Content-Length: %zu\r\n\r\n%s",
+                 strlen(adr_body), adr_body);
+        n = th_http(cbm_http_server_port(ts.srv), req, resp, sizeof(resp));
+        ASSERT_GT(n, 0);
+        ASSERT_EQ(th_status(resp), adr_cases[i].expected_status);
     }
 
     const char *initialize = "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"initialize\","
