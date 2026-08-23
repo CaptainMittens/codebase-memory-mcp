@@ -2138,7 +2138,7 @@ static void dispatch_request(cbm_http_server_t *srv, cbm_http_conn_t *c,
     }
 
     /* GET /api/flow → one CBM Atlas flow */
-    if (is_get && cbm_http_path_match(req->path, "/api/flow?*")) {
+    if (is_get && cbm_http_path_match(req->path, "/api/flow")) {
         handle_atlas_flow(c, req);
         return;
     }

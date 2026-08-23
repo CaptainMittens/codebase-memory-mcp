@@ -1184,6 +1184,26 @@ TEST(ui_server_rpc_allows_only_ui_read_tools) {
     PASS();
 }
 
+TEST(ui_server_atlas_routes_are_wired) {
+    th_server_t ts;
+    ASSERT_EQ(th_server_start(&ts), 0);
+    /* A wired route with a missing ?project answers 400; an unwired path
+     * falls through to the static handler's 404. This pins the /api/flow
+     * (singular) route, which once used a "?*" pattern that never matched
+     * because req->path carries no query string. */
+    static const char *const routes[] = {"/api/tree", "/api/symbol", "/api/flows", "/api/flow"};
+    char req[256];
+    char resp[4096];
+    for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {
+        snprintf(req, sizeof(req), "GET %s HTTP/1.1\r\n\r\n", routes[i]);
+        int n = th_http(cbm_http_server_port(ts.srv), req, resp, sizeof(resp));
+        ASSERT_GT(n, 0);
+        ASSERT_EQ(th_status(resp), 400);
+    }
+    th_server_stop(&ts);
+    PASS();
+}
+
 TEST(ui_server_oversized_body_rejected) {
     th_server_t ts;
     ASSERT_EQ(th_server_start(&ts), 0);
@@ -2340,6 +2360,7 @@ SUITE(httpd) {
     RUN_TEST(ui_server_rejects_foreign_and_null_origins);
     RUN_TEST(ui_server_mutations_require_json_content_type);
     RUN_TEST(ui_server_rpc_allows_only_ui_read_tools);
+    RUN_TEST(ui_server_atlas_routes_are_wired);
     RUN_TEST(ui_server_oversized_body_rejected);
     RUN_TEST(ui_server_encoded_slash_not_routed);
     RUN_TEST(ui_server_nul_in_target_rejected);

@@ -2,171 +2,279 @@ import { useCallback, useEffect, useState } from "react";
 import { GraphTab } from "./components/GraphTab";
 import { StatsTab } from "./components/StatsTab";
 import { ControlTab } from "./components/ControlTab";
+import { OverviewTab } from "./components/OverviewTab";
+import { ModulesTab } from "./components/ModulesTab";
+import { SymbolTab } from "./components/SymbolTab";
+import { FlowsTab } from "./components/FlowsTab";
+import { ChangesTab } from "./components/ChangesTab";
+import { CommandK } from "./components/CommandK";
+import {
+  PromptBasketProvider,
+  PromptBasketDrawer,
+} from "./components/PromptBasket";
 import type { TabId } from "./lib/types";
 import { useUiMessages } from "./lib/i18n";
 
-const TAB_IDS: TabId[] = ["graph", "stats", "control"];
+const TAB_IDS: TabId[] = [
+  "overview",
+  "modules",
+  "graph",
+  "flows",
+  "changes",
+  "symbol",
+  "stats",
+  "control",
+];
+
+/* Tabs that need a selected project. "symbol" is reachable only via links. */
+const PROJECT_TABS: TabId[] = ["overview", "modules", "graph", "flows", "changes"];
 
 interface RouteState {
   tab: TabId;
   project: string | null;
-  /* Deep links: a selected node and/or an opened region survive reloads and
-   * can be shared (#564). Values are the server-assigned ids. */
+  /* Deep links (#564): node/region on the galaxy, sym on the symbol page,
+   * path in Modules, flow in Flows — all survive reloads and sharing. */
   node: string | null;
   region: string | null;
+  sym: string | null;
+  path: string;
+  flow: string | null;
 }
 
-/* Read the active tab + selected project from the URL query string so the
- * current view survives refreshes and can be bookmarked or shared. */
 function readRoute(): RouteState {
   const params = new URLSearchParams(window.location.search);
   const rawTab = params.get("tab");
   const tab = TAB_IDS.includes(rawTab as TabId) ? (rawTab as TabId) : "stats";
-  const project = params.get("project");
-  const node = params.get("node");
-  const region = params.get("region");
   return {
     tab,
-    project: project ? project : null,
-    node: node ? node : null,
-    region: region ? region : null,
+    project: params.get("project") || null,
+    node: params.get("node") || null,
+    region: params.get("region") || null,
+    sym: params.get("sym") || null,
+    path: params.get("path") || "",
+    flow: params.get("flow") || null,
   };
 }
 
-/* Build the canonical URL for a route, preserving the path and hash. */
-function routeUrl(
-  tab: TabId,
-  project: string | null,
-  node?: string | null,
-  region?: string | null,
-): string {
+function routeUrl(route: RouteState): string {
   const params = new URLSearchParams();
-  params.set("tab", tab);
-  if (project) params.set("project", project);
-  if (region) params.set("region", region);
-  if (node) params.set("node", node);
+  params.set("tab", route.tab);
+  if (route.project) params.set("project", route.project);
+  if (route.region) params.set("region", route.region);
+  if (route.node) params.set("node", route.node);
+  if (route.sym) params.set("sym", route.sym);
+  if (route.path) params.set("path", route.path);
+  if (route.flow) params.set("flow", route.flow);
   return `${window.location.pathname}?${params.toString()}${window.location.hash}`;
 }
 
 export function App() {
   const t = useUiMessages();
   const [route, setRoute] = useState<RouteState>(readRoute);
+  const [commandOpen, setCommandOpen] = useState(false);
   const { tab: activeTab, project: selectedProject } = route;
 
-  /* Normalize the URL on first load so it always carries the current route. */
   useEffect(() => {
     const initial = readRoute();
-    window.history.replaceState(
-      null,
-      "",
-      routeUrl(initial.tab, initial.project, initial.node, initial.region),
-    );
+    window.history.replaceState(null, "", routeUrl(initial));
   }, []);
 
-  /* Sync state when the user navigates with the browser back/forward buttons. */
   useEffect(() => {
     const onPopState = () => setRoute(readRoute());
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
 
-  /* Change the route and push a history entry (skips no-op navigations). */
-  const navigate = useCallback(
-    (
-      tab: TabId,
-      project: string | null,
-      node: string | null = null,
-      region: string | null = null,
-    ) => {
-      const url = routeUrl(tab, project, node, region);
+  /* ⌘K / ctrl-K anywhere. */
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setCommandOpen((value) => !value);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  const navigate = useCallback((next: Partial<RouteState> & { tab: TabId }) => {
+    setRoute((previous) => {
+      const merged: RouteState = {
+        project: previous.project,
+        node: null,
+        region: null,
+        sym: null,
+        path: "",
+        flow: null,
+        ...next,
+      } as RouteState;
+      const url = routeUrl(merged);
       const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-      if (url === current) return;
-      window.history.pushState(null, "", url);
-      setRoute({ tab, project, node, region });
+      if (url !== current) window.history.pushState(null, "", url);
+      return merged;
+    });
+  }, []);
+
+  const openSymbol = useCallback(
+    (ref: { id?: number; qn?: string }) => {
+      navigate({
+        tab: "symbol",
+        sym: ref.qn ?? (ref.id !== undefined ? `#${ref.id}` : null),
+      });
     },
-    [],
+    [navigate],
+  );
+  const openRegion = useCallback(
+    (regionId: number) => {
+      navigate({ tab: "graph", region: String(regionId) });
+    },
+    [navigate],
   );
 
   const tabs: { id: TabId; label: string }[] = [
-    { id: "graph", label: t.tabs.graph },
+    { id: "overview", label: "Overview" },
+    { id: "modules", label: "Modules" },
+    { id: "graph", label: "Galaxy" },
+    { id: "flows", label: "Flows" },
+    { id: "changes", label: "Changes" },
     { id: "stats", label: t.tabs.projects },
     { id: "control", label: t.tabs.control },
   ];
 
+  const symbolRef = route.sym
+    ? route.sym.startsWith("#")
+      ? { id: Number(route.sym.slice(1)) }
+      : { qn: route.sym }
+    : null;
+
   return (
-    <div className="h-screen flex flex-col bg-background text-foreground">
-      {/* Header */}
-      <header className="flex items-center justify-between px-5 h-12 border-b border-border bg-[#0b1920]/80 backdrop-blur-md shrink-0">
-        <div className="flex items-center gap-6">
-          <div className="flex items-center gap-2.5">
-            <div className="w-[7px] h-[7px] rounded-full bg-primary" />
-            <span className="text-[13px] font-semibold text-foreground/90 tracking-tight">
-              CBM Atlas
-            </span>
+    <PromptBasketProvider>
+      <div className="h-screen flex flex-col bg-background text-foreground">
+        {/* Header */}
+        <header className="flex items-center justify-between px-5 h-12 border-b border-border bg-[#0b1920]/80 backdrop-blur-md shrink-0">
+          <div className="flex items-center gap-6 min-w-0">
+            <div className="flex items-center gap-2.5 shrink-0">
+              <div className="w-[7px] h-[7px] rounded-full bg-primary" />
+              <span className="text-[13px] font-semibold text-foreground/90 tracking-tight">
+                CBM Atlas
+              </span>
+            </div>
+
+            <nav className="flex items-center gap-0.5 overflow-x-auto">
+              {tabs.map((tab) => {
+                const disabled = PROJECT_TABS.includes(tab.id) && !selectedProject;
+                return (
+                  <button
+                    key={tab.id}
+                    onClick={() =>
+                      navigate({
+                        tab: tab.id,
+                        project: tab.id === "stats" ? null : selectedProject,
+                      })
+                    }
+                    disabled={disabled}
+                    title={disabled ? "Select a project first" : undefined}
+                    className={`px-3 py-1 rounded-md text-[12px] font-medium transition-all whitespace-nowrap ${
+                      disabled
+                        ? "text-muted-foreground/30 cursor-not-allowed"
+                        : activeTab === tab.id
+                          ? "bg-primary/15 text-primary"
+                          : "text-muted-foreground hover:text-foreground hover:bg-white/[0.04]"
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                );
+              })}
+            </nav>
           </div>
 
-          {/* Tabs inline in header */}
-          <nav className="flex items-center gap-0.5">
-            {tabs.map((tab) => {
-              const disabled = tab.id === "graph" && !selectedProject;
-              return (
-                <button
-                  key={tab.id}
-                  onClick={() => navigate(tab.id, tab.id === "stats" ? null : selectedProject)}
-                  disabled={disabled}
-                  title={disabled ? "Select a project first" : undefined}
-                  className={`px-3 py-1 rounded-md text-[12px] font-medium transition-all ${
-                    disabled
-                      ? "text-muted-foreground/30 cursor-not-allowed"
-                      : activeTab === tab.id
-                        ? "bg-primary/15 text-primary"
-                        : "text-muted-foreground hover:text-foreground hover:bg-white/[0.04]"
-                  }`}
-                >
-                  {tab.label}
-                </button>
-              );
-            })}
-          </nav>
-        </div>
-
-        {selectedProject && (
-          <div className="flex items-center gap-2 px-3 py-1 rounded-lg bg-white/[0.04] border border-border/30">
-            <span className="text-[10px] text-foreground/30 uppercase tracking-wider">
-              {t.graph.selectedLabel}
-            </span>
-            <span className="text-[11px] text-primary font-mono truncate max-w-[300px]">
-              {selectedProject}
-            </span>
+          <div className="flex items-center gap-2 shrink-0">
             <button
-              onClick={() => navigate("stats", null)}
-              className="text-foreground/20 hover:text-foreground/50 text-[12px] ml-1 transition-colors"
+              onClick={() => setCommandOpen(true)}
+              className="px-2.5 py-1 rounded-md text-[11px] text-muted-foreground hover:text-foreground bg-white/[0.03] hover:bg-white/[0.06] border border-border/40 transition-all"
+              title="Search symbols and code"
             >
-              ×
+              ⌘K
             </button>
+            {selectedProject && (
+              <div className="flex items-center gap-2 px-3 py-1 rounded-lg bg-white/[0.04] border border-border/30">
+                <span className="text-[11px] text-primary font-mono truncate max-w-[240px]">
+                  {selectedProject}
+                </span>
+                <button
+                  onClick={() => navigate({ tab: "stats", project: null })}
+                  className="text-foreground/20 hover:text-foreground/50 text-[12px] transition-colors"
+                >
+                  ×
+                </button>
+              </div>
+            )}
           </div>
-        )}
-      </header>
+        </header>
 
-      {/* Content */}
-      <main className="flex-1 min-h-0">
-        {activeTab === "graph" ? (
-          <GraphTab
-            project={selectedProject}
-            routeNode={route.node}
-            routeRegion={route.region}
-            onRouteChange={(node, region) =>
-              navigate("graph", selectedProject, node, region)
-            }
-          />
-        ) : activeTab === "control" ? (
-          <ControlTab />
-        ) : (
-          <StatsTab
-            onSelectProject={(p) => navigate("graph", p)}
-          />
-        )}
-      </main>
-    </div>
+        {/* Content */}
+        <main className="flex-1 min-h-0">
+          {activeTab === "overview" && selectedProject ? (
+            <OverviewTab
+              project={selectedProject}
+              onOpenRegion={openRegion}
+              onOpenSymbol={(qn) => openSymbol({ qn })}
+              onOpenModules={() => navigate({ tab: "modules" })}
+              onOpenFlows={() => navigate({ tab: "flows" })}
+            />
+          ) : activeTab === "modules" && selectedProject ? (
+            <ModulesTab
+              project={selectedProject}
+              path={route.path}
+              onNavigatePath={(path) => navigate({ tab: "modules", path })}
+              onOpenSymbol={openSymbol}
+              onOpenRegion={openRegion}
+            />
+          ) : activeTab === "graph" ? (
+            <GraphTab
+              project={selectedProject}
+              routeNode={route.node}
+              routeRegion={route.region}
+              onRouteChange={(node, region) =>
+                navigate({ tab: "graph", node, region })
+              }
+            />
+          ) : activeTab === "flows" && selectedProject ? (
+            <FlowsTab
+              project={selectedProject}
+              flowId={route.flow !== null ? Number(route.flow) : null}
+              onOpenFlow={(id) =>
+                navigate({ tab: "flows", flow: id !== null ? String(id) : null })
+              }
+              onOpenSymbol={openSymbol}
+            />
+          ) : activeTab === "changes" && selectedProject ? (
+            <ChangesTab project={selectedProject} onOpenSymbol={openSymbol} />
+          ) : activeTab === "symbol" && selectedProject && symbolRef ? (
+            <SymbolTab
+              project={selectedProject}
+              symbolRef={symbolRef}
+              onOpenSymbol={openSymbol}
+              onOpenRegion={openRegion}
+            />
+          ) : activeTab === "control" ? (
+            <ControlTab />
+          ) : (
+            <StatsTab
+              onSelectProject={(project) => navigate({ tab: "overview", project })}
+            />
+          )}
+        </main>
+
+        <CommandK
+          project={selectedProject}
+          open={commandOpen}
+          onClose={() => setCommandOpen(false)}
+          onOpenSymbol={openSymbol}
+        />
+        <PromptBasketDrawer project={selectedProject} />
+      </div>
+    </PromptBasketProvider>
   );
 }

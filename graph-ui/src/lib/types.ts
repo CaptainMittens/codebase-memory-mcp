@@ -113,7 +113,15 @@ export interface SchemaInfo {
   total_edges: number;
 }
 
-export type TabId = "graph" | "stats" | "control";
+export type TabId =
+  | "overview"
+  | "modules"
+  | "graph"
+  | "flows"
+  | "changes"
+  | "symbol"
+  | "stats"
+  | "control";
 
 export interface ProcessInfo {
   pid: number;
