@@ -387,6 +387,7 @@ UI_SRCS = \
     src/ui/config.c \
     src/ui/http_server.c \
     src/ui/layout3d.c \
+    src/ui/layout_regions.c \
     src/ui/httpd.c \
     src/ui/embedded_stub.c
 

@@ -1485,6 +1485,57 @@ static void handle_layout(cbm_http_conn_t *c, const cbm_http_req_t *req) {
         return;
     }
 
+    /* level=regions (CBM Atlas): the coarsest level of detail — one body per
+     * region instead of one per node. Regions do not mix with the missed
+     * skeleton or cross-repo satellites; the client asks for those at finer
+     * levels. */
+    char level_str[32] = {0};
+    if (cbm_http_query_param(req->query, "level", level_str, (int)sizeof(level_str)) &&
+        strcmp(level_str, "regions") == 0 && !missed_graph) {
+        char *regions_json = cbm_layout_regions_json(store, scoped_project);
+        cbm_store_close(store);
+        if (!regions_json) {
+            cbm_http_replyf(c, 500, g_cors_json,
+                            "{\"error\":\"region computation failed\"}");
+            return;
+        }
+        cbm_http_replyf(c, 200, g_cors_json, "%s", regions_json);
+        free(regions_json);
+        return;
+    }
+
+    /* scope=region:<id> — full-detail layout of one region's files only. */
+    char scope_str[64] = {0};
+    int scope_region = -1;
+    if (cbm_http_query_param(req->query, "scope", scope_str, (int)sizeof(scope_str)) &&
+        strncmp(scope_str, "region:", 7) == 0) {
+        scope_region = atoi(scope_str + 7);
+        if (scope_region < 0) {
+            cbm_store_close(store);
+            cbm_http_replyf(c, 400, g_cors_json, "{\"error\":\"invalid scope\"}");
+            return;
+        }
+    }
+    if (scope_region >= 0 && !missed_graph) {
+        cbm_layout_result_t *scoped =
+            cbm_layout_compute_region(store, scoped_project, scope_region, max_nodes);
+        cbm_store_close(store);
+        if (!scoped) {
+            cbm_http_replyf(c, 404, g_cors_json, "{\"error\":\"unknown region\"}");
+            return;
+        }
+        char *scoped_json = cbm_layout_to_json(scoped);
+        cbm_layout_free(scoped);
+        if (!scoped_json) {
+            cbm_http_replyf(c, 500, g_cors_json,
+                            "{\"error\":\"JSON serialization failed\"}");
+            return;
+        }
+        cbm_http_replyf(c, 200, g_cors_json, "%s", scoped_json);
+        free(scoped_json);
+        return;
+    }
+
     cbm_layout_result_t *layout =
         cbm_layout_compute(store, scoped_project, CBM_LAYOUT_OVERVIEW, NULL, 0, max_nodes);
 

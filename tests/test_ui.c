@@ -11,6 +11,8 @@
 #include "ui/embedded_assets.h"
 #include "ui/layout3d.h"
 #include "store/store.h"
+
+#include <yyjson/yyjson.h>
 #ifdef _WIN32
 #include "foundation/win_utf8.h"
 #endif
@@ -859,6 +861,156 @@ TEST(layout_coincident_nodes_bounded) {
 #endif
 }
 
+
+/* ── CBM Atlas region level ───────────────────────────────────── */
+
+/* Two call communities in two folders, one cross call. The region level must
+ * find both, name them by their dominant folder, aggregate the cross edge,
+ * and lay them out deterministically. */
+static cbm_store_t *regions_fixture(void) {
+    cbm_store_t *store = cbm_store_open_memory();
+    if (!store)
+        return NULL;
+    cbm_store_upsert_project(store, "regions-test", "/tmp/regions-test");
+    static const struct {
+        const char *name;
+        const char *file;
+    } defs[] = {
+        {"alpha_one", "src/alpha/a1.c"},   {"alpha_two", "src/alpha/a1.c"},
+        {"alpha_three", "src/alpha/a2.c"}, {"beta_one", "src/beta/b1.c"},
+        {"beta_two", "src/beta/b1.c"},     {"beta_three", "src/beta/b2.c"},
+    };
+    int64_t ids[6];
+    for (int i = 0; i < 6; i++) {
+        cbm_node_t node;
+        memset(&node, 0, sizeof(node));
+        node.project = "regions-test";
+        node.label = "Function";
+        node.name = defs[i].name;
+        char qn[128];
+        snprintf(qn, sizeof(qn), "regions-test::%s", defs[i].name);
+        node.qualified_name = qn;
+        node.file_path = defs[i].file;
+        node.start_line = 1;
+        node.end_line = 5;
+        ids[i] = cbm_store_upsert_node(store, &node);
+    }
+    /* Dense intra-community calls, one cross call alpha_one → beta_one. */
+    static const int pairs[][2] = {{0, 1}, {1, 2}, {2, 0}, {0, 2},
+                                   {3, 4}, {4, 5}, {5, 3}, {3, 5}, {0, 3}};
+    for (size_t e = 0; e < sizeof(pairs) / sizeof(pairs[0]); e++) {
+        cbm_edge_t edge;
+        memset(&edge, 0, sizeof(edge));
+        edge.project = "regions-test";
+        edge.source_id = ids[pairs[e][0]];
+        edge.target_id = ids[pairs[e][1]];
+        edge.type = "CALLS";
+        cbm_store_insert_edge(store, &edge);
+    }
+    return store;
+}
+
+TEST(layout_regions_two_communities) {
+    cbm_layout_regions_cache_clear();
+    cbm_store_t *store = regions_fixture();
+    ASSERT_NOT_NULL(store);
+
+    char *json = cbm_layout_regions_json(store, "regions-test");
+    ASSERT_NOT_NULL(json);
+
+    yyjson_doc *doc = yyjson_read(json, strlen(json), 0);
+    ASSERT_NOT_NULL(doc);
+    yyjson_val *root = yyjson_doc_get_root(doc);
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(root, "level")), "regions");
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(root, "method")), "leiden+folders");
+    ASSERT_EQ((int)yyjson_get_int(yyjson_obj_get(root, "total_nodes")), 6);
+
+    yyjson_val *regions = yyjson_obj_get(root, "regions");
+    ASSERT_EQ((int)yyjson_arr_size(regions), 2);
+    bool saw_alpha = false, saw_beta = false;
+    size_t idx, max;
+    yyjson_val *rv;
+    yyjson_arr_foreach(regions, idx, max, rv) {
+        const char *name = yyjson_get_str(yyjson_obj_get(rv, "name"));
+        ASSERT_NOT_NULL(name);
+        ASSERT_EQ((int)yyjson_get_int(yyjson_obj_get(rv, "files")), 2);
+        ASSERT_EQ((int)yyjson_get_int(yyjson_obj_get(rv, "members")), 3);
+        ASSERT_NOT_NULL(yyjson_obj_get(rv, "why"));
+        ASSERT_NOT_NULL(yyjson_obj_get(rv, "x"));
+        yyjson_val *tops = yyjson_obj_get(rv, "top_nodes");
+        ASSERT_GT((int)yyjson_arr_size(tops), 0);
+        if (strcmp(name, "src/alpha") == 0)
+            saw_alpha = true;
+        if (strcmp(name, "src/beta") == 0)
+            saw_beta = true;
+    }
+    ASSERT_TRUE(saw_alpha);
+    ASSERT_TRUE(saw_beta);
+
+    /* Exactly one aggregated cross edge with weight 1. */
+    yyjson_val *edges = yyjson_obj_get(root, "edges");
+    ASSERT_EQ((int)yyjson_arr_size(edges), 1);
+    yyjson_val *edge = yyjson_arr_get(edges, 0);
+    ASSERT_EQ((int)yyjson_get_int(yyjson_obj_get(edge, "weight")), 1);
+
+    /* Deterministic: a second computation (fresh cache) is byte-identical. */
+    cbm_layout_regions_cache_clear();
+    char *json2 = cbm_layout_regions_json(store, "regions-test");
+    ASSERT_NOT_NULL(json2);
+    ASSERT_STR_EQ(json, json2);
+
+    free(json2);
+    yyjson_doc_free(doc);
+    free(json);
+    cbm_store_close(store);
+    cbm_layout_regions_cache_clear();
+    PASS();
+}
+
+TEST(layout_regions_scope_restricts_nodes) {
+    cbm_layout_regions_cache_clear();
+    cbm_store_t *store = regions_fixture();
+    ASSERT_NOT_NULL(store);
+
+    /* Find the region id whose name is src/alpha. */
+    char *json = cbm_layout_regions_json(store, "regions-test");
+    ASSERT_NOT_NULL(json);
+    yyjson_doc *doc = yyjson_read(json, strlen(json), 0);
+    ASSERT_NOT_NULL(doc);
+    int alpha_id = -1;
+    yyjson_val *regions = yyjson_obj_get(yyjson_doc_get_root(doc), "regions");
+    size_t idx, max;
+    yyjson_val *rv;
+    yyjson_arr_foreach(regions, idx, max, rv) {
+        const char *name = yyjson_get_str(yyjson_obj_get(rv, "name"));
+        if (name && strcmp(name, "src/alpha") == 0)
+            alpha_id = (int)yyjson_get_int(yyjson_obj_get(rv, "id"));
+    }
+    yyjson_doc_free(doc);
+    free(json);
+    ASSERT_GT(alpha_id, -1);
+
+    cbm_layout_result_t *r = cbm_layout_compute_region(store, "regions-test", alpha_id, 100);
+    ASSERT_NOT_NULL(r);
+    ASSERT_EQ(r->node_count, 3);
+    ASSERT_EQ(r->total_nodes, 3);
+    for (int i = 0; i < r->node_count; i++)
+        ASSERT_NOT_NULL(strstr(r->nodes[i].file_path, "src/alpha/"));
+    /* Only intra-region edges: the cross call to beta is not present. */
+    for (int e = 0; e < r->edge_count; e++)
+        for (int i = 0; i < r->node_count; i++)
+            if (r->edges[e].target == r->nodes[i].id)
+                ASSERT_NOT_NULL(strstr(r->nodes[i].file_path, "src/alpha/"));
+    cbm_layout_free(r);
+
+    /* Unknown region id → NULL, not a crash. */
+    ASSERT_NULL(cbm_layout_compute_region(store, "regions-test", 99, 100));
+
+    cbm_store_close(store);
+    cbm_layout_regions_cache_clear();
+    PASS();
+}
+
 /* ── Suite ────────────────────────────────────────────────────── */
 
 SUITE(ui) {
@@ -886,4 +1038,8 @@ SUITE(ui) {
     RUN_TEST(layout_null_inputs);
     RUN_TEST(layout_dead_code_classification);
     RUN_TEST(layout_coincident_nodes_bounded);
+
+    /* CBM Atlas region level */
+    RUN_TEST(layout_regions_two_communities);
+    RUN_TEST(layout_regions_scope_restricts_nodes);
 }
