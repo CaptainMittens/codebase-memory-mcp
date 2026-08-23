@@ -74,6 +74,7 @@ typedef struct {
     char ***region_files;   /* per region: owned file_path strings */
     int *region_file_count;
     long long total_nodes;
+    CBMHashTable *file_ht;  /* file_path (borrowed from region_files) → region+1 */
 } region_cache_t;
 
 static region_cache_t g_region_cache;
@@ -88,6 +89,7 @@ static void region_cache_clear_locked(void) {
     }
     free(g_region_cache.region_files);
     free(g_region_cache.region_file_count);
+    cbm_ht_free(g_region_cache.file_ht);
     memset(&g_region_cache, 0, sizeof(g_region_cache));
 }
 
@@ -999,6 +1001,7 @@ static int rg_rebuild_locked(cbm_store_t *store, const char *project, const char
                                          sizeof(char **));
     g_region_cache.region_file_count = calloc(b.region_count > 0 ? (size_t)b.region_count : 1,
                                               sizeof(int));
+    g_region_cache.file_ht = cbm_ht_create((uint32_t)(b.file_count > 0 ? b.file_count : 16));
     if (g_region_cache.region_files && g_region_cache.region_file_count) {
         for (int f = 0; f < b.file_count; f++) {
             int r = b.file_recs[f]->region;
@@ -1011,8 +1014,12 @@ static int rg_rebuild_locked(cbm_store_t *store, const char *project, const char
                 continue;
             g_region_cache.region_files[r] = grown;
             g_region_cache.region_files[r][idx] = rg_strdup(b.file_paths[f]);
-            if (g_region_cache.region_files[r][idx])
+            if (g_region_cache.region_files[r][idx]) {
                 g_region_cache.region_file_count[r] = idx + 1;
+                if (g_region_cache.file_ht)
+                    cbm_ht_set(g_region_cache.file_ht, g_region_cache.region_files[r][idx],
+                               (void *)(intptr_t)(r + 1));
+            }
         }
     }
     rg_build_free(&b);
@@ -1139,4 +1146,42 @@ cbm_layout_result_t *cbm_layout_compute_region(cbm_store_t *store, const char *p
     }
     free(nodes);
     return result;
+}
+
+/* ── Cache-backed region lookup for other Atlas services ──────── */
+
+int cbm_layout_region_for_file(cbm_store_t *store, const char *project, const char *file_path,
+                               char **name_out) {
+    if (name_out)
+        *name_out = NULL;
+    if (!store || !project || !file_path || !file_path[0])
+        return -1;
+    char key[1152];
+    region_cache_key(store, project, key, sizeof(key));
+    pthread_mutex_lock(&g_region_mu);
+    if (!rg_cache_fresh_locked(key) && rg_rebuild_locked(store, project, key) != 0) {
+        pthread_mutex_unlock(&g_region_mu);
+        return -1;
+    }
+    int found = -1;
+    if (g_region_cache.file_ht) {
+        void *slot = cbm_ht_get(g_region_cache.file_ht, file_path);
+        if (slot)
+            found = (int)(intptr_t)slot - 1;
+    }
+    if (found >= 0 && name_out && g_region_cache.json) {
+        /* Region names live in the serialized payload; re-parse the one we
+         * need rather than duplicating the name store. */
+        yyjson_doc *doc = yyjson_read(g_region_cache.json, strlen(g_region_cache.json), 0);
+        if (doc) {
+            yyjson_val *regions = yyjson_obj_get(yyjson_doc_get_root(doc), "regions");
+            yyjson_val *rv = yyjson_arr_get(regions, (size_t)found);
+            const char *name = yyjson_get_str(yyjson_obj_get(rv, "name"));
+            if (name)
+                *name_out = rg_strdup(name);
+            yyjson_doc_free(doc);
+        }
+    }
+    pthread_mutex_unlock(&g_region_mu);
+    return found;
 }

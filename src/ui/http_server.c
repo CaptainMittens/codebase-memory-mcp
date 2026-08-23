@@ -17,6 +17,7 @@
 #include "ui/httpd.h"
 #include "ui/embedded_assets.h"
 #include "ui/layout3d.h"
+#include "ui/atlas.h"
 #include "mcp/mcp.h"
 #include "store/store.h"
 #include "watcher/watcher.h"
@@ -1742,6 +1743,107 @@ static void handle_layout(cbm_http_conn_t *c, const cbm_http_req_t *req) {
     }
 }
 
+/* ── CBM Atlas data services (tree, symbol, flows) ────────────── */
+
+/* Open the query store for ?project=... or reply with the right error.
+ * Returns NULL after replying. */
+static cbm_store_t *atlas_open_project(cbm_http_conn_t *c, const cbm_http_req_t *req,
+                                       char *project, size_t project_cap) {
+    if (!cbm_http_query_param(req->query, "project", project, (int)project_cap) ||
+        project[0] == '\0') {
+        cbm_http_replyf(c, 400, g_cors_json, "{\"error\":\"missing project parameter\"}");
+        return NULL;
+    }
+    char db_path[1024];
+    db_path_for_project(project, db_path, sizeof(db_path));
+    if (!cbm_file_exists(db_path)) {
+        cbm_http_replyf(c, 404, g_cors_json, "{\"error\":\"project not found\"}");
+        return NULL;
+    }
+    cbm_store_t *store = cbm_store_open_path_query(db_path);
+    if (!store)
+        cbm_http_replyf(c, 500, g_cors_json, "{\"error\":\"cannot open store\"}");
+    return store;
+}
+
+static void atlas_reply_json(cbm_http_conn_t *c, char *json, int missing_status,
+                             const char *missing_body) {
+    if (!json) {
+        cbm_http_replyf(c, missing_status, g_cors_json, "%s", missing_body);
+        return;
+    }
+    cbm_http_replyf(c, 200, g_cors_json, "%s", json);
+    free(json);
+}
+
+/* GET /api/tree?project=X&path=src/foo — Modules aggregates. */
+static void handle_atlas_tree(cbm_http_conn_t *c, const cbm_http_req_t *req) {
+    char project[256] = {0};
+    cbm_store_t *store = atlas_open_project(c, req, project, sizeof(project));
+    if (!store)
+        return;
+    char path[512] = {0};
+    cbm_http_query_param(req->query, "path", path, (int)sizeof(path));
+    char *json = cbm_atlas_tree_json(store, project, path);
+    cbm_store_close(store);
+    atlas_reply_json(c, json, 500, "{\"error\":\"tree computation failed\"}");
+}
+
+/* GET /api/symbol?project=X&id=N (or &qn=...) — the symbol bundle. */
+static void handle_atlas_symbol(cbm_http_conn_t *c, const cbm_http_req_t *req) {
+    char project[256] = {0};
+    cbm_store_t *store = atlas_open_project(c, req, project, sizeof(project));
+    if (!store)
+        return;
+    char id_str[32] = {0};
+    char qn[1024] = {0};
+    char limit_str[16] = {0};
+    char offset_str[16] = {0};
+    int64_t id = -1;
+    if (cbm_http_query_param(req->query, "id", id_str, (int)sizeof(id_str)) && id_str[0])
+        id = strtoll(id_str, NULL, 10);
+    cbm_http_query_param(req->query, "qn", qn, (int)sizeof(qn));
+    int limit = 0, offset = 0;
+    if (cbm_http_query_param(req->query, "limit", limit_str, (int)sizeof(limit_str)))
+        limit = atoi(limit_str);
+    if (cbm_http_query_param(req->query, "offset", offset_str, (int)sizeof(offset_str)))
+        offset = atoi(offset_str);
+    if (id < 0 && qn[0] == '\0') {
+        cbm_store_close(store);
+        cbm_http_replyf(c, 400, g_cors_json, "{\"error\":\"missing id or qn parameter\"}");
+        return;
+    }
+    char *json = cbm_atlas_symbol_json(store, project, id, qn[0] ? qn : NULL, limit, offset);
+    cbm_store_close(store);
+    atlas_reply_json(c, json, 404, "{\"error\":\"symbol not found\"}");
+}
+
+/* GET /api/flows?project=X — ranked entry→terminal flows. */
+static void handle_atlas_flows(cbm_http_conn_t *c, const cbm_http_req_t *req) {
+    char project[256] = {0};
+    cbm_store_t *store = atlas_open_project(c, req, project, sizeof(project));
+    if (!store)
+        return;
+    char *json = cbm_atlas_flows_json(store, project);
+    cbm_store_close(store);
+    atlas_reply_json(c, json, 500, "{\"error\":\"flow computation failed\"}");
+}
+
+/* GET /api/flow?project=X&id=N — one flow's steps. */
+static void handle_atlas_flow(cbm_http_conn_t *c, const cbm_http_req_t *req) {
+    char project[256] = {0};
+    cbm_store_t *store = atlas_open_project(c, req, project, sizeof(project));
+    if (!store)
+        return;
+    char id_str[16] = {0};
+    int id = -1;
+    if (cbm_http_query_param(req->query, "id", id_str, (int)sizeof(id_str)))
+        id = atoi(id_str);
+    char *json = cbm_atlas_flow_json(store, project, id);
+    cbm_store_close(store);
+    atlas_reply_json(c, json, 404, "{\"error\":\"unknown flow\"}");
+}
+
 /* ── Handle JSON-RPC request ──────────────────────────────────── */
 
 static yyjson_val *json_unique_member(yyjson_val *object, const char *name) {
@@ -2014,6 +2116,30 @@ static void dispatch_request(cbm_http_server_t *srv, cbm_http_conn_t *c,
     /* GET /api/layout → 3D graph layout */
     if (is_get && cbm_http_path_match(req->path, "/api/layout*")) {
         handle_layout(c, req);
+        return;
+    }
+
+    /* GET /api/tree → CBM Atlas folder aggregates */
+    if (is_get && cbm_http_path_match(req->path, "/api/tree*")) {
+        handle_atlas_tree(c, req);
+        return;
+    }
+
+    /* GET /api/symbol → CBM Atlas symbol bundle */
+    if (is_get && cbm_http_path_match(req->path, "/api/symbol*")) {
+        handle_atlas_symbol(c, req);
+        return;
+    }
+
+    /* GET /api/flows → CBM Atlas flow list */
+    if (is_get && cbm_http_path_match(req->path, "/api/flows*")) {
+        handle_atlas_flows(c, req);
+        return;
+    }
+
+    /* GET /api/flow → one CBM Atlas flow */
+    if (is_get && cbm_http_path_match(req->path, "/api/flow?*")) {
+        handle_atlas_flow(c, req);
         return;
     }
 

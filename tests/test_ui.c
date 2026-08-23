@@ -10,6 +10,7 @@
 #include "ui/config.h"
 #include "ui/embedded_assets.h"
 #include "ui/layout3d.h"
+#include "ui/atlas.h"
 #include "store/store.h"
 
 #include <yyjson/yyjson.h>
@@ -1011,6 +1012,294 @@ TEST(layout_regions_scope_restricts_nodes) {
     PASS();
 }
 
+
+/* ── CBM Atlas services: tree, symbol bundle, flows ───────────── */
+
+/* The regions fixture plus: a docstring + entry flag on alpha_one, a test
+ * node TESTS-ing alpha_one, SIMILAR_TO across the communities, File nodes
+ * with a FILE_CHANGES_WITH edge, and one missed-coverage shadow file. */
+static cbm_store_t *atlas_fixture(int64_t *alpha_one_id_out) {
+    cbm_store_t *store = regions_fixture();
+    if (!store)
+        return NULL;
+    /* Find alpha_one / alpha_two / beta_two ids by qualified name. */
+    int64_t ids[3] = {-1, -1, -1};
+    static const char *qns[3] = {"regions-test::alpha_one", "regions-test::alpha_two",
+                                 "regions-test::beta_two"};
+    for (int i = 0; i < 3; i++) {
+        cbm_search_params_t params;
+        memset(&params, 0, sizeof(params));
+        params.project = "regions-test";
+        params.qn_pattern = qns[i];
+        params.limit = 1;
+        params.min_degree = -1;
+        params.max_degree = -1;
+        cbm_search_output_t out;
+        memset(&out, 0, sizeof(out));
+        if (cbm_store_search(store, &params, &out) == CBM_STORE_OK && out.count == 1)
+            ids[i] = out.results[0].node.id;
+        cbm_store_search_free(&out);
+    }
+    if (ids[0] < 0 || ids[1] < 0 || ids[2] < 0) {
+        cbm_store_close(store);
+        return NULL;
+    }
+    /* Re-upsert alpha_one with docstring + entry flag. */
+    cbm_node_t node;
+    memset(&node, 0, sizeof(node));
+    node.project = "regions-test";
+    node.label = "Function";
+    node.name = "alpha_one";
+    node.qualified_name = "regions-test::alpha_one";
+    node.file_path = "src/alpha/a1.c";
+    node.start_line = 1;
+    node.end_line = 5;
+    node.properties_json = "{\"docstring\":\"Entry of alpha.\",\"is_entry_point\":true}";
+    int64_t alpha_one_new = cbm_store_upsert_node(store, &node);
+    if (alpha_one_new > 0)
+        ids[0] = alpha_one_new;
+    if (alpha_one_id_out)
+        *alpha_one_id_out = ids[0];
+
+    /* A test node exercising alpha_one. */
+    memset(&node, 0, sizeof(node));
+    node.project = "regions-test";
+    node.label = "Function";
+    node.name = "test_alpha_one";
+    node.qualified_name = "regions-test::test_alpha_one";
+    node.file_path = "tests/test_alpha.c";
+    node.start_line = 1;
+    node.end_line = 9;
+    int64_t test_id = cbm_store_upsert_node(store, &node);
+
+    /* File nodes for co-change. */
+    int64_t file_ids[2];
+    static const char *files[2] = {"src/alpha/a1.c", "src/beta/b1.c"};
+    for (int i = 0; i < 2; i++) {
+        memset(&node, 0, sizeof(node));
+        node.project = "regions-test";
+        node.label = "File";
+        node.name = files[i];
+        char qn[128];
+        snprintf(qn, sizeof(qn), "regions-test::file::%d", i);
+        node.qualified_name = qn;
+        node.file_path = files[i];
+        file_ids[i] = cbm_store_upsert_node(store, &node);
+    }
+
+    cbm_edge_t edge;
+    memset(&edge, 0, sizeof(edge));
+    edge.project = "regions-test";
+    edge.source_id = test_id;
+    edge.target_id = ids[0];
+    edge.type = "TESTS";
+    cbm_store_insert_edge(store, &edge);
+
+    memset(&edge, 0, sizeof(edge));
+    edge.project = "regions-test";
+    edge.source_id = ids[1];
+    edge.target_id = ids[2];
+    edge.type = "SIMILAR_TO";
+    edge.properties_json = "{\"score\":0.91}";
+    cbm_store_insert_edge(store, &edge);
+
+    memset(&edge, 0, sizeof(edge));
+    edge.project = "regions-test";
+    edge.source_id = file_ids[0];
+    edge.target_id = file_ids[1];
+    edge.type = "FILE_CHANGES_WITH";
+    edge.properties_json = "{\"coupling_score\":0.66}";
+    cbm_store_insert_edge(store, &edge);
+
+    /* One not-fully-covered file in the coverage shadow project. */
+    char shadow[512];
+    cbm_store_coverage_shadow_project(shadow, sizeof(shadow), "regions-test");
+    cbm_store_upsert_project(store, shadow, "/tmp/regions-test");
+    memset(&node, 0, sizeof(node));
+    node.project = shadow;
+    node.label = "File";
+    node.name = "gen.sql";
+    node.qualified_name = "regions-test::missed::gen.sql";
+    node.file_path = "src/alpha/gen.sql";
+    cbm_store_upsert_node(store, &node);
+
+    return store;
+}
+
+TEST(atlas_tree_aggregates_children) {
+    cbm_layout_regions_cache_clear();
+    cbm_store_t *store = atlas_fixture(NULL);
+    ASSERT_NOT_NULL(store);
+
+    char *json = cbm_atlas_tree_json(store, "regions-test", "src");
+    ASSERT_NOT_NULL(json);
+    yyjson_doc *doc = yyjson_read(json, strlen(json), 0);
+    ASSERT_NOT_NULL(doc);
+    yyjson_val *root = yyjson_doc_get_root(doc);
+    yyjson_val *children = yyjson_obj_get(root, "children");
+    bool saw_alpha = false, saw_beta = false;
+    size_t idx, max;
+    yyjson_val *child;
+    yyjson_arr_foreach(children, idx, max, child) {
+        const char *name = yyjson_get_str(yyjson_obj_get(child, "name"));
+        const char *kind = yyjson_get_str(yyjson_obj_get(child, "kind"));
+        if (name && strcmp(name, "alpha") == 0) {
+            saw_alpha = true;
+            ASSERT_STR_EQ(kind, "dir");
+            /* 2 code files + the File node's own row groups by file_path:
+             * a1.c has 2 fns + File node = 3 symbols, a2.c has 1. */
+            ASSERT_EQ((int)yyjson_get_int(yyjson_obj_get(child, "files")), 2);
+            ASSERT_GT((int)yyjson_get_int(yyjson_obj_get(child, "symbols")), 3);
+            /* The shadow file src/alpha/gen.sql marks alpha as missed. */
+            ASSERT_EQ((int)yyjson_get_int(yyjson_obj_get(child, "missed")), 1);
+        }
+        if (name && strcmp(name, "beta") == 0)
+            saw_beta = true;
+    }
+    ASSERT_TRUE(saw_alpha);
+    ASSERT_TRUE(saw_beta);
+    yyjson_doc_free(doc);
+    free(json);
+    cbm_store_close(store);
+    cbm_layout_regions_cache_clear();
+    PASS();
+}
+
+TEST(atlas_symbol_bundle_totals_and_sections) {
+    cbm_layout_regions_cache_clear();
+    int64_t alpha_one = -1;
+    cbm_store_t *store = atlas_fixture(&alpha_one);
+    ASSERT_NOT_NULL(store);
+    ASSERT_GT(alpha_one, 0);
+
+    char *json = cbm_atlas_symbol_json(store, "regions-test", alpha_one, NULL, 2, 0);
+    ASSERT_NOT_NULL(json);
+    yyjson_doc *doc = yyjson_read(json, strlen(json), 0);
+    ASSERT_NOT_NULL(doc);
+    yyjson_val *root = yyjson_doc_get_root(doc);
+
+    yyjson_val *node = yyjson_obj_get(root, "node");
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(node, "name")), "alpha_one");
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(node, "docstring")), "Entry of alpha.");
+    ASSERT_TRUE(yyjson_get_bool(yyjson_obj_get(node, "is_entry")));
+
+    /* Region membership resolved from the cache. */
+    yyjson_val *region = yyjson_obj_get(root, "region");
+    ASSERT_NOT_NULL(region);
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(region, "name")), "src/alpha");
+
+    /* Callees: 3 CALLS total, page of 2 → items 2, total 3. */
+    yyjson_val *callees = yyjson_obj_get(root, "callees");
+    ASSERT_EQ((int)yyjson_get_int(yyjson_obj_get(callees, "total")), 3);
+    ASSERT_EQ((int)yyjson_arr_size(yyjson_obj_get(callees, "items")), 2);
+    ASSERT_EQ((int)yyjson_get_int(
+                  yyjson_obj_get(yyjson_obj_get(callees, "by_type"), "CALLS")),
+              3);
+
+    /* Callers: alpha_three only. */
+    yyjson_val *callers = yyjson_obj_get(root, "callers");
+    ASSERT_EQ((int)yyjson_get_int(yyjson_obj_get(callers, "total")), 1);
+
+    /* Tests / co-change / similar sections carry the fixture rows. */
+    ASSERT_EQ((int)yyjson_arr_size(yyjson_obj_get(root, "tests")), 1);
+    yyjson_val *cochange = yyjson_obj_get(root, "co_change");
+    ASSERT_EQ((int)yyjson_arr_size(cochange), 1);
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(yyjson_arr_get(cochange, 0), "file_path")),
+                  "src/beta/b1.c");
+
+    yyjson_doc_free(doc);
+    free(json);
+
+    /* qn lookup resolves the same node. */
+    char *by_qn =
+        cbm_atlas_symbol_json(store, "regions-test", -1, "regions-test::alpha_one", 10, 0);
+    ASSERT_NOT_NULL(by_qn);
+    free(by_qn);
+    /* Unknown symbol → NULL. */
+    ASSERT_NULL(cbm_atlas_symbol_json(store, "regions-test", 999999, NULL, 10, 0));
+
+    cbm_store_close(store);
+    cbm_layout_regions_cache_clear();
+    PASS();
+}
+
+TEST(atlas_flows_walk_and_rank) {
+    cbm_layout_regions_cache_clear();
+    cbm_atlas_flows_cache_clear();
+    cbm_store_t *store = atlas_fixture(NULL);
+    ASSERT_NOT_NULL(store);
+
+    char *json = cbm_atlas_flows_json(store, "regions-test");
+    ASSERT_NOT_NULL(json);
+    yyjson_doc *doc = yyjson_read(json, strlen(json), 0);
+    ASSERT_NOT_NULL(doc);
+    yyjson_val *root = yyjson_doc_get_root(doc);
+    yyjson_val *flows = yyjson_obj_get(root, "flows");
+    ASSERT_GT((int)yyjson_arr_size(flows), 0);
+
+    /* The flagged entry (alpha_one) must lead the ranking's entries. */
+    bool alpha_flow = false;
+    int alpha_flow_id = -1;
+    size_t idx, max;
+    yyjson_val *flow;
+    yyjson_arr_foreach(flows, idx, max, flow) {
+        yyjson_val *entry = yyjson_obj_get(flow, "entry");
+        const char *entry_name = yyjson_get_str(yyjson_obj_get(entry, "name"));
+        if (entry_name && strcmp(entry_name, "alpha_one") == 0) {
+            alpha_flow = true;
+            alpha_flow_id = (int)yyjson_get_int(yyjson_obj_get(flow, "id"));
+            ASSERT_GT((int)yyjson_get_int(yyjson_obj_get(flow, "steps")), 2);
+            ASSERT_TRUE(yyjson_get_bool(yyjson_obj_get(flow, "cross_region")));
+        }
+    }
+    ASSERT_TRUE(alpha_flow);
+    yyjson_doc_free(doc);
+    free(json);
+
+    /* Flow detail: coherent DFS structure (parent before child, depths). */
+    char *detail = cbm_atlas_flow_json(store, "regions-test", alpha_flow_id);
+    ASSERT_NOT_NULL(detail);
+    yyjson_doc *ddoc = yyjson_read(detail, strlen(detail), 0);
+    ASSERT_NOT_NULL(ddoc);
+    yyjson_val *steps = yyjson_obj_get(yyjson_doc_get_root(ddoc), "steps");
+    int nsteps = (int)yyjson_arr_size(steps);
+    ASSERT_GT(nsteps, 2);
+    for (int i = 0; i < nsteps; i++) {
+        yyjson_val *step = yyjson_arr_get(steps, (size_t)i);
+        int parent = (int)yyjson_get_int(yyjson_obj_get(step, "parent"));
+        int depth = (int)yyjson_get_int(yyjson_obj_get(step, "depth"));
+        if (i == 0) {
+            ASSERT_EQ(parent, -1);
+            ASSERT_EQ(depth, 0);
+        } else {
+            ASSERT_GT(parent, -1);
+            ASSERT_TRUE(parent < i);
+            yyjson_val *pstep = yyjson_arr_get(steps, (size_t)parent);
+            ASSERT_EQ(depth, (int)yyjson_get_int(yyjson_obj_get(pstep, "depth")) + 1);
+        }
+    }
+    yyjson_doc_free(ddoc);
+    free(detail);
+
+    /* Determinism: fresh cache → byte-identical list. */
+    char *again = NULL;
+    cbm_atlas_flows_cache_clear();
+    again = cbm_atlas_flows_json(store, "regions-test");
+    ASSERT_NOT_NULL(again);
+    char *first = cbm_atlas_flows_json(store, "regions-test");
+    ASSERT_STR_EQ(again, first);
+    free(again);
+    free(first);
+
+    /* Unknown flow id → NULL. */
+    ASSERT_NULL(cbm_atlas_flow_json(store, "regions-test", 9999));
+
+    cbm_store_close(store);
+    cbm_atlas_flows_cache_clear();
+    cbm_layout_regions_cache_clear();
+    PASS();
+}
+
 /* ── Suite ────────────────────────────────────────────────────── */
 
 SUITE(ui) {
@@ -1042,4 +1331,9 @@ SUITE(ui) {
     /* CBM Atlas region level */
     RUN_TEST(layout_regions_two_communities);
     RUN_TEST(layout_regions_scope_restricts_nodes);
+
+    /* CBM Atlas services */
+    RUN_TEST(atlas_tree_aggregates_children);
+    RUN_TEST(atlas_symbol_bundle_totals_and_sections);
+    RUN_TEST(atlas_flows_walk_and_rank);
 }
