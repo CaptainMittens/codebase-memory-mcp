@@ -7,6 +7,7 @@ import { ModulesTab } from "./components/ModulesTab";
 import { SymbolTab } from "./components/SymbolTab";
 import { FlowsTab } from "./components/FlowsTab";
 import { ChangesTab } from "./components/ChangesTab";
+import { DashboardTab } from "./components/DashboardTab";
 import { CommandK } from "./components/CommandK";
 import {
   PromptBasketProvider,
@@ -21,13 +22,14 @@ const TAB_IDS: TabId[] = [
   "graph",
   "flows",
   "changes",
+  "dashboard",
   "symbol",
   "stats",
   "control",
 ];
 
 /* Tabs that need a selected project. "symbol" is reachable only via links. */
-const PROJECT_TABS: TabId[] = ["overview", "modules", "graph", "flows", "changes"];
+const PROJECT_TABS: TabId[] = ["overview", "modules", "graph", "flows", "changes", "dashboard"];
 
 interface RouteState {
   tab: TabId;
@@ -137,6 +139,7 @@ export function App() {
     { id: "graph", label: "Galaxy" },
     { id: "flows", label: "Flows" },
     { id: "changes", label: "Changes" },
+    { id: "dashboard", label: "Dashboard" },
     { id: "stats", label: t.tabs.projects },
     { id: "control", label: t.tabs.control },
   ];
@@ -251,6 +254,11 @@ export function App() {
             />
           ) : activeTab === "changes" && selectedProject ? (
             <ChangesTab project={selectedProject} onOpenSymbol={openSymbol} />
+          ) : activeTab === "dashboard" && selectedProject ? (
+            <DashboardTab
+              project={selectedProject}
+              onOpenSymbol={(ref) => openSymbol(ref)}
+            />
           ) : activeTab === "symbol" && selectedProject && symbolRef ? (
             <SymbolTab
               project={selectedProject}

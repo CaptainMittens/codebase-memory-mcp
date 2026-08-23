@@ -36,6 +36,15 @@ char *cbm_atlas_flow_json(cbm_store_t *store, const char *project, int flow_id);
 /* Drop the flows cache (tests). */
 void cbm_atlas_flows_cache_clear(void);
 
+/* ── Dashboard metrics (GET /api/metrics) ─────────────────────────
+ * Graph-derived metrics with drill-down lists: complexity/length
+ * histograms and tops (from pass_complexity's stored numbers), edge
+ * certainty, dead code, tests/duplication/missed counts, per-file churn
+ * from a bounded `git log` (zero indexing cost), churn×complexity, and a
+ * per-index history sidecar for trends. Cached per (project, indexed_at). */
+char *cbm_atlas_metrics_json(cbm_store_t *store, const char *project);
+void cbm_atlas_metrics_cache_clear(void);
+
 /* ── Region lookups (layout_regions.c) ────────────────────────────
  * Cache-backed; computing on first use. name_out (optional) receives a
  * heap copy the caller frees. Returns region id or -1. */

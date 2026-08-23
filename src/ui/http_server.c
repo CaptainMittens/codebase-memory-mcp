@@ -1818,6 +1818,17 @@ static void handle_atlas_symbol(cbm_http_conn_t *c, const cbm_http_req_t *req) {
     atlas_reply_json(c, json, 404, "{\"error\":\"symbol not found\"}");
 }
 
+/* GET /api/metrics?project=X — the Dashboard payload. */
+static void handle_atlas_metrics(cbm_http_conn_t *c, const cbm_http_req_t *req) {
+    char project[256] = {0};
+    cbm_store_t *store = atlas_open_project(c, req, project, sizeof(project));
+    if (!store)
+        return;
+    char *json = cbm_atlas_metrics_json(store, project);
+    cbm_store_close(store);
+    atlas_reply_json(c, json, 500, "{\"error\":\"metrics computation failed\"}");
+}
+
 /* GET /api/flows?project=X — ranked entry→terminal flows. */
 static void handle_atlas_flows(cbm_http_conn_t *c, const cbm_http_req_t *req) {
     char project[256] = {0};
@@ -2128,6 +2139,12 @@ static void dispatch_request(cbm_http_server_t *srv, cbm_http_conn_t *c,
     /* GET /api/symbol → CBM Atlas symbol bundle */
     if (is_get && cbm_http_path_match(req->path, "/api/symbol*")) {
         handle_atlas_symbol(c, req);
+        return;
+    }
+
+    /* GET /api/metrics → CBM Atlas dashboard payload */
+    if (is_get && cbm_http_path_match(req->path, "/api/metrics*")) {
+        handle_atlas_metrics(c, req);
         return;
     }
 

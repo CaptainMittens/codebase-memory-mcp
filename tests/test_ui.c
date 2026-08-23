@@ -1300,6 +1300,51 @@ TEST(atlas_flows_walk_and_rank) {
     PASS();
 }
 
+TEST(atlas_metrics_totals_and_certainty) {
+    cbm_layout_regions_cache_clear();
+    cbm_atlas_metrics_cache_clear();
+    cbm_store_t *store = atlas_fixture(NULL);
+    ASSERT_NOT_NULL(store);
+
+    char *json = cbm_atlas_metrics_json(store, "regions-test");
+    ASSERT_NOT_NULL(json);
+    yyjson_doc *doc = yyjson_read(json, strlen(json), 0);
+    ASSERT_NOT_NULL(doc);
+    yyjson_val *root = yyjson_doc_get_root(doc);
+
+    yyjson_val *totals = yyjson_obj_get(root, "totals");
+    /* 6 fixture functions + test_alpha_one. */
+    ASSERT_EQ((int)yyjson_get_int(yyjson_obj_get(totals, "callables")), 7);
+    /* test_alpha_one has no callers but is in a test path — flags absent, so
+     * it counts as dead alongside beta callables the cycle keeps alive;
+     * alpha_one is entry-flagged and beta_* all have inbound CALLS: only the
+     * test function has zero inbound call-ish edges. */
+    ASSERT_EQ((int)yyjson_get_int(yyjson_obj_get(totals, "dead")), 1);
+    ASSERT_EQ((int)yyjson_get_int(yyjson_obj_get(totals, "tested_symbols")), 1);
+    ASSERT_EQ((int)yyjson_get_int(yyjson_obj_get(totals, "similar_edges")), 1);
+    ASSERT_EQ((int)yyjson_get_int(yyjson_obj_get(totals, "missed_files")), 1);
+
+    yyjson_val *certainty = yyjson_obj_get(root, "certainty");
+    ASSERT_EQ((int)yyjson_get_int(yyjson_obj_get(certainty, "calls")), 9);
+
+    /* Histograms cover every callable exactly once. */
+    yyjson_val *hist = yyjson_obj_get(root, "complexity_hist");
+    long long sum = 0;
+    size_t idx, max;
+    yyjson_val *bucket;
+    yyjson_arr_foreach(hist, idx, max, bucket) sum += yyjson_get_int(bucket);
+    ASSERT_EQ((int)sum, 7);
+
+    ASSERT_NOT_NULL(yyjson_obj_get(root, "history"));
+
+    yyjson_doc_free(doc);
+    free(json);
+    cbm_store_close(store);
+    cbm_atlas_metrics_cache_clear();
+    cbm_layout_regions_cache_clear();
+    PASS();
+}
+
 /* ── Suite ────────────────────────────────────────────────────── */
 
 SUITE(ui) {
@@ -1336,4 +1381,5 @@ SUITE(ui) {
     RUN_TEST(atlas_tree_aggregates_children);
     RUN_TEST(atlas_symbol_bundle_totals_and_sections);
     RUN_TEST(atlas_flows_walk_and_rank);
+    RUN_TEST(atlas_metrics_totals_and_certainty);
 }

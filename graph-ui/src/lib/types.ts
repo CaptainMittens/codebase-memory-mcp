@@ -119,6 +119,7 @@ export type TabId =
   | "graph"
   | "flows"
   | "changes"
+  | "dashboard"
   | "symbol"
   | "stats"
   | "control";
