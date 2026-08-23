@@ -10,6 +10,10 @@ const TAB_IDS: TabId[] = ["graph", "stats", "control"];
 interface RouteState {
   tab: TabId;
   project: string | null;
+  /* Deep links: a selected node and/or an opened region survive reloads and
+   * can be shared (#564). Values are the server-assigned ids. */
+  node: string | null;
+  region: string | null;
 }
 
 /* Read the active tab + selected project from the URL query string so the
@@ -19,14 +23,28 @@ function readRoute(): RouteState {
   const rawTab = params.get("tab");
   const tab = TAB_IDS.includes(rawTab as TabId) ? (rawTab as TabId) : "stats";
   const project = params.get("project");
-  return { tab, project: project ? project : null };
+  const node = params.get("node");
+  const region = params.get("region");
+  return {
+    tab,
+    project: project ? project : null,
+    node: node ? node : null,
+    region: region ? region : null,
+  };
 }
 
 /* Build the canonical URL for a route, preserving the path and hash. */
-function routeUrl(tab: TabId, project: string | null): string {
+function routeUrl(
+  tab: TabId,
+  project: string | null,
+  node?: string | null,
+  region?: string | null,
+): string {
   const params = new URLSearchParams();
   params.set("tab", tab);
   if (project) params.set("project", project);
+  if (region) params.set("region", region);
+  if (node) params.set("node", node);
   return `${window.location.pathname}?${params.toString()}${window.location.hash}`;
 }
 
@@ -38,7 +56,11 @@ export function App() {
   /* Normalize the URL on first load so it always carries the current route. */
   useEffect(() => {
     const initial = readRoute();
-    window.history.replaceState(null, "", routeUrl(initial.tab, initial.project));
+    window.history.replaceState(
+      null,
+      "",
+      routeUrl(initial.tab, initial.project, initial.node, initial.region),
+    );
   }, []);
 
   /* Sync state when the user navigates with the browser back/forward buttons. */
@@ -49,13 +71,21 @@ export function App() {
   }, []);
 
   /* Change the route and push a history entry (skips no-op navigations). */
-  const navigate = useCallback((tab: TabId, project: string | null) => {
-    const url = routeUrl(tab, project);
-    const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-    if (url === current) return;
-    window.history.pushState(null, "", url);
-    setRoute({ tab, project });
-  }, []);
+  const navigate = useCallback(
+    (
+      tab: TabId,
+      project: string | null,
+      node: string | null = null,
+      region: string | null = null,
+    ) => {
+      const url = routeUrl(tab, project, node, region);
+      const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+      if (url === current) return;
+      window.history.pushState(null, "", url);
+      setRoute({ tab, project, node, region });
+    },
+    [],
+  );
 
   const tabs: { id: TabId; label: string }[] = [
     { id: "graph", label: t.tabs.graph },
@@ -71,7 +101,7 @@ export function App() {
           <div className="flex items-center gap-2.5">
             <div className="w-[7px] h-[7px] rounded-full bg-primary" />
             <span className="text-[13px] font-semibold text-foreground/90 tracking-tight">
-              Codebase Memory
+              CBM Atlas
             </span>
           </div>
 
@@ -121,7 +151,14 @@ export function App() {
       {/* Content */}
       <main className="flex-1 min-h-0">
         {activeTab === "graph" ? (
-          <GraphTab project={selectedProject} />
+          <GraphTab
+            project={selectedProject}
+            routeNode={route.node}
+            routeRegion={route.region}
+            onRouteChange={(node, region) =>
+              navigate("graph", selectedProject, node, region)
+            }
+          />
         ) : activeTab === "control" ? (
           <ControlTab />
         ) : (

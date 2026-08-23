@@ -6,6 +6,9 @@ import { useUiMessages } from "../lib/i18n";
 interface SidebarProps {
   nodes: GraphNode[];
   onSelectPath: (path: string, nodeIds: Set<number>) => void;
+  /* #1197: clicking a symbol row selects the node itself — highlight in the
+   * scene AND the detail panel, exactly like clicking its 3D point. */
+  onSelectNode: (node: GraphNode) => void;
   selectedPath: string | null;
 }
 
@@ -59,9 +62,10 @@ function flattenSingleChild(dir: DirNode): DirNode {
   return { ...dir, children };
 }
 
-function TreeItem({ dir, depth, onSelect, selectedPath }: {
+function TreeItem({ dir, depth, onSelect, onSelectNode, selectedPath }: {
   dir: DirNode; depth: number;
   onSelect: (path: string, ids: Set<number>) => void;
+  onSelectNode: (node: GraphNode) => void;
   selectedPath: string | null;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -86,11 +90,11 @@ function TreeItem({ dir, depth, onSelect, selectedPath }: {
       </button>
       {expanded && (
         <>
-          {sorted.map((c) => <TreeItem key={c.fullPath} dir={c} depth={depth+1} onSelect={onSelect} selectedPath={selectedPath} />)}
+          {sorted.map((c) => <TreeItem key={c.fullPath} dir={c} depth={depth+1} onSelect={onSelect} onSelectNode={onSelectNode} selectedPath={selectedPath} />)}
           {sortedNodes.map((gn) => (
             <button
               key={gn.id}
-              onClick={() => onSelect(dir.fullPath + "/" + gn.name, new Set([gn.id]))}
+              onClick={() => onSelectNode(gn)}
               className="flex items-center gap-1.5 w-full text-left px-3 py-[3px] text-[11px] text-foreground/40 hover:text-foreground/60 hover:bg-white/[0.02] transition-colors"
               style={{ paddingLeft: `${(depth+1) * 16 + 12}px` }}
             >
@@ -105,7 +109,7 @@ function TreeItem({ dir, depth, onSelect, selectedPath }: {
   );
 }
 
-export function Sidebar({ nodes, onSelectPath, selectedPath }: SidebarProps) {
+export function Sidebar({ nodes, onSelectPath, onSelectNode, selectedPath }: SidebarProps) {
   const t = useUiMessages();
   const [search, setSearch] = useState("");
   const tree = useMemo(() => flattenSingleChild(buildFileTree(nodes)), [nodes]);
@@ -148,7 +152,7 @@ export function Sidebar({ nodes, onSelectPath, selectedPath }: SidebarProps) {
               filtered.map((n) => (
                 <button
                   key={n.id}
-                  onClick={() => onSelectPath(n.file_path ?? "", new Set([n.id]))}
+                  onClick={() => onSelectNode(n)}
                   className="flex items-center gap-2 w-full text-left px-4 py-1.5 text-[11px] hover:bg-white/[0.03] transition-colors"
                 >
                   <span className="w-[5px] h-[5px] rounded-full shrink-0" style={{ backgroundColor: n.color }} />
@@ -158,7 +162,7 @@ export function Sidebar({ nodes, onSelectPath, selectedPath }: SidebarProps) {
               ))
             )
           ) : (
-            topLevel.map((c) => <TreeItem key={c.fullPath} dir={c} depth={0} onSelect={onSelectPath} selectedPath={selectedPath} />)
+            topLevel.map((c) => <TreeItem key={c.fullPath} dir={c} depth={0} onSelect={onSelectPath} onSelectNode={onSelectNode} selectedPath={selectedPath} />)
           )}
         </div>
       </ScrollArea>

@@ -67,6 +67,39 @@ export interface GraphData {
   missed_graph?: MissedGraph;
 }
 
+/* Region level of detail (level=regions): one body per region — Leiden call
+ * communities voted per file, folder groups as fallback (layout_regions.c). */
+export interface Region {
+  id: number;
+  name: string;
+  hub?: string;
+  why?: string;
+  files: number;
+  members: number;
+  cohesion: number;
+  top_nodes: string[];
+  x: number;
+  y: number;
+  z: number;
+  size: number;
+  color: string;
+}
+
+export interface RegionEdge {
+  source: number;
+  target: number;
+  weight: number;
+}
+
+export interface RegionsPayload {
+  level: "regions";
+  method: string;
+  total_nodes: number;
+  unmapped_nodes: number;
+  regions: Region[];
+  edges: RegionEdge[];
+}
+
 export interface Project {
   name: string;
   root_path: string;

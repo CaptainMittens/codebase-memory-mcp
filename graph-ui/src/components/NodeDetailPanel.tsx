@@ -1,4 +1,7 @@
 import { useMemo, useState, useEffect } from "react";
+
+/* #1198: connections render in slices the user grows — never a silent cap. */
+export const CONNECTIONS_PAGE_SIZE = 25;
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { colorForLabel } from "../lib/colors";
 import { callTool } from "../api/rpc";
@@ -206,6 +209,44 @@ export function NodeDetailPanel({
   );
 }
 
+function ConnectionGroup({ type, conns, icon, onNavigate }: {
+  type: string; conns: Connection[]; icon: string;
+  onNavigate: (n: GraphNode) => void;
+}) {
+  const [visible, setVisible] = useState(CONNECTIONS_PAGE_SIZE);
+  useEffect(() => setVisible(CONNECTIONS_PAGE_SIZE), [type, conns.length]);
+  const remaining = conns.length - visible;
+  return (
+    <div className="mb-2">
+      <p className="text-[9px] text-foreground/20 uppercase tracking-wider mb-1 font-medium">
+        {type.replace(/_/g, " ").toLowerCase()}
+      </p>
+      <div className="space-y-px">
+        {conns.slice(0, visible).map((c, i) => (
+          <button
+            key={`${c.node.id}-${i}`}
+            onClick={() => onNavigate(c.node)}
+            className="flex items-center gap-1.5 w-full text-left px-2 py-[4px] rounded-md hover:bg-white/[0.04] text-[11px] transition-colors group"
+          >
+            <span className="text-foreground/15 text-[10px] group-hover:text-foreground/30">{icon}</span>
+            <span className="w-[5px] h-[5px] rounded-full shrink-0" style={{ backgroundColor: colorForLabel(c.node.label) }} />
+            <span className="text-foreground/55 group-hover:text-foreground/80 truncate">{c.node.name}</span>
+            <span className="text-foreground/10 ml-auto text-[10px] shrink-0">{c.node.label}</span>
+          </button>
+        ))}
+        {remaining > 0 && (
+          <button
+            onClick={() => setVisible((v) => v + 200)}
+            className="w-full text-left px-2 py-1 text-[10px] text-primary/70 hover:text-primary transition-colors"
+          >
+            Show {Math.min(remaining, 200)} more ({remaining} hidden)
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ConnectionSection({ title, count, icon, groups, onNavigate }: {
   title: string; count: number; icon: string;
   groups: [string, Connection[]][];
@@ -217,28 +258,7 @@ function ConnectionSection({ title, count, icon, groups, onNavigate }: {
         {title} <span className="text-foreground/15">({count})</span>
       </p>
       {groups.map(([type, conns]) => (
-        <div key={type} className="mb-2">
-          <p className="text-[9px] text-foreground/20 uppercase tracking-wider mb-1 font-medium">
-            {type.replace(/_/g, " ").toLowerCase()}
-          </p>
-          <div className="space-y-px">
-            {conns.slice(0, 25).map((c, i) => (
-              <button
-                key={`${c.node.id}-${i}`}
-                onClick={() => onNavigate(c.node)}
-                className="flex items-center gap-1.5 w-full text-left px-2 py-[4px] rounded-md hover:bg-white/[0.04] text-[11px] transition-colors group"
-              >
-                <span className="text-foreground/15 text-[10px] group-hover:text-foreground/30">{icon}</span>
-                <span className="w-[5px] h-[5px] rounded-full shrink-0" style={{ backgroundColor: colorForLabel(c.node.label) }} />
-                <span className="text-foreground/55 group-hover:text-foreground/80 truncate">{c.node.name}</span>
-                <span className="text-foreground/10 ml-auto text-[10px] shrink-0">{c.node.label}</span>
-              </button>
-            ))}
-            {conns.length > 25 && (
-              <p className="text-[10px] text-foreground/15 px-2 py-1">+{conns.length - 25} more</p>
-            )}
-          </div>
-        </div>
+        <ConnectionGroup key={type} type={type} conns={conns} icon={icon} onNavigate={onNavigate} />
       ))}
     </div>
   );
