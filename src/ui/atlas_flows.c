@@ -140,6 +140,10 @@ static bool fl_entryish_name(const char *name) {
 }
 
 static int fl_score(const flow_node_t *node) {
+    /* Tests are journeys into the code, not of it: a test function is never
+     * an interesting entry unless the indexer flagged it as a real one. */
+    if (!node->flagged_entry && node->file_path && cbm_is_test_file_path(node->file_path))
+        return 0;
     int score = 0;
     if (node->flagged_entry)
         score += 4;
