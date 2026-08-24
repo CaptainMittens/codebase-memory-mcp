@@ -1497,6 +1497,162 @@ TEST(atlas_scent_buckets_matches_by_region) {
     PASS();
 }
 
+TEST(atlas_bridges_rank_by_region_reach) {
+    cbm_layout_regions_cache_clear();
+    cbm_store_t *store = atlas_fixture(NULL);
+    ASSERT_NOT_NULL(store);
+
+    /* The fixture's one cross-region CALLS edge is alpha_one → beta_one, so
+     * both endpoints are boundary spanners touching exactly one foreign
+     * region; nothing else qualifies (test_alpha_one has a TESTS edge, not
+     * CALLS). */
+    char *json = cbm_atlas_bridges_json(store, "regions-test");
+    ASSERT_NOT_NULL(json);
+    yyjson_doc *doc = yyjson_read(json, strlen(json), 0);
+    ASSERT_NOT_NULL(doc);
+    yyjson_val *root = yyjson_doc_get_root(doc);
+    yyjson_val *bridges = yyjson_obj_get(root, "bridges");
+    ASSERT_NOT_NULL(bridges);
+    /* regions < 2 rows are dropped: with one cross pair each node touches
+     * exactly 1 foreign region, so the honest answer is an empty list. */
+    ASSERT_EQ((int)yyjson_arr_size(bridges), 0);
+    yyjson_doc_free(doc);
+    free(json);
+
+    /* A third dense community (mirroring the beta pattern: a 3-cycle plus
+     * exactly one inbound cross call) so alpha_one spans TWO foreign
+     * regions. A single linked node would be absorbed into alpha's own
+     * Leiden community and prove nothing. */
+    int64_t gamma_ids[3] = {0, 0, 0};
+    for (int i = 0; i < 3; i++) {
+        cbm_node_t node;
+        memset(&node, 0, sizeof(node));
+        node.project = "regions-test";
+        node.label = "Function";
+        char name[32], qn[64], fp[32];
+        snprintf(name, sizeof(name), "gamma_%d", i + 1);
+        snprintf(qn, sizeof(qn), "regions-test::gamma_%d", i + 1);
+        snprintf(fp, sizeof(fp), "src/gamma/g%d.c", i + 1);
+        node.name = name;
+        node.qualified_name = qn;
+        node.file_path = fp;
+        node.start_line = 1;
+        node.end_line = 3;
+        gamma_ids[i] = cbm_store_upsert_node(store, &node);
+        ASSERT_GT(gamma_ids[i], 0);
+    }
+    for (int i = 0; i < 3; i++) {
+        cbm_edge_t gedge;
+        memset(&gedge, 0, sizeof(gedge));
+        gedge.project = "regions-test";
+        gedge.source_id = gamma_ids[i];
+        gedge.target_id = gamma_ids[(i + 1) % 3];
+        gedge.type = "CALLS";
+        ASSERT_GT(cbm_store_insert_edge(store, &gedge), 0);
+    }
+    int64_t gamma_id = gamma_ids[0];
+
+    int64_t alpha_id = -1;
+    {
+        cbm_search_params_t params;
+        memset(&params, 0, sizeof(params));
+        params.project = "regions-test";
+        params.qn_pattern = "regions-test::alpha_one";
+        params.limit = 1;
+        params.min_degree = -1;
+        params.max_degree = -1;
+        cbm_search_output_t out;
+        memset(&out, 0, sizeof(out));
+        ASSERT_EQ(cbm_store_search(store, &params, &out), CBM_STORE_OK);
+        ASSERT_EQ(out.count, 1);
+        alpha_id = out.results[0].node.id;
+        cbm_store_search_free(&out);
+    }
+    cbm_edge_t edge;
+    memset(&edge, 0, sizeof(edge));
+    edge.project = "regions-test";
+    edge.source_id = alpha_id;
+    edge.target_id = gamma_id;
+    edge.type = "CALLS";
+    ASSERT_GT(cbm_store_insert_edge(store, &edge), 0);
+    cbm_layout_regions_cache_clear(); /* region map must include src/gamma */
+
+    json = cbm_atlas_bridges_json(store, "regions-test");
+    ASSERT_NOT_NULL(json);
+    doc = yyjson_read(json, strlen(json), 0);
+    root = yyjson_doc_get_root(doc);
+    bridges = yyjson_obj_get(root, "bridges");
+    ASSERT_GT((int)yyjson_arr_size(bridges), 0);
+    yyjson_val *top = yyjson_arr_get(bridges, 0);
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(top, "name")), "alpha_one");
+    ASSERT_EQ((int)yyjson_get_int(yyjson_obj_get(top, "regions")), 2);
+    yyjson_doc_free(doc);
+    free(json);
+
+    cbm_store_close(store);
+    cbm_layout_regions_cache_clear();
+    PASS();
+}
+
+TEST(atlas_symbol_overflow_tail_and_dataflow_presence) {
+    cbm_layout_regions_cache_clear();
+    cbm_atlas_metrics_cache_clear();
+    int64_t alpha_one = -1;
+    cbm_store_t *store = atlas_fixture(&alpha_one);
+    ASSERT_NOT_NULL(store);
+
+    /* limit=1 on beta_one's callers (alpha_one crosses in, beta_three
+     * closes the cycle) forces an overflow tail grouped by file. */
+    int64_t beta_one = -1;
+    {
+        cbm_search_params_t params;
+        memset(&params, 0, sizeof(params));
+        params.project = "regions-test";
+        params.qn_pattern = "regions-test::beta_one";
+        params.limit = 1;
+        params.min_degree = -1;
+        params.max_degree = -1;
+        cbm_search_output_t out;
+        memset(&out, 0, sizeof(out));
+        ASSERT_EQ(cbm_store_search(store, &params, &out), CBM_STORE_OK);
+        ASSERT_EQ(out.count, 1);
+        beta_one = out.results[0].node.id;
+        cbm_store_search_free(&out);
+    }
+    char *json = cbm_atlas_symbol_json(store, "regions-test", beta_one, NULL, 1, 0);
+    ASSERT_NOT_NULL(json);
+    yyjson_doc *doc = yyjson_read(json, strlen(json), 0);
+    ASSERT_NOT_NULL(doc);
+    yyjson_val *root = yyjson_doc_get_root(doc);
+    yyjson_val *callers = yyjson_obj_get(root, "callers");
+    long long total = yyjson_get_int(yyjson_obj_get(callers, "total"));
+    ASSERT_GT((int)total, 1);
+    ASSERT_EQ((int)yyjson_arr_size(yyjson_obj_get(callers, "items")), 1);
+    yyjson_val *tail = yyjson_obj_get(callers, "overflow_by_file");
+    ASSERT_NOT_NULL(tail);
+    long long tail_total = 0;
+    for (size_t i = 0; i < yyjson_arr_size(tail); i++) {
+        yyjson_val *row = yyjson_arr_get(tail, i);
+        ASSERT_NOT_NULL(yyjson_get_str(yyjson_obj_get(row, "file")));
+        tail_total += yyjson_get_int(yyjson_obj_get(row, "count"));
+    }
+    /* The tail accounts for exactly what the page cut. */
+    ASSERT_EQ((int)tail_total, (int)(total - 1));
+
+    /* Connection rows carry the neighbor's region; the fixture has
+     * DATA_FLOWS so the presence flag is true. */
+    yyjson_val *first = yyjson_arr_get(yyjson_obj_get(callers, "items"), 0);
+    ASSERT_NOT_NULL(yyjson_obj_get(first, "region"));
+    ASSERT_TRUE(yyjson_get_bool(yyjson_obj_get(root, "project_has_data_flows")));
+
+    yyjson_doc_free(doc);
+    free(json);
+    cbm_store_close(store);
+    cbm_atlas_metrics_cache_clear();
+    cbm_layout_regions_cache_clear();
+    PASS();
+}
+
 /* ── Suite ────────────────────────────────────────────────────── */
 
 SUITE(ui) {
@@ -1537,4 +1693,6 @@ SUITE(ui) {
     RUN_TEST(atlas_trace_reachability_calls_and_data);
     RUN_TEST(atlas_symbol_data_flows_and_history_shape);
     RUN_TEST(atlas_scent_buckets_matches_by_region);
+    RUN_TEST(atlas_bridges_rank_by_region_reach);
+    RUN_TEST(atlas_symbol_overflow_tail_and_dataflow_presence);
 }

@@ -33,11 +33,13 @@ const CONFIDENCE: Record<string, { label: string; tone: string }> = {
 function ConnectionList({
   title,
   page,
+  homeRegion,
   onLoadMore,
   onOpenSymbol,
 }: {
   title: string;
   page: ConnectionPage;
+  homeRegion?: number;
   onLoadMore: () => void;
   onOpenSymbol: (ref: { id?: number; qn?: string }) => void;
 }) {
@@ -70,6 +72,14 @@ function ConnectionList({
             <span className="text-[13px] font-mono text-foreground/65 group-hover:text-primary truncate transition-colors">
               {item.name}
             </span>
+            {item.region !== undefined &&
+              homeRegion !== undefined &&
+              item.region !== homeRegion && (
+                <span
+                  className="w-[6px] h-[6px] rounded-full bg-primary/70 shrink-0"
+                  title="in another region — this edge crosses an architectural seam"
+                />
+              )}
             <span className="text-[12px] text-foreground/35 truncate ml-auto shrink-0 max-w-[45%]">
               {item.file_path}
             </span>
@@ -80,12 +90,27 @@ function ConnectionList({
         )}
       </div>
       {shown < page.total && (
-        <button
-          onClick={onLoadMore}
-          className="mt-1.5 px-2 text-[12px] text-primary/70 hover:text-primary transition-colors"
-        >
-          Show more ({(page.total - shown).toLocaleString("en-US")} hidden)
-        </button>
+        <>
+          <button
+            onClick={onLoadMore}
+            className="mt-1.5 px-2 text-[12px] text-primary/70 hover:text-primary transition-colors"
+          >
+            Show more ({(page.total - shown).toLocaleString("en-US")} hidden)
+          </button>
+          {(page.overflow_by_file?.length ?? 0) > 0 && (
+            <div className="mt-1 px-2">
+              <p className="text-[12px] text-foreground/35 mb-0.5">hidden, by file:</p>
+              {page.overflow_by_file!.map((row) => (
+                <p
+                  key={row.file}
+                  className="text-[12px] font-mono text-foreground/45 truncate tabular-nums"
+                >
+                  {row.file} × {row.count}
+                </p>
+              ))}
+            </div>
+          )}
+        </>
       )}
     </div>
   );
@@ -276,12 +301,14 @@ export function SymbolTab({ project, symbolRef, onOpenSymbol, onOpenRegion }: Sy
           <ConnectionList
             title="Called by"
             page={bundle.callers}
+            homeRegion={bundle.region?.id}
             onLoadMore={() => setLimit((value) => value + 100)}
             onOpenSymbol={onOpenSymbol}
           />
           <ConnectionList
             title="Calls"
             page={bundle.callees}
+            homeRegion={bundle.region?.id}
             onLoadMore={() => setLimit((value) => value + 100)}
             onOpenSymbol={onOpenSymbol}
           />
@@ -328,6 +355,7 @@ export function SymbolTab({ project, symbolRef, onOpenSymbol, onOpenRegion }: Sy
                 </p>
               )}
           </div>
+          {bundle.project_has_data_flows !== false && (
           <div className="bg-card border border-border/50 rounded-md p-4">
             <p className="text-[12px] uppercase tracking-widest text-foreground/40 mb-2">
               Data flows
@@ -369,6 +397,7 @@ export function SymbolTab({ project, symbolRef, onOpenSymbol, onOpenRegion }: Sy
                 </p>
               )}
           </div>
+          )}
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">

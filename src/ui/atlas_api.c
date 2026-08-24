@@ -289,7 +289,8 @@ char *cbm_atlas_tree_json(cbm_store_t *store, const char *project, const char *p
 /* Call-ish edge families shown on the symbol page, most certain first. */
 #define AA_CALLISH_TYPES "'CALLS','CALL_REFERENCE','USAGE','HTTP_CALLS','ASYNC_CALLS'"
 
-static void aa_add_conn_rows(yyjson_mut_doc *doc, yyjson_mut_val *parent, sqlite3_stmt *st) {
+static void aa_add_conn_rows(yyjson_mut_doc *doc, yyjson_mut_val *parent, sqlite3_stmt *st,
+                             cbm_store_t *store, const char *project) {
     yyjson_mut_val *items = yyjson_mut_arr(doc);
     while (sqlite3_step(st) == SQLITE_ROW) {
         yyjson_mut_val *row = yyjson_mut_obj(doc);
@@ -306,6 +307,11 @@ static void aa_add_conn_rows(yyjson_mut_doc *doc, yyjson_mut_val *parent, sqlite
         const char *qn = (const char *)sqlite3_column_text(st, 6);
         if (qn)
             yyjson_mut_obj_add_strcpy(doc, row, "qualified_name", qn);
+        if (file && store) {
+            int region = cbm_layout_region_for_file(store, project, file, NULL);
+            if (region >= 0)
+                yyjson_mut_obj_add_int(doc, row, "region", region);
+        }
         yyjson_mut_arr_append(items, row);
     }
     yyjson_mut_obj_add_val(doc, parent, "items", items);
@@ -313,8 +319,8 @@ static void aa_add_conn_rows(yyjson_mut_doc *doc, yyjson_mut_val *parent, sqlite
 
 /* callers (inbound=true) or callees of `id`, with totals and pagination. */
 static void aa_add_connections(yyjson_mut_doc *doc, yyjson_mut_val *root, struct sqlite3 *db,
-                               const char *project, int64_t id, bool inbound, int limit,
-                               int offset) {
+                               cbm_store_t *store, const char *project, int64_t id, bool inbound,
+                               int limit, int offset) {
     yyjson_mut_val *section = yyjson_mut_obj(doc);
     const char *count_sql =
         inbound ? "SELECT e.type, COUNT(*) FROM edges e WHERE e.project=?1 AND e.target_id=?2 "
@@ -360,8 +366,44 @@ static void aa_add_connections(yyjson_mut_doc *doc, yyjson_mut_val *root, struct
         sqlite3_bind_int64(st, 2, id);
         sqlite3_bind_int(st, 3, limit);
         sqlite3_bind_int(st, 4, offset);
-        aa_add_conn_rows(doc, section, st);
+        aa_add_conn_rows(doc, section, st, store, project);
         sqlite3_finalize(st);
+    }
+
+    /* The shape of what the page cut, not just its size: the hidden
+     * remainder grouped by file (top 10 files). A bare "+N more" hides the
+     * answer to "who calls this" on every high-degree node. */
+    if (total > offset + limit) {
+        const char *tail_sql =
+            inbound ? "SELECT file_path, COUNT(*) FROM (SELECT n.file_path AS file_path FROM edges "
+                      "e JOIN nodes n ON n.project=e.project AND n.id=e.source_id WHERE "
+                      "e.project=?1 AND e.target_id=?2 AND e.type IN (" AA_CALLISH_TYPES ") ORDER "
+                      "BY CASE e.type WHEN 'CALLS' THEN 0 WHEN 'CALL_REFERENCE' THEN 1 ELSE 2 END, "
+                      "n.id LIMIT -1 OFFSET ?3) WHERE file_path IS NOT NULL GROUP BY file_path "
+                      "ORDER BY COUNT(*) DESC, file_path LIMIT 10"
+                    : "SELECT file_path, COUNT(*) FROM (SELECT n.file_path AS file_path FROM edges "
+                      "e JOIN nodes n ON n.project=e.project AND n.id=e.target_id WHERE "
+                      "e.project=?1 AND e.source_id=?2 AND e.type IN (" AA_CALLISH_TYPES ") ORDER "
+                      "BY CASE e.type WHEN 'CALLS' THEN 0 WHEN 'CALL_REFERENCE' THEN 1 ELSE 2 END, "
+                      "n.id LIMIT -1 OFFSET ?3) WHERE file_path IS NOT NULL GROUP BY file_path "
+                      "ORDER BY COUNT(*) DESC, file_path LIMIT 10";
+        if (sqlite3_prepare_v2(db, tail_sql, -1, &st, NULL) == SQLITE_OK) {
+            sqlite3_bind_text(st, 1, project, -1, SQLITE_STATIC);
+            sqlite3_bind_int64(st, 2, id);
+            sqlite3_bind_int(st, 3, offset + limit);
+            yyjson_mut_val *tail = yyjson_mut_arr(doc);
+            while (sqlite3_step(st) == SQLITE_ROW) {
+                const char *file = (const char *)sqlite3_column_text(st, 0);
+                if (!file)
+                    continue;
+                yyjson_mut_val *row = yyjson_mut_obj(doc);
+                yyjson_mut_obj_add_strcpy(doc, row, "file", file);
+                yyjson_mut_obj_add_int(doc, row, "count", sqlite3_column_int64(st, 1));
+                yyjson_mut_arr_append(tail, row);
+            }
+            sqlite3_finalize(st);
+            yyjson_mut_obj_add_val(doc, section, "overflow_by_file", tail);
+        }
     }
     yyjson_mut_obj_add_val(doc, root, inbound ? "callers" : "callees", section);
 }
@@ -451,8 +493,24 @@ char *cbm_atlas_symbol_json(cbm_store_t *store, const char *project, int64_t nod
         free(region_name);
     }
 
-    aa_add_connections(doc, root, db, project, id, true, limit, offset);
-    aa_add_connections(doc, root, db, project, id, false, limit, offset);
+    aa_add_connections(doc, root, db, store, project, id, true, limit, offset);
+    aa_add_connections(doc, root, db, store, project, id, false, limit, offset);
+
+    /* A panel that can only ever say "none" should not render: tell the
+     * client whether this project has DATA_FLOWS edges at all. */
+    {
+        sqlite3_stmt *pst = NULL;
+        bool any = false;
+        if (sqlite3_prepare_v2(db,
+                               "SELECT 1 FROM edges WHERE project=?1 AND type='DATA_FLOWS' "
+                               "LIMIT 1",
+                               -1, &pst, NULL) == SQLITE_OK) {
+            sqlite3_bind_text(pst, 1, project, -1, SQLITE_STATIC);
+            any = sqlite3_step(pst) == SQLITE_ROW;
+            sqlite3_finalize(pst);
+        }
+        yyjson_mut_obj_add_bool(doc, root, "project_has_data_flows", any);
+    }
 
     /* Tests exercising this symbol (inbound TESTS edges). */
     if (sqlite3_prepare_v2(db,
@@ -674,6 +732,153 @@ char *cbm_atlas_scent_json(cbm_store_t *store, const char *project, const char *
     }
     yyjson_mut_obj_add_val(doc, root, "regions", arr);
     free(counts);
+    char *json = yyjson_mut_write(doc, 0, NULL);
+    yyjson_mut_doc_free(doc);
+    return json;
+}
+
+/* ── Bridges: the nodes that stitch regions together ──────────────
+ * Ranked by DISTINCT foreign regions a node CALLS INTO (cross-call count as
+ * tiebreak) — orchestrators, the seam metric. Inbound direction is
+ * deliberately ignored (a logger called from everywhere is a utility hub,
+ * already listed under hubs) and test files are excluded (a test harness
+ * calls everything). */
+
+enum { BR_MAX_TRACK = 8, BR_TOP = 5, BR_EDGE_CAP = 2000000 };
+
+typedef struct {
+    int64_t id;
+    char key[24];              /* the ht borrows key pointers — the node owns its key */
+    int regions[BR_MAX_TRACK]; /* distinct foreign regions (first 8) */
+    int region_count;
+    long long cross_calls;
+} br_node_t;
+
+static void br_touch(br_node_t *node, int foreign_region) {
+    node->cross_calls++;
+    for (int i = 0; i < node->region_count; i++)
+        if (node->regions[i] == foreign_region)
+            return;
+    if (node->region_count < BR_MAX_TRACK)
+        node->regions[node->region_count++] = foreign_region;
+}
+
+char *cbm_atlas_bridges_json(cbm_store_t *store, const char *project) {
+    if (!store || !project)
+        return NULL;
+    struct sqlite3 *db = cbm_store_get_db(store);
+    if (!db)
+        return NULL;
+
+    CBMHashTable *ht = cbm_ht_create(4096); /* id (as %lld string) → br_node_t* */
+    if (!ht)
+        return NULL;
+    br_node_t **all = NULL;
+    int all_count = 0, all_cap = 0;
+
+    sqlite3_stmt *st = NULL;
+    long long scanned = 0;
+    if (sqlite3_prepare_v2(db,
+                           "SELECT e.source_id, ns.file_path, e.target_id, nt.file_path FROM "
+                           "edges e JOIN nodes ns ON ns.project=e.project AND ns.id=e.source_id "
+                           "JOIN nodes nt ON nt.project=e.project AND nt.id=e.target_id WHERE "
+                           "e.project=?1 AND e.type='CALLS'",
+                           -1, &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(st, 1, project, -1, SQLITE_STATIC);
+        while (sqlite3_step(st) == SQLITE_ROW && scanned < BR_EDGE_CAP) {
+            scanned++;
+            const char *sf = (const char *)sqlite3_column_text(st, 1);
+            const char *tf = (const char *)sqlite3_column_text(st, 3);
+            if (!sf || !tf)
+                continue;
+            if (cbm_is_test_file_path(sf))
+                continue;
+            int sr = cbm_layout_region_for_file(store, project, sf, NULL);
+            int tr = cbm_layout_region_for_file(store, project, tf, NULL);
+            if (sr < 0 || tr < 0 || sr == tr)
+                continue;
+            int64_t ids[1] = {sqlite3_column_int64(st, 0)};
+            int foreign[1] = {tr};
+            for (int k = 0; k < 1; k++) {
+                char key[24];
+                snprintf(key, sizeof(key), "%lld", (long long)ids[k]);
+                br_node_t *node = cbm_ht_get(ht, key);
+                if (!node) {
+                    if (all_count >= all_cap) {
+                        int nc = all_cap ? all_cap * 2 : 256;
+                        br_node_t **grown = realloc(all, (size_t)nc * sizeof(br_node_t *));
+                        if (!grown)
+                            continue;
+                        all = grown;
+                        all_cap = nc;
+                    }
+                    node = calloc(1, sizeof(br_node_t));
+                    if (!node)
+                        continue;
+                    node->id = ids[k];
+                    snprintf(node->key, sizeof(node->key), "%s", key);
+                    cbm_ht_set(ht, node->key, node);
+                    all[all_count++] = node;
+                }
+                br_touch(node, foreign[k]);
+            }
+        }
+        sqlite3_finalize(st);
+    }
+
+    /* Top BR_TOP by (region_count, cross_calls) — selection sort is fine. */
+    yyjson_mut_doc *doc = yyjson_mut_doc_new(NULL);
+    yyjson_mut_val *root = yyjson_mut_obj(doc);
+    yyjson_mut_doc_set_root(doc, root);
+    yyjson_mut_obj_add_int(doc, root, "cross_edges_scanned", scanned);
+    yyjson_mut_val *arr = yyjson_mut_arr(doc);
+    for (int pick = 0; pick < BR_TOP; pick++) {
+        int best = -1;
+        for (int i = 0; i < all_count; i++) {
+            if (!all[i])
+                continue;
+            if (best < 0 || all[i]->region_count > all[best]->region_count ||
+                (all[i]->region_count == all[best]->region_count &&
+                 all[i]->cross_calls > all[best]->cross_calls))
+                best = i;
+        }
+        if (best < 0 || all[best]->region_count < 2)
+            break;
+        br_node_t *node = all[best];
+        all[best] = NULL;
+        sqlite3_stmt *nst = NULL;
+        if (sqlite3_prepare_v2(db,
+                               "SELECT name, file_path, qualified_name FROM nodes WHERE "
+                               "project=?1 AND id=?2 AND label NOT IN ('File','Folder') LIMIT 1",
+                               -1, &nst, NULL) == SQLITE_OK) {
+            sqlite3_bind_text(nst, 1, project, -1, SQLITE_STATIC);
+            sqlite3_bind_int64(nst, 2, node->id);
+            if (sqlite3_step(nst) == SQLITE_ROW) {
+                yyjson_mut_val *row = yyjson_mut_obj(doc);
+                yyjson_mut_obj_add_int(doc, row, "id", node->id);
+                yyjson_mut_obj_add_strcpy(doc, row, "name",
+                                          (const char *)sqlite3_column_text(nst, 0));
+                const char *file = (const char *)sqlite3_column_text(nst, 1);
+                if (file)
+                    yyjson_mut_obj_add_strcpy(doc, row, "file_path", file);
+                const char *qn = (const char *)sqlite3_column_text(nst, 2);
+                if (qn)
+                    yyjson_mut_obj_add_strcpy(doc, row, "qualified_name", qn);
+                yyjson_mut_obj_add_int(doc, row, "regions", node->region_count);
+                yyjson_mut_obj_add_int(doc, row, "cross_calls", node->cross_calls);
+                yyjson_mut_arr_append(arr, row);
+            } else {
+                pick--; /* a File node slipped in — skip without burning a slot */
+            }
+            sqlite3_finalize(nst);
+        }
+        free(node);
+    }
+    yyjson_mut_obj_add_val(doc, root, "bridges", arr);
+    for (int i = 0; i < all_count; i++)
+        free(all[i]);
+    free(all);
+    cbm_ht_free(ht);
     char *json = yyjson_mut_write(doc, 0, NULL);
     yyjson_mut_doc_free(doc);
     return json;

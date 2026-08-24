@@ -5,7 +5,13 @@
  * away instead of shouting; inventory lives in the footer. */
 import { useEffect, useMemo, useState } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { fetchArchitecture, archRows, type ArchitectureJson } from "../lib/atlas";
+import {
+  fetchArchitecture,
+  fetchBridges,
+  archRows,
+  type ArchitectureJson,
+  type BridgeRow,
+} from "../lib/atlas";
 import { fetchRegions } from "../hooks/useGraphData";
 import {
   disambiguateRegionNames,
@@ -114,6 +120,24 @@ export function OverviewTab({
   const [error, setError] = useState<string | null>(null);
   const [includeTests, setIncludeTests] = useState(false);
   const [dismissedTick, setDismissedTick] = useState(0);
+  const [bridges, setBridges] = useState<BridgeRow[]>([]);
+
+  /* Boundary spanners ride alongside the main load; best-effort, silent on
+   * failure. (A true staleness banner needs a files-changed-since-indexing
+   * signal the server does not expose yet — recorded as a follow-up rather
+   * than shipped with wrong semantics.) */
+  useEffect(() => {
+    let cancelled = false;
+    setBridges([]);
+    fetchBridges(project)
+      .then((payload) => {
+        if (!cancelled) setBridges(payload.bridges ?? []);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [project]);
 
   useEffect(() => {
     let cancelled = false;
@@ -408,6 +432,35 @@ export function OverviewTab({
             </button>
           )}
         </div>
+
+        {/* Boundary spanners — the seam-stitching metric, distinct from
+         * degree hubs (which find utilities). */}
+        {bridges.length > 0 && (
+          <div className="bg-card border border-border/40 rounded-md p-4 mb-5">
+            <p className="text-[12px] uppercase tracking-widest text-foreground/40 mb-2">
+              Boundary spanners — code that reaches into many regions
+            </p>
+            {bridges.map((bridge) => (
+              <div key={bridge.id} className="flex items-center gap-2 py-[3px]">
+                <button
+                  onClick={() => bridge.qualified_name && onOpenSymbol(bridge.qualified_name)}
+                  className="text-[13px] font-mono text-foreground/65 hover:text-primary truncate text-left transition-colors"
+                  title={bridge.file_path}
+                >
+                  {bridge.name}
+                </button>
+                <span className="text-[12px] text-foreground/40 tabular-nums ml-auto shrink-0">
+                  {bridge.regions} regions · {bridge.cross_calls.toLocaleString("en-US")}{" "}
+                  cross calls
+                </span>
+              </div>
+            ))}
+            <p className="text-[12px] text-foreground/35 mt-1.5">
+              Changes here ripple across regions — mention these names when a task spans
+              areas.
+            </p>
+          </div>
+        )}
 
         {/* Reference — one disclosure away, never shouting. */}
         <details className="mb-5">

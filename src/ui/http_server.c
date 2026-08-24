@@ -1848,6 +1848,17 @@ static void handle_atlas_trace(cbm_http_conn_t *c, const cbm_http_req_t *req) {
     atlas_reply_json(c, json, 500, "{\"error\":\"trace failed\"}");
 }
 
+/* GET /api/bridges?project=X — boundary spanners by distinct-region reach. */
+static void handle_atlas_bridges(cbm_http_conn_t *c, const cbm_http_req_t *req) {
+    char project[256] = {0};
+    cbm_store_t *store = atlas_open_project(c, req, project, sizeof(project));
+    if (!store)
+        return;
+    char *json = cbm_atlas_bridges_json(store, project);
+    cbm_store_close(store);
+    atlas_reply_json(c, json, 500, "{\"error\":\"bridges failed\"}");
+}
+
 /* GET /api/scent?project=X&q=pattern — per-region search hit counts. */
 static void handle_atlas_scent(cbm_http_conn_t *c, const cbm_http_req_t *req) {
     char project[256] = {0};
@@ -2182,6 +2193,12 @@ static void dispatch_request(cbm_http_server_t *srv, cbm_http_conn_t *c,
     /* GET /api/metrics → CBM Atlas dashboard payload */
     if (is_get && cbm_http_path_match(req->path, "/api/metrics*")) {
         handle_atlas_metrics(c, req);
+        return;
+    }
+
+    /* GET /api/bridges → CBM Atlas boundary spanners */
+    if (is_get && cbm_http_path_match(req->path, "/api/bridges*")) {
+        handle_atlas_bridges(c, req);
         return;
     }
 

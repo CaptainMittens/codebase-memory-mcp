@@ -39,6 +39,7 @@ export function fetchTree(project: string, path: string): Promise<TreePayload> {
 /* ── /api/symbol ────────────────────────────────────────────── */
 
 export interface SymbolRef {
+  region?: number;
   id: number;
   name: string;
   label?: string;
@@ -54,6 +55,8 @@ export interface ConnectionPage {
   limit: number;
   offset: number;
   items: SymbolRef[];
+  /* The shape of what the page cut: hidden remainder grouped by file. */
+  overflow_by_file?: { file: string; count: number }[];
 }
 
 export interface DataFlowRef {
@@ -96,6 +99,9 @@ export interface SymbolBundle {
   data_in?: DataFlowRef[];
   data_out?: DataFlowRef[];
   file_history?: FileHistory;
+  /* False = this project has no DATA_FLOWS edges at all, so the panel
+   * would only ever say "none" and should not render. */
+  project_has_data_flows?: boolean;
 }
 
 export function fetchSymbol(
@@ -291,4 +297,19 @@ export interface ScentPayload {
 export function fetchScent(project: string, q: string): Promise<ScentPayload> {
   const params = new URLSearchParams({ project, q });
   return getJson(`/api/scent?${params}`);
+}
+
+/* ── /api/bridges — boundary spanners by distinct-region reach ── */
+
+export interface BridgeRow {
+  id: number;
+  name: string;
+  qualified_name?: string;
+  file_path?: string;
+  regions: number;
+  cross_calls: number;
+}
+
+export function fetchBridges(project: string): Promise<{ bridges: BridgeRow[] }> {
+  return getJson(`/api/bridges?${new URLSearchParams({ project })}`);
 }
