@@ -127,9 +127,9 @@ TEST(config_save_atomically_replaces_a_complete_generation) {
     char old_bytes[512] = {0};
 #ifdef _WIN32
     DWORD old_length = 0;
-    bool old_read = ReadFile(old_handle, old_bytes, (DWORD)sizeof(old_bytes) - 1U, &old_length,
-                             NULL) != 0 &&
-                    old_length > 0;
+    bool old_read =
+        ReadFile(old_handle, old_bytes, (DWORD)sizeof(old_bytes) - 1U, &old_length, NULL) != 0 &&
+        old_length > 0;
     bool old_closed = CloseHandle(old_handle) != 0;
 #else
     size_t old_length = fread(old_bytes, 1, sizeof(old_bytes) - 1, old_handle);
@@ -862,7 +862,6 @@ TEST(layout_coincident_nodes_bounded) {
 #endif
 }
 
-
 /* ── CBM Atlas region level ───────────────────────────────────── */
 
 /* Two call communities in two folders, one cross call. The region level must
@@ -897,8 +896,8 @@ static cbm_store_t *regions_fixture(void) {
         ids[i] = cbm_store_upsert_node(store, &node);
     }
     /* Dense intra-community calls, one cross call alpha_one → beta_one. */
-    static const int pairs[][2] = {{0, 1}, {1, 2}, {2, 0}, {0, 2},
-                                   {3, 4}, {4, 5}, {5, 3}, {3, 5}, {0, 3}};
+    static const int pairs[][2] = {{0, 1}, {1, 2}, {2, 0}, {0, 2}, {3, 4},
+                                   {4, 5}, {5, 3}, {3, 5}, {0, 3}};
     for (size_t e = 0; e < sizeof(pairs) / sizeof(pairs[0]); e++) {
         cbm_edge_t edge;
         memset(&edge, 0, sizeof(edge));
@@ -1012,7 +1011,6 @@ TEST(layout_regions_scope_restricts_nodes) {
     PASS();
 }
 
-
 /* ── CBM Atlas services: tree, symbol bundle, flows ───────────── */
 
 /* The regions fixture plus: a docstring + entry flag on alpha_one, a test
@@ -1105,6 +1103,14 @@ static cbm_store_t *atlas_fixture(int64_t *alpha_one_id_out) {
 
     memset(&edge, 0, sizeof(edge));
     edge.project = "regions-test";
+    edge.source_id = ids[1]; /* alpha_two */
+    edge.target_id = ids[2]; /* beta_two */
+    edge.type = "DATA_FLOWS";
+    edge.properties_json = "{\"args\":\"payload->config\"}";
+    cbm_store_insert_edge(store, &edge);
+
+    memset(&edge, 0, sizeof(edge));
+    edge.project = "regions-test";
     edge.source_id = file_ids[0];
     edge.target_id = file_ids[1];
     edge.type = "FILE_CHANGES_WITH";
@@ -1192,9 +1198,7 @@ TEST(atlas_symbol_bundle_totals_and_sections) {
     yyjson_val *callees = yyjson_obj_get(root, "callees");
     ASSERT_EQ((int)yyjson_get_int(yyjson_obj_get(callees, "total")), 3);
     ASSERT_EQ((int)yyjson_arr_size(yyjson_obj_get(callees, "items")), 2);
-    ASSERT_EQ((int)yyjson_get_int(
-                  yyjson_obj_get(yyjson_obj_get(callees, "by_type"), "CALLS")),
-              3);
+    ASSERT_EQ((int)yyjson_get_int(yyjson_obj_get(yyjson_obj_get(callees, "by_type"), "CALLS")), 3);
 
     /* Callers: alpha_three only. */
     yyjson_val *callers = yyjson_obj_get(root, "callers");
@@ -1345,6 +1349,109 @@ TEST(atlas_metrics_totals_and_certainty) {
     PASS();
 }
 
+TEST(atlas_trace_reachability_calls_and_data) {
+    cbm_layout_regions_cache_clear();
+    cbm_atlas_flows_cache_clear();
+    cbm_store_t *store = atlas_fixture(NULL);
+    ASSERT_NOT_NULL(store);
+
+    /* alpha_one reaches beta_three over CALLS (via beta_one). */
+    char *json = cbm_atlas_trace_json(store, "regions-test", -1, "regions-test::alpha_one", -1,
+                                      "regions-test::beta_three", "calls");
+    ASSERT_NOT_NULL(json);
+    yyjson_doc *doc = yyjson_read(json, strlen(json), 0);
+    ASSERT_NOT_NULL(doc);
+    yyjson_val *root = yyjson_doc_get_root(doc);
+    ASSERT_TRUE(yyjson_get_bool(yyjson_obj_get(root, "reachable")));
+    yyjson_val *path = yyjson_obj_get(root, "path");
+    ASSERT_GT((int)yyjson_arr_size(path), 1);
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(yyjson_arr_get(path, 0), "name")), "alpha_one");
+    int hops = (int)yyjson_get_int(yyjson_obj_get(root, "hops"));
+    ASSERT_EQ((int)yyjson_arr_size(path), hops + 1);
+    yyjson_doc_free(doc);
+    free(json);
+
+    /* beta_three does NOT reach alpha_one (calls point the other way and
+     * the beta cycle never calls into alpha). */
+    json = cbm_atlas_trace_json(store, "regions-test", -1, "regions-test::beta_three", -1,
+                                "regions-test::alpha_one", "calls");
+    ASSERT_NOT_NULL(json);
+    doc = yyjson_read(json, strlen(json), 0);
+    ASSERT_FALSE(yyjson_get_bool(yyjson_obj_get(yyjson_doc_get_root(doc), "reachable")));
+    yyjson_doc_free(doc);
+    free(json);
+
+    /* Data mode follows only DATA_FLOWS: alpha_two → beta_two works,
+     * alpha_one → beta_two does not (no data edge from alpha_one). */
+    json = cbm_atlas_trace_json(store, "regions-test", -1, "regions-test::alpha_two", -1,
+                                "regions-test::beta_two", "data");
+    ASSERT_NOT_NULL(json);
+    doc = yyjson_read(json, strlen(json), 0);
+    root = yyjson_doc_get_root(doc);
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(root, "mode")), "data");
+    ASSERT_TRUE(yyjson_get_bool(yyjson_obj_get(root, "reachable")));
+    ASSERT_EQ((int)yyjson_get_int(yyjson_obj_get(root, "hops")), 1);
+    yyjson_doc_free(doc);
+    free(json);
+
+    json = cbm_atlas_trace_json(store, "regions-test", -1, "regions-test::alpha_one", -1,
+                                "regions-test::beta_two", "data");
+    ASSERT_NOT_NULL(json);
+    doc = yyjson_read(json, strlen(json), 0);
+    ASSERT_FALSE(yyjson_get_bool(yyjson_obj_get(yyjson_doc_get_root(doc), "reachable")));
+    yyjson_doc_free(doc);
+    free(json);
+
+    /* Unknown endpoint answers with an error, not a crash. */
+    json = cbm_atlas_trace_json(store, "regions-test", -1, "regions-test::nope", -1,
+                                "regions-test::beta_two", "calls");
+    ASSERT_NOT_NULL(json);
+    doc = yyjson_read(json, strlen(json), 0);
+    ASSERT_NOT_NULL(yyjson_obj_get(yyjson_doc_get_root(doc), "error"));
+    yyjson_doc_free(doc);
+    free(json);
+
+    cbm_store_close(store);
+    cbm_atlas_flows_cache_clear();
+    cbm_layout_regions_cache_clear();
+    PASS();
+}
+
+TEST(atlas_symbol_data_flows_and_history_shape) {
+    cbm_layout_regions_cache_clear();
+    cbm_atlas_metrics_cache_clear();
+    int64_t alpha_one = -1;
+    cbm_store_t *store = atlas_fixture(&alpha_one);
+    ASSERT_NOT_NULL(store);
+
+    /* alpha_two has an outgoing DATA_FLOWS edge with detail. */
+    char *json = cbm_atlas_symbol_json(store, "regions-test", -1, "regions-test::alpha_two", 10, 0);
+    ASSERT_NOT_NULL(json);
+    yyjson_doc *doc = yyjson_read(json, strlen(json), 0);
+    ASSERT_NOT_NULL(doc);
+    yyjson_val *root = yyjson_doc_get_root(doc);
+    yyjson_val *data_out = yyjson_obj_get(root, "data_out");
+    ASSERT_EQ((int)yyjson_arr_size(data_out), 1);
+    yyjson_val *flow = yyjson_arr_get(data_out, 0);
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(flow, "name")), "beta_two");
+    yyjson_val *detail = yyjson_obj_get(flow, "detail");
+    ASSERT_NOT_NULL(detail);
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(detail, "args")), "payload->config");
+
+    /* file_history is present and honest: no git at the fixture root, so
+     * available:false (never fabricated history). */
+    yyjson_val *history = yyjson_obj_get(root, "file_history");
+    ASSERT_NOT_NULL(history);
+    ASSERT_FALSE(yyjson_get_bool(yyjson_obj_get(history, "available")));
+
+    yyjson_doc_free(doc);
+    free(json);
+    cbm_store_close(store);
+    cbm_atlas_metrics_cache_clear();
+    cbm_layout_regions_cache_clear();
+    PASS();
+}
+
 /* ── Suite ────────────────────────────────────────────────────── */
 
 SUITE(ui) {
@@ -1382,4 +1489,6 @@ SUITE(ui) {
     RUN_TEST(atlas_symbol_bundle_totals_and_sections);
     RUN_TEST(atlas_flows_walk_and_rank);
     RUN_TEST(atlas_metrics_totals_and_certainty);
+    RUN_TEST(atlas_trace_reachability_calls_and_data);
+    RUN_TEST(atlas_symbol_data_flows_and_history_shape);
 }

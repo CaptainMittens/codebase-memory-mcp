@@ -8,6 +8,7 @@ import { callTool } from "../api/rpc";
 import {
   fetchSymbol,
   type ConnectionPage,
+  type DataFlowRef,
   type SymbolBundle,
   type SymbolRef,
 } from "../lib/atlas";
@@ -284,6 +285,90 @@ export function SymbolTab({ project, symbolRef, onOpenSymbol, onOpenRegion }: Sy
             onLoadMore={() => setLimit((value) => value + 100)}
             onOpenSymbol={onOpenSymbol}
           />
+        </div>
+
+        {/* Why & who — the rationale proxy and the knowledge map. */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+          <div className="bg-card border border-border/50 rounded-md p-4">
+            <p className="text-[12px] uppercase tracking-widest text-foreground/40 mb-2">
+              Recent changes to this file
+            </p>
+            {bundle.file_history?.available === false && (
+              <p className="text-[13px] text-foreground/40">
+                No git history readable for this project.
+              </p>
+            )}
+            {bundle.file_history?.available &&
+              (bundle.file_history.recent?.length ?? 0) === 0 && (
+                <p className="text-[13px] text-foreground/40">
+                  Untouched in the last year.
+                </p>
+              )}
+            {(bundle.file_history?.recent ?? []).map((commit) => (
+              <div key={commit.hash} className="flex items-baseline gap-2 py-[3px]">
+                <span className="text-[12px] font-mono text-foreground/35 shrink-0">
+                  {commit.hash}
+                </span>
+                <span className="text-[13px] text-foreground/70 truncate flex-1">
+                  {commit.subject}
+                </span>
+                <span className="text-[12px] text-foreground/35 shrink-0">
+                  {commit.author} ·{" "}
+                  {new Date(commit.time * 1000).toISOString().slice(0, 10)}
+                </span>
+              </div>
+            ))}
+            {bundle.file_history?.available &&
+              (bundle.file_history.commits_1y ?? 0) > 0 && (
+                <p className="text-[12px] text-foreground/40 mt-2">
+                  {bundle.file_history.commits_1y?.toLocaleString("en-US")} commits in the
+                  last year
+                  {bundle.file_history.top_author &&
+                    ` · mostly ${bundle.file_history.top_author} (${((bundle.file_history.top_author_share ?? 0) * 100).toFixed(0)}% of ${bundle.file_history.authors} author${(bundle.file_history.authors ?? 0) > 1 ? "s" : ""})`}
+                </p>
+              )}
+          </div>
+          <div className="bg-card border border-border/50 rounded-md p-4">
+            <p className="text-[12px] uppercase tracking-widest text-foreground/40 mb-2">
+              Data flows
+            </p>
+            {(["data_in", "data_out"] as const).map((direction) => {
+              const flows: DataFlowRef[] = bundle[direction] ?? [];
+              if (flows.length === 0) return null;
+              return (
+                <div key={direction} className="mb-2">
+                  <p className="text-[12px] text-foreground/35 mb-1">
+                    {direction === "data_in" ? "receives from" : "feeds into"}
+                  </p>
+                  {flows.map((flow) => (
+                    <button
+                      key={`${direction}-${flow.id}`}
+                      onClick={() => onOpenSymbol({ id: flow.id })}
+                      className="flex items-center gap-2 w-full text-left px-2 py-[3px] rounded-md hover:bg-surface-3 transition-colors group"
+                    >
+                      <span className="text-[13px] font-mono text-foreground/65 group-hover:text-primary truncate transition-colors">
+                        {flow.name}
+                      </span>
+                      {flow.detail?.args !== undefined && (
+                        <span className="text-[12px] font-mono text-foreground/35 truncate">
+                          {String(flow.detail.args)}
+                        </span>
+                      )}
+                      <span className="text-[12px] text-foreground/25 truncate ml-auto shrink-0 max-w-[38%]">
+                        {flow.file_path}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              );
+            })}
+            {(bundle.data_in ?? []).length === 0 &&
+              (bundle.data_out ?? []).length === 0 && (
+                <p className="text-[13px] text-foreground/40">
+                  No DATA_FLOWS edges touch this symbol.
+                </p>
+              )}
+          </div>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">

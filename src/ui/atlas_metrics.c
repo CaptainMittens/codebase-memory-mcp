@@ -30,8 +30,8 @@
 #include <string.h>
 
 enum {
-    MX_TOP_N = 10,        /* entries per drill-down list */
-    MX_HISTORY_MAX = 60,  /* snapshots served to the dashboard */
+    MX_TOP_N = 10,          /* entries per drill-down list */
+    MX_HISTORY_MAX = 60,    /* snapshots served to the dashboard */
     MX_CHURN_MIN_CPLX = 10, /* churn×complexity: only genuinely complex files */
 };
 
@@ -137,8 +137,8 @@ static void mx_project_stamp(cbm_store_t *store, const char *project, char *stam
         root_path[0] = '\0';
     struct sqlite3 *db = cbm_store_get_db(store);
     sqlite3_stmt *st = NULL;
-    if (db && sqlite3_prepare_v2(db, "SELECT indexed_at, root_path FROM projects WHERE name=?1",
-                                 -1, &st, NULL) == SQLITE_OK) {
+    if (db && sqlite3_prepare_v2(db, "SELECT indexed_at, root_path FROM projects WHERE name=?1", -1,
+                                 &st, NULL) == SQLITE_OK) {
         sqlite3_bind_text(st, 1, project, -1, SQLITE_STATIC);
         if (sqlite3_step(st) == SQLITE_ROW) {
             const char *t = (const char *)sqlite3_column_text(st, 0);
@@ -154,12 +154,33 @@ static void mx_project_stamp(cbm_store_t *store, const char *project, char *stam
 
 /* ── Churn: one bounded `git log` pass, cached with everything else ── */
 
+enum { MX_FILE_RECENT = 3, MX_COMMIT_CAP = 10000 };
+
 typedef struct {
-    CBMHashTable *counts; /* file_path → (intptr_t)count; keys owned by list */
+    char hash[16];
+    long long time;
+    char author[64];
+    char subject[160];
+} mx_commit_t;
+
+typedef struct {
+    long long count;
+    int recent[MX_FILE_RECENT]; /* commit indices, newest first */
+    int recent_count;
+    CBMHashTable *authors; /* author name → (intptr_t)count; keys borrowed
+                            * from the commit array entries */
+} mx_file_stat_t;
+
+typedef struct {
+    CBMHashTable *counts; /* file_path → mx_file_stat_t*; keys owned by list */
     char **keys;
     int key_count;
     int key_cap;
+    mx_commit_t *commits;
+    int commit_count;
 } mx_churn_t;
+
+static void mx_history_cache_store(const char *project, const char *stamp, mx_churn_t *churn);
 
 static void mx_churn_scan(const char *root_path, mx_churn_t *churn) {
     if (!root_path || !root_path[0] || !cbm_validate_shell_path_arg(root_path))
@@ -174,12 +195,14 @@ static void mx_churn_scan(const char *root_path, mx_churn_t *churn) {
 #endif
     char cmd[CBM_SZ_2K];
     snprintf(cmd, sizeof(cmd),
-             "git -C \"%s\" log --name-only --pretty=format: --since=\"1 year ago\" "
-             "--max-count=10000 2>%s",
+             "git -C \"%s\" log --name-only --pretty=format:COMMIT:%%h:%%ct:%%an:%%s "
+             "--since=\"1 year ago\" --max-count=10000 2>%s",
              root_path, null_dev);
     FILE *fp = cbm_popen(cmd, "r");
     if (!fp)
         return;
+    churn->commits = malloc((size_t)MX_COMMIT_CAP * sizeof(mx_commit_t));
+    int current_commit = -1;
     char line[CBM_SZ_1K];
     while (fgets(line, sizeof(line), fp)) {
         size_t len = strlen(line);
@@ -187,8 +210,43 @@ static void mx_churn_scan(const char *root_path, mx_churn_t *churn) {
             line[--len] = '\0';
         if (len == 0)
             continue;
-        const char *canon = cbm_ht_get_key(churn->counts, line);
-        if (!canon) {
+        if (strncmp(line, "COMMIT:", 7) == 0) {
+            /* COMMIT:<hash>:<epoch>:<author>:<subject> */
+            current_commit = -1;
+            if (churn->commits && churn->commit_count < MX_COMMIT_CAP) {
+                char *cursor = line + 7;
+                char *hash = cursor;
+                char *colon = strchr(cursor, ':');
+                if (!colon)
+                    continue;
+                *colon = '\0';
+                cursor = colon + 1;
+                char *epoch = cursor;
+                colon = strchr(cursor, ':');
+                if (!colon)
+                    continue;
+                *colon = '\0';
+                cursor = colon + 1;
+                char *author = cursor;
+                colon = strchr(cursor, ':');
+                const char *subject = "";
+                if (colon) {
+                    *colon = '\0';
+                    subject = colon + 1;
+                }
+                mx_commit_t *commit = &churn->commits[churn->commit_count];
+                snprintf(commit->hash, sizeof(commit->hash), "%s", hash);
+                commit->time = atoll(epoch);
+                snprintf(commit->author, sizeof(commit->author), "%s", author);
+                snprintf(commit->subject, sizeof(commit->subject), "%s", subject);
+                current_commit = churn->commit_count;
+                churn->commit_count++;
+            }
+            continue;
+        }
+        mx_file_stat_t *stat = cbm_ht_get(churn->counts, line);
+        const char *canon;
+        if (!stat) {
             if (churn->key_count >= churn->key_cap) {
                 int nc = churn->key_cap ? churn->key_cap * 2 : 1024;
                 char **grown = realloc(churn->keys, (size_t)nc * sizeof(char *));
@@ -198,22 +256,49 @@ static void mx_churn_scan(const char *root_path, mx_churn_t *churn) {
                 churn->key_cap = nc;
             }
             churn->keys[churn->key_count] = strdup(line);
-            if (!churn->keys[churn->key_count])
+            stat = calloc(1, sizeof(mx_file_stat_t));
+            if (!churn->keys[churn->key_count] || !stat) {
+                free(stat);
                 break;
+            }
             canon = churn->keys[churn->key_count];
             churn->key_count++;
+            cbm_ht_set(churn->counts, canon, stat);
         }
-        intptr_t count = (intptr_t)cbm_ht_get(churn->counts, canon);
-        cbm_ht_set(churn->counts, canon, (void *)(count + 1));
+        stat->count++;
+        if (current_commit >= 0) {
+            if (stat->recent_count < MX_FILE_RECENT)
+                stat->recent[stat->recent_count++] = current_commit;
+            if (!stat->authors)
+                stat->authors = cbm_ht_create(8);
+            if (stat->authors) {
+                const char *author = churn->commits[current_commit].author;
+                intptr_t acount = (intptr_t)cbm_ht_get(stat->authors, author);
+                cbm_ht_set(stat->authors, author, (void *)(acount + 1));
+            }
+        }
     }
     cbm_pclose(fp);
 }
 
+static void mx_churn_free_stat(const char *key, void *value, void *userdata) {
+    (void)key;
+    (void)userdata;
+    mx_file_stat_t *stat = value;
+    if (stat) {
+        cbm_ht_free(stat->authors);
+        free(stat);
+    }
+}
+
 static void mx_churn_free(mx_churn_t *churn) {
+    if (churn->counts)
+        cbm_ht_foreach(churn->counts, mx_churn_free_stat, NULL);
     cbm_ht_free(churn->counts);
     for (int i = 0; i < churn->key_count; i++)
         free(churn->keys[i]);
     free(churn->keys);
+    free(churn->commits);
     memset(churn, 0, sizeof(*churn));
 }
 
@@ -225,10 +310,9 @@ static void mx_history_path(const char *project, char *out, size_t cap) {
 }
 
 static void mx_history_append_and_emit(yyjson_mut_doc *doc, yyjson_mut_val *root,
-                                       const char *project, const char *stamp,
-                                       long long callables, long long dead, double avg_cplx,
-                                       long long tested, long long usage_edges,
-                                       long long callish_edges) {
+                                       const char *project, const char *stamp, long long callables,
+                                       long long dead, double avg_cplx, long long tested,
+                                       long long usage_edges, long long callish_edges) {
     if (!cbm_validate_project_name(project))
         return;
     char path[CBM_SZ_1K];
@@ -412,16 +496,15 @@ static char *mx_build_json(cbm_store_t *store, const char *project, const char *
     /* C. Dead code (candidates only; entry/test/exported excluded, matching
      * the galaxy's classifier). */
     long long dead = 0;
-    if (sqlite3_prepare_v2(
-            db,
-            "SELECT COUNT(*) FROM nodes n WHERE n.project=?1 AND n.label IN "
-            "(" CBM_SQL_CALLABLE_LABELS ") AND "
-            "COALESCE(json_extract(n.properties,'$.is_entry_point'),0)=0 AND "
-            "COALESCE(json_extract(n.properties,'$.is_test'),0)=0 AND "
-            "COALESCE(json_extract(n.properties,'$.is_exported'),0)=0 AND "
-            "NOT EXISTS (SELECT 1 FROM edges e WHERE e.project=n.project AND "
-            "e.target_id=n.id AND e.type IN ('CALLS','CALL_REFERENCE','USAGE'))",
-            -1, &st, NULL) == SQLITE_OK) {
+    if (sqlite3_prepare_v2(db,
+                           "SELECT COUNT(*) FROM nodes n WHERE n.project=?1 AND n.label IN "
+                           "(" CBM_SQL_CALLABLE_LABELS ") AND "
+                           "COALESCE(json_extract(n.properties,'$.is_entry_point'),0)=0 AND "
+                           "COALESCE(json_extract(n.properties,'$.is_test'),0)=0 AND "
+                           "COALESCE(json_extract(n.properties,'$.is_exported'),0)=0 AND "
+                           "NOT EXISTS (SELECT 1 FROM edges e WHERE e.project=n.project AND "
+                           "e.target_id=n.id AND e.type IN ('CALLS','CALL_REFERENCE','USAGE'))",
+                           -1, &st, NULL) == SQLITE_OK) {
         sqlite3_bind_text(st, 1, project, -1, SQLITE_STATIC);
         if (sqlite3_step(st) == SQLITE_ROW)
             dead = sqlite3_column_int64(st, 0);
@@ -439,8 +522,7 @@ static char *mx_build_json(cbm_store_t *store, const char *project, const char *
             tested = sqlite3_column_int64(st, 0);
         sqlite3_finalize(st);
     }
-    if (sqlite3_prepare_v2(db,
-                           "SELECT COUNT(*) FROM edges WHERE project=?1 AND type='SIMILAR_TO'",
+    if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM edges WHERE project=?1 AND type='SIMILAR_TO'",
                            -1, &st, NULL) == SQLITE_OK) {
         sqlite3_bind_text(st, 1, project, -1, SQLITE_STATIC);
         if (sqlite3_step(st) == SQLITE_ROW)
@@ -453,8 +535,7 @@ static char *mx_build_json(cbm_store_t *store, const char *project, const char *
     {
         char shadow[CBM_SZ_512];
         cbm_store_coverage_shadow_project(shadow, sizeof(shadow), project);
-        if (sqlite3_prepare_v2(db,
-                               "SELECT COUNT(*) FROM nodes WHERE project=?1 AND label='File'",
+        if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM nodes WHERE project=?1 AND label='File'",
                                -1, &st, NULL) == SQLITE_OK) {
             sqlite3_bind_text(st, 1, shadow, -1, SQLITE_STATIC);
             if (sqlite3_step(st) == SQLITE_ROW)
@@ -470,13 +551,13 @@ static char *mx_build_json(cbm_store_t *store, const char *project, const char *
     long long churn_total_commits = 0;
     for (int i = 0; i < churn.key_count; i++) {
         const char *file = churn.keys[i];
-        long long commits = (intptr_t)cbm_ht_get(churn.counts, file);
+        const mx_file_stat_t *stat = cbm_ht_get(churn.counts, file);
+        long long commits = stat ? stat->count : 0;
         churn_total_commits += commits;
         mx_top_offer(&top_churn, NULL, NULL, file, commits);
         intptr_t max_cplx = file_cplx ? (intptr_t)cbm_ht_get(file_cplx, file) : 0;
         if (max_cplx >= MX_CHURN_MIN_CPLX)
-            mx_top_offer2(&top_risky, NULL, NULL, file, commits * (long long)max_cplx,
-                          commits);
+            mx_top_offer2(&top_risky, NULL, NULL, file, commits * (long long)max_cplx, commits);
     }
 
     /* ── Serialize ───────────────────────────────────────────── */
@@ -513,25 +594,133 @@ static char *mx_build_json(cbm_store_t *store, const char *project, const char *
     mx_top_json(doc, root, "top_long", &top_long);
     mx_top_json(doc, root, "top_churn", &top_churn);
     mx_top_json(doc, root, "top_churn_complex", &top_risky);
-    yyjson_mut_obj_add_bool(doc, root, "churn_available", churn.counts != NULL);
+    yyjson_mut_obj_add_bool(doc, root, "churn_available",
+                            churn.counts != NULL && churn.commit_count > 0);
     yyjson_mut_obj_add_int(doc, root, "churn_total_commits", churn_total_commits);
     yyjson_mut_obj_add_int(doc, root, "churn_total_files", churn.key_count);
 
     long long callish = calls_edges + ref_edges + usage_edges;
     mx_history_append_and_emit(doc, root, project, stamp, callables, dead,
-                               callables > 0 ? (double)cplx_sum / (double)callables : 0.0,
-                               tested, usage_edges, callish);
+                               callables > 0 ? (double)cplx_sum / (double)callables : 0.0, tested,
+                               usage_edges, callish);
 
     mx_top_free(&top_complex);
     mx_top_free(&top_cognitive);
     mx_top_free(&top_long);
     mx_top_free(&top_churn);
     mx_top_free(&top_risky);
-    mx_churn_free(&churn);
+    mx_history_cache_store(project, stamp, &churn); /* takes ownership */
     cbm_ht_free(file_cplx);
     for (int i = 0; i < file_key_count; i++)
         free(file_keys[i]);
     free(file_keys);
+
+    char *json = yyjson_mut_write(doc, 0, NULL);
+    yyjson_mut_doc_free(doc);
+    return json;
+}
+
+/* ── File-history cache: the churn scan, kept for symbol pages ── */
+
+typedef struct {
+    char key[1280];
+    mx_churn_t churn;
+    bool valid;
+} mx_history_cache_t;
+
+static mx_history_cache_t g_hist_cache;
+static pthread_mutex_t g_hist_mu = PTHREAD_MUTEX_INITIALIZER;
+
+/* Takes ownership of `churn`'s contents (called at the end of a metrics
+ * build; the metrics cache key and this one move in lockstep). */
+static void mx_history_cache_store(const char *project, const char *stamp, mx_churn_t *churn) {
+    pthread_mutex_lock(&g_hist_mu);
+    if (g_hist_cache.valid)
+        mx_churn_free(&g_hist_cache.churn);
+    g_hist_cache.churn = *churn;
+    memset(churn, 0, sizeof(*churn));
+    snprintf(g_hist_cache.key, sizeof(g_hist_cache.key), "%s|%s", project, stamp);
+    g_hist_cache.valid = true;
+    pthread_mutex_unlock(&g_hist_mu);
+}
+
+typedef struct {
+    const char *name;
+    long long count;
+    long long total;
+    int distinct;
+} mx_owner_scan_t;
+
+static void mx_owner_iter(const char *key, void *value, void *userdata) {
+    mx_owner_scan_t *scan = userdata;
+    long long count = (intptr_t)value;
+    scan->total += count;
+    scan->distinct++;
+    if (count > scan->count) {
+        scan->count = count;
+        scan->name = key;
+    }
+}
+
+char *cbm_atlas_file_history_json(cbm_store_t *store, const char *project, const char *file_path) {
+    if (!store || !project || !file_path)
+        return NULL;
+    char stamp[128];
+    char root_path[CBM_SZ_1K];
+    mx_project_stamp(store, project, stamp, sizeof(stamp), root_path, sizeof(root_path));
+    char key[1280];
+    snprintf(key, sizeof(key), "%s|%s", project, stamp);
+
+    pthread_mutex_lock(&g_hist_mu);
+    bool fresh = g_hist_cache.valid && strcmp(g_hist_cache.key, key) == 0;
+    pthread_mutex_unlock(&g_hist_mu);
+    if (!fresh) {
+        /* The metrics build populates the cache; run it if needed. */
+        char *metrics = cbm_atlas_metrics_json(store, project);
+        free(metrics);
+    }
+
+    yyjson_mut_doc *doc = yyjson_mut_doc_new(NULL);
+    yyjson_mut_val *root = yyjson_mut_obj(doc);
+    yyjson_mut_doc_set_root(doc, root);
+
+    pthread_mutex_lock(&g_hist_mu);
+    fresh = g_hist_cache.valid && strcmp(g_hist_cache.key, key) == 0;
+    const mx_file_stat_t *stat = fresh && g_hist_cache.churn.counts
+                                     ? cbm_ht_get(g_hist_cache.churn.counts, file_path)
+                                     : NULL;
+    if (!fresh || !g_hist_cache.churn.counts || g_hist_cache.churn.commit_count == 0) {
+        yyjson_mut_obj_add_bool(doc, root, "available", false);
+    } else if (!stat) {
+        yyjson_mut_obj_add_bool(doc, root, "available", true);
+        yyjson_mut_obj_add_int(doc, root, "commits_1y", 0);
+    } else {
+        yyjson_mut_obj_add_bool(doc, root, "available", true);
+        yyjson_mut_obj_add_int(doc, root, "commits_1y", stat->count);
+        yyjson_mut_val *recent = yyjson_mut_arr(doc);
+        for (int i = 0; i < stat->recent_count; i++) {
+            const mx_commit_t *commit = &g_hist_cache.churn.commits[stat->recent[i]];
+            yyjson_mut_val *obj = yyjson_mut_obj(doc);
+            yyjson_mut_obj_add_strcpy(doc, obj, "hash", commit->hash);
+            yyjson_mut_obj_add_int(doc, obj, "time", commit->time);
+            yyjson_mut_obj_add_strcpy(doc, obj, "author", commit->author);
+            yyjson_mut_obj_add_strcpy(doc, obj, "subject", commit->subject);
+            yyjson_mut_arr_append(recent, obj);
+        }
+        yyjson_mut_obj_add_val(doc, root, "recent", recent);
+        if (stat->authors) {
+            mx_owner_scan_t scan = {0};
+            cbm_ht_foreach(stat->authors, mx_owner_iter, &scan);
+            if (scan.name) {
+                yyjson_mut_obj_add_strcpy(doc, root, "top_author", scan.name);
+                yyjson_mut_obj_add_real(doc, root, "top_author_share",
+                                        scan.total > 0 ? (double)scan.count / (double)scan.total
+                                                       : 0.0);
+                yyjson_mut_obj_add_int(doc, root, "authors", scan.distinct);
+            }
+        }
+    }
+    pthread_mutex_unlock(&g_hist_mu);
 
     char *json = yyjson_mut_write(doc, 0, NULL);
     yyjson_mut_doc_free(doc);

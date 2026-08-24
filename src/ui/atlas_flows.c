@@ -66,7 +66,11 @@ typedef struct {
     char key[1152];
     flow_node_t *nodes;
     int node_count;
-    int32_t *out_edges; /* callee node indices, grouped by caller */
+    int32_t *out_edges; /* callee node indices, grouped by caller (CALLS) */
+    /* DATA_FLOWS adjacency (same node set, its own CSR). */
+    int32_t *data_first; /* per node: index into data_edges, -1 none */
+    int32_t *data_count;
+    int32_t *data_edges;
     flow_t *flows;
     int flow_count;
     int candidates_dropped;
@@ -93,6 +97,9 @@ static void flow_cache_clear_locked(void) {
     }
     free(g_flow_cache.nodes);
     free(g_flow_cache.out_edges);
+    free(g_flow_cache.data_first);
+    free(g_flow_cache.data_count);
+    free(g_flow_cache.data_edges);
     free(g_flow_cache.flows);
     memset(&g_flow_cache, 0, sizeof(g_flow_cache));
 }
@@ -317,8 +324,7 @@ static int fl_rebuild_locked(cbm_store_t *store, const char *project, const char
         nodes[n].name = fl_strdup((const char *)sqlite3_column_text(st, 1));
         nodes[n].file_path = fl_strdup((const char *)sqlite3_column_text(st, 2));
         nodes[n].first_out = -1;
-        nodes[n].flagged_entry =
-            sqlite3_column_int(st, 3) != 0 || sqlite3_column_int(st, 4) != 0;
+        nodes[n].flagged_entry = sqlite3_column_int(st, 3) != 0 || sqlite3_column_int(st, 4) != 0;
         n++;
     }
     sqlite3_finalize(st);
@@ -386,7 +392,64 @@ static int fl_rebuild_locked(cbm_store_t *store, const char *project, const char
         }
         sqlite3_finalize(st);
     }
+
+    /* DATA_FLOWS among the same callables (the "follow the value" family). */
+    int32_t *dsrc = NULL, *ddst = NULL;
+    int dcap = 0, dne = 0;
+    if (sqlite3_prepare_v2(db,
+                           "SELECT source_id, target_id FROM edges WHERE project=?1 AND "
+                           "type='DATA_FLOWS'",
+                           -1, &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(st, 1, project, -1, SQLITE_STATIC);
+        while (sqlite3_step(st) == SQLITE_ROW) {
+            int32_t si = fl_index_of(idmap, n, sqlite3_column_int64(st, 0));
+            int32_t di = fl_index_of(idmap, n, sqlite3_column_int64(st, 1));
+            if (si < 0 || di < 0 || si == di)
+                continue;
+            if (dne >= dcap) {
+                int nc = dcap ? dcap * 2 : 1024;
+                int32_t *ns = realloc(dsrc, (size_t)nc * sizeof(int32_t));
+                int32_t *nd = realloc(ddst, (size_t)nc * sizeof(int32_t));
+                if (!ns || !nd) {
+                    free(ns ? ns : dsrc);
+                    free(nd ? nd : ddst);
+                    dsrc = ddst = NULL;
+                    dne = 0;
+                    break;
+                }
+                dsrc = ns;
+                ddst = nd;
+                dcap = nc;
+            }
+            dsrc[dne] = si;
+            ddst[dne] = di;
+            dne++;
+        }
+        sqlite3_finalize(st);
+    }
     free(idmap);
+
+    g_flow_cache.data_first = malloc((size_t)n * sizeof(int32_t));
+    g_flow_cache.data_count = calloc((size_t)n, sizeof(int32_t));
+    g_flow_cache.data_edges = malloc(dne > 0 ? (size_t)dne * sizeof(int32_t) : sizeof(int32_t));
+    if (g_flow_cache.data_first && g_flow_cache.data_count && g_flow_cache.data_edges) {
+        for (int e = 0; e < dne; e++)
+            g_flow_cache.data_count[dsrc[e]]++;
+        int32_t offset = 0;
+        for (int i = 0; i < n; i++) {
+            g_flow_cache.data_first[i] = offset;
+            offset += g_flow_cache.data_count[i];
+        }
+        int32_t *cursor2 = calloc((size_t)n, sizeof(int32_t));
+        if (cursor2) {
+            for (int e = 0; e < dne; e++)
+                g_flow_cache.data_edges[g_flow_cache.data_first[dsrc[e]] + cursor2[dsrc[e]]++] =
+                    ddst[e];
+        }
+        free(cursor2);
+    }
+    free(dsrc);
+    free(ddst);
 
     for (int e = 0; e < ne; e++) {
         nodes[src[e]].out_count++;
@@ -551,8 +614,7 @@ char *cbm_atlas_flows_json(cbm_store_t *store, const char *project) {
         char entry_name[192];
         char terminal_name[192];
         fl_display_name(&g_flow_cache.nodes[flow->entry], entry_name, sizeof(entry_name));
-        fl_display_name(&g_flow_cache.nodes[flow->terminal], terminal_name,
-                        sizeof(terminal_name));
+        fl_display_name(&g_flow_cache.nodes[flow->terminal], terminal_name, sizeof(terminal_name));
         char label[CBM_SZ_512];
         snprintf(label, sizeof(label), "%s → %s", entry_name, terminal_name);
         yyjson_mut_obj_add_strcpy(doc, obj, "label", label);
@@ -604,6 +666,140 @@ char *cbm_atlas_flow_json(cbm_store_t *store, const char *project, int flow_id) 
         yyjson_mut_arr_append(steps, obj);
     }
     yyjson_mut_obj_add_val(doc, root, "steps", steps);
+    pthread_mutex_unlock(&g_flow_mu);
+    char *json = yyjson_mut_write(doc, 0, NULL);
+    yyjson_mut_doc_free(doc);
+    return json;
+}
+
+/* ── A→B trace: shortest path over one edge family ────────────── */
+
+enum { TRACE_MAX_DEPTH = 12 };
+
+static int32_t fl_resolve_endpoint(struct sqlite3 *db, const char *project, int64_t id,
+                                   const char *qn) {
+    if (id < 0 && qn && qn[0] && db) {
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(db,
+                               "SELECT id FROM nodes WHERE project=?1 AND "
+                               "qualified_name=?2 ORDER BY id LIMIT 1",
+                               -1, &st, NULL) == SQLITE_OK) {
+            sqlite3_bind_text(st, 1, project, -1, SQLITE_STATIC);
+            sqlite3_bind_text(st, 2, qn, -1, SQLITE_STATIC);
+            if (sqlite3_step(st) == SQLITE_ROW)
+                id = sqlite3_column_int64(st, 0);
+            sqlite3_finalize(st);
+        }
+    }
+    if (id < 0)
+        return -1;
+    /* Map the store id into the cache index (nodes are ordered by id). */
+    int lo = 0, hi = g_flow_cache.node_count - 1;
+    while (lo <= hi) {
+        int mid = lo + (hi - lo) / 2;
+        if (g_flow_cache.nodes[mid].id == id)
+            return mid;
+        if (g_flow_cache.nodes[mid].id < id)
+            lo = mid + 1;
+        else
+            hi = mid - 1;
+    }
+    return -1;
+}
+
+char *cbm_atlas_trace_json(cbm_store_t *store, const char *project, int64_t from_id,
+                           const char *from_qn, int64_t to_id, const char *to_qn,
+                           const char *mode) {
+    if (!store || !project)
+        return NULL;
+    bool data_mode = mode && strcmp(mode, "data") == 0;
+    pthread_mutex_lock(&g_flow_mu);
+    if (fl_ensure_locked(store, project) != 0 || g_flow_cache.node_count == 0) {
+        pthread_mutex_unlock(&g_flow_mu);
+        return NULL;
+    }
+    struct sqlite3 *db = cbm_store_get_db(store);
+    int32_t from = fl_resolve_endpoint(db, project, from_id, from_qn);
+    int32_t to = fl_resolve_endpoint(db, project, to_id, to_qn);
+
+    yyjson_mut_doc *doc = yyjson_mut_doc_new(NULL);
+    yyjson_mut_val *root = yyjson_mut_obj(doc);
+    yyjson_mut_doc_set_root(doc, root);
+    yyjson_mut_obj_add_str(doc, root, "mode", data_mode ? "data" : "calls");
+    yyjson_mut_obj_add_int(doc, root, "max_depth", TRACE_MAX_DEPTH);
+    if (from < 0 || to < 0) {
+        yyjson_mut_obj_add_bool(doc, root, "reachable", false);
+        yyjson_mut_obj_add_str(doc, root, "error",
+                               from < 0 ? "source is not an indexed callable"
+                                        : "target is not an indexed callable");
+        pthread_mutex_unlock(&g_flow_mu);
+        char *json = yyjson_mut_write(doc, 0, NULL);
+        yyjson_mut_doc_free(doc);
+        return json;
+    }
+
+    /* BFS with parent tracking, bounded depth. */
+    int n = g_flow_cache.node_count;
+    int32_t *parent = malloc((size_t)n * sizeof(int32_t));
+    uint8_t *depth = calloc((size_t)n, sizeof(uint8_t));
+    int32_t *queue = malloc((size_t)n * sizeof(int32_t));
+    long long explored = 0;
+    bool found = from == to;
+    if (parent && depth && queue) {
+        for (int i = 0; i < n; i++)
+            parent[i] = -2; /* unvisited */
+        int head = 0, tail = 0;
+        queue[tail++] = from;
+        parent[from] = -1;
+        while (head < tail && !found) {
+            int32_t node = queue[head++];
+            if (depth[node] >= TRACE_MAX_DEPTH)
+                continue;
+            const int32_t first =
+                data_mode ? g_flow_cache.data_first[node] : g_flow_cache.nodes[node].first_out;
+            const int32_t count =
+                data_mode ? g_flow_cache.data_count[node] : g_flow_cache.nodes[node].out_count;
+            for (int e = 0; e < count; e++) {
+                int32_t next = data_mode ? g_flow_cache.data_edges[first + e]
+                                         : g_flow_cache.out_edges[first + e];
+                if (parent[next] != -2)
+                    continue;
+                parent[next] = node;
+                depth[next] = (uint8_t)(depth[node] + 1);
+                explored++;
+                if (next == to) {
+                    found = true;
+                    break;
+                }
+                queue[tail++] = next;
+            }
+        }
+    }
+    yyjson_mut_obj_add_bool(doc, root, "reachable", found);
+    yyjson_mut_obj_add_int(doc, root, "explored", explored);
+    if (found && parent) {
+        /* Reconstruct, then emit source→target order. */
+        int32_t chain[TRACE_MAX_DEPTH + 2];
+        int chain_len = 0;
+        for (int32_t node = to; node != -1 && chain_len < TRACE_MAX_DEPTH + 2;
+             node = from == node ? -1 : parent[node])
+            chain[chain_len++] = node;
+        yyjson_mut_val *path = yyjson_mut_arr(doc);
+        for (int i = chain_len - 1; i >= 0; i--) {
+            const flow_node_t *node = &g_flow_cache.nodes[chain[i]];
+            yyjson_mut_val *obj = yyjson_mut_obj(doc);
+            yyjson_mut_obj_add_int(doc, obj, "id", node->id);
+            yyjson_mut_obj_add_strcpy(doc, obj, "name", node->name ? node->name : "?");
+            if (node->file_path)
+                yyjson_mut_obj_add_strcpy(doc, obj, "file_path", node->file_path);
+            yyjson_mut_arr_append(path, obj);
+        }
+        yyjson_mut_obj_add_val(doc, root, "path", path);
+        yyjson_mut_obj_add_int(doc, root, "hops", chain_len - 1);
+    }
+    free(parent);
+    free(depth);
+    free(queue);
     pthread_mutex_unlock(&g_flow_mu);
     char *json = yyjson_mut_write(doc, 0, NULL);
     yyjson_mut_doc_free(doc);

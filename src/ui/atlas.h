@@ -45,6 +45,19 @@ void cbm_atlas_flows_cache_clear(void);
 char *cbm_atlas_metrics_json(cbm_store_t *store, const char *project);
 void cbm_atlas_metrics_cache_clear(void);
 
+/* ── File history & ownership (atlas_metrics.c) ───────────────────
+ * The rationale proxy: recent commits and authorship of one file, from the
+ * same bounded git-log pass the dashboard churn uses (cached together).
+ * Returns {"available":false} JSON when the project has no git history. */
+char *cbm_atlas_file_history_json(cbm_store_t *store, const char *project, const char *file_path);
+
+/* ── A→B trace (atlas_flows.c) ────────────────────────────────────
+ * Reachability between two callables over CALLS ("calls") or DATA_FLOWS
+ * ("data"): shortest path within a bounded depth, honest about the bound.
+ * Endpoints resolve by node id (>=0) or qualified name. */
+char *cbm_atlas_trace_json(cbm_store_t *store, const char *project, int64_t from_id,
+                           const char *from_qn, int64_t to_id, const char *to_qn, const char *mode);
+
 /* ── Region lookups (layout_regions.c) ────────────────────────────
  * Cache-backed; computing on first use. name_out (optional) receives a
  * heap copy the caller frees. Returns region id or -1. */

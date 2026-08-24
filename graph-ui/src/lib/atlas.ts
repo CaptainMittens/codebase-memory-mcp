@@ -56,6 +56,23 @@ export interface ConnectionPage {
   items: SymbolRef[];
 }
 
+export interface DataFlowRef {
+  id: number;
+  label?: string;
+  name: string;
+  file_path?: string;
+  detail?: Record<string, unknown>;
+}
+
+export interface FileHistory {
+  available: boolean;
+  commits_1y?: number;
+  recent?: { hash: string; time: number; author: string; subject: string }[];
+  top_author?: string;
+  top_author_share?: number;
+  authors?: number;
+}
+
 export interface SymbolBundle {
   node: {
     id: number;
@@ -76,6 +93,9 @@ export interface SymbolBundle {
   tests?: SymbolRef[];
   co_change?: { file_path: string; score?: number }[];
   similar?: { id: number; name: string; file_path?: string; score?: number }[];
+  data_in?: DataFlowRef[];
+  data_out?: DataFlowRef[];
+  file_history?: FileHistory;
 }
 
 export function fetchSymbol(
@@ -234,4 +254,26 @@ export async function searchGraph(
     ...args,
   });
   return { rows: decodeSearchGroups(payload), total: payload.total ?? 0 };
+}
+
+/* ── /api/trace — A→B reachability over calls or data flows ──── */
+
+export interface TracePayload {
+  mode: "calls" | "data";
+  max_depth: number;
+  reachable: boolean;
+  explored?: number;
+  error?: string;
+  hops?: number;
+  path?: { id: number; name: string; file_path?: string }[];
+}
+
+export function fetchTrace(
+  project: string,
+  from: string,
+  to: string,
+  mode: "calls" | "data",
+): Promise<TracePayload> {
+  const params = new URLSearchParams({ project, from, to, mode });
+  return getJson(`/api/trace?${params}`);
 }

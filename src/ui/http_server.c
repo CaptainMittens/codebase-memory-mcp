@@ -54,7 +54,7 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <process.h>
-#include <psapi.h> /* GetProcessMemoryInfo */
+#include <psapi.h>    /* GetProcessMemoryInfo */
 #include <tlhelp32.h> /* CreateToolhelp32Snapshot, Process32First/Next */
 #else
 #include <sys/stat.h>
@@ -591,9 +591,8 @@ static void handle_processes(cbm_http_conn_t *c) {
         pe.dwSize = sizeof(pe);
         for (BOOL ok = Process32First(hSnap, &pe); ok; ok = Process32Next(hSnap, &pe)) {
             if (_stricmp(pe.szExeFile, "codebase-memory-mcp.exe") == 0) {
-                HANDLE hProc = OpenProcess(
-                    PROCESS_QUERY_INFORMATION | PROCESS_VM_READ,
-                    FALSE, pe.th32ProcessID);
+                HANDLE hProc = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE,
+                                           pe.th32ProcessID);
                 if (hProc) {
                     PROCESS_MEMORY_COUNTERS ppmc;
                     FILETIME ftc, fte, ftk, ftu;
@@ -636,13 +635,10 @@ static void handle_processes(cbm_http_conn_t *c) {
                                  "\"command\":\"codebase-memory-mcp\","
                                  "\"is_self\":%s}",
                                  pe.th32ProcessID, cpu_user + cpu_sys,
-                                 (double)proc_rss / (1024.0 * 1024.0),
-                                 elapsed_sec / 86400,
-                                 (elapsed_sec % 86400) / 3600,
-                                 (elapsed_sec % 3600) / 60,
+                                 (double)proc_rss / (1024.0 * 1024.0), elapsed_sec / 86400,
+                                 (elapsed_sec % 86400) / 3600, (elapsed_sec % 3600) / 60,
                                  elapsed_sec % 60,
-                                 pe.th32ProcessID == (DWORD)_getpid()
-                                     ? "true" : "false");
+                                 pe.th32ProcessID == (DWORD)_getpid() ? "true" : "false");
                     if (pos >= (int)sizeof(buf)) {
                         pos = (int)sizeof(buf) - 1;
                     }
@@ -1496,8 +1492,7 @@ static void handle_layout(cbm_http_conn_t *c, const cbm_http_req_t *req) {
         char *regions_json = cbm_layout_regions_json(store, scoped_project);
         cbm_store_close(store);
         if (!regions_json) {
-            cbm_http_replyf(c, 500, g_cors_json,
-                            "{\"error\":\"region computation failed\"}");
+            cbm_http_replyf(c, 500, g_cors_json, "{\"error\":\"region computation failed\"}");
             return;
         }
         cbm_http_replyf(c, 200, g_cors_json, "%s", regions_json);
@@ -1528,8 +1523,7 @@ static void handle_layout(cbm_http_conn_t *c, const cbm_http_req_t *req) {
         char *scoped_json = cbm_layout_to_json(scoped);
         cbm_layout_free(scoped);
         if (!scoped_json) {
-            cbm_http_replyf(c, 500, g_cors_json,
-                            "{\"error\":\"JSON serialization failed\"}");
+            cbm_http_replyf(c, 500, g_cors_json, "{\"error\":\"JSON serialization failed\"}");
             return;
         }
         cbm_http_replyf(c, 200, g_cors_json, "%s", scoped_json);
@@ -1747,8 +1741,8 @@ static void handle_layout(cbm_http_conn_t *c, const cbm_http_req_t *req) {
 
 /* Open the query store for ?project=... or reply with the right error.
  * Returns NULL after replying. */
-static cbm_store_t *atlas_open_project(cbm_http_conn_t *c, const cbm_http_req_t *req,
-                                       char *project, size_t project_cap) {
+static cbm_store_t *atlas_open_project(cbm_http_conn_t *c, const cbm_http_req_t *req, char *project,
+                                       size_t project_cap) {
     if (!cbm_http_query_param(req->query, "project", project, (int)project_cap) ||
         project[0] == '\0') {
         cbm_http_replyf(c, 400, g_cors_json, "{\"error\":\"missing project parameter\"}");
@@ -1829,6 +1823,31 @@ static void handle_atlas_metrics(cbm_http_conn_t *c, const cbm_http_req_t *req) 
     atlas_reply_json(c, json, 500, "{\"error\":\"metrics computation failed\"}");
 }
 
+/* GET /api/trace?project=X&from=QN|#id&to=QN|#id&mode=calls|data — A→B. */
+static void handle_atlas_trace(cbm_http_conn_t *c, const cbm_http_req_t *req) {
+    char project[256] = {0};
+    cbm_store_t *store = atlas_open_project(c, req, project, sizeof(project));
+    if (!store)
+        return;
+    char from_str[1024] = {0};
+    char to_str[1024] = {0};
+    char mode[16] = {0};
+    cbm_http_query_param(req->query, "from", from_str, (int)sizeof(from_str));
+    cbm_http_query_param(req->query, "to", to_str, (int)sizeof(to_str));
+    cbm_http_query_param(req->query, "mode", mode, (int)sizeof(mode));
+    if (!from_str[0] || !to_str[0]) {
+        cbm_store_close(store);
+        cbm_http_replyf(c, 400, g_cors_json, "{\"error\":\"missing from/to parameter\"}");
+        return;
+    }
+    int64_t from_id = from_str[0] == '#' ? strtoll(from_str + 1, NULL, 10) : -1;
+    int64_t to_id = to_str[0] == '#' ? strtoll(to_str + 1, NULL, 10) : -1;
+    char *json = cbm_atlas_trace_json(store, project, from_id, from_id < 0 ? from_str : NULL, to_id,
+                                      to_id < 0 ? to_str : NULL, mode[0] ? mode : "calls");
+    cbm_store_close(store);
+    atlas_reply_json(c, json, 500, "{\"error\":\"trace failed\"}");
+}
+
 /* GET /api/flows?project=X — ranked entry→terminal flows. */
 static void handle_atlas_flows(cbm_http_conn_t *c, const cbm_http_req_t *req) {
     char project[256] = {0};
@@ -1879,9 +1898,9 @@ static yyjson_val *json_unique_member(yyjson_val *object, const char *name) {
  * MCP transport, where the daemon's mutation guard applies. CBM Atlas is the
  * human's window on the graph; this list is what that window may see. */
 static const char *const UI_RPC_READ_TOOLS[] = {
-    "list_projects",     "get_code_snippet", "get_graph_schema",     "search_graph",
-    "search_code",       "trace_path",       "trace_call_path",      "get_architecture",
-    "query_graph",       "detect_changes",   "check_index_coverage", "index_status",
+    "list_projects", "get_code_snippet", "get_graph_schema",     "search_graph",
+    "search_code",   "trace_path",       "trace_call_path",      "get_architecture",
+    "query_graph",   "detect_changes",   "check_index_coverage", "index_status",
 };
 
 static bool rpc_tool_is_read_only(const char *name) {
@@ -2145,6 +2164,12 @@ static void dispatch_request(cbm_http_server_t *srv, cbm_http_conn_t *c,
     /* GET /api/metrics → CBM Atlas dashboard payload */
     if (is_get && cbm_http_path_match(req->path, "/api/metrics*")) {
         handle_atlas_metrics(c, req);
+        return;
+    }
+
+    /* GET /api/trace → CBM Atlas A→B reachability */
+    if (is_get && cbm_http_path_match(req->path, "/api/trace*")) {
+        handle_atlas_trace(c, req);
         return;
     }
 

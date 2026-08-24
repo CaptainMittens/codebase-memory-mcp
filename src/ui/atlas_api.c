@@ -293,13 +293,10 @@ static void aa_add_conn_rows(yyjson_mut_doc *doc, yyjson_mut_val *parent, sqlite
     yyjson_mut_val *items = yyjson_mut_arr(doc);
     while (sqlite3_step(st) == SQLITE_ROW) {
         yyjson_mut_val *row = yyjson_mut_obj(doc);
-        yyjson_mut_obj_add_strcpy(doc, row, "type",
-                                  (const char *)sqlite3_column_text(st, 0));
+        yyjson_mut_obj_add_strcpy(doc, row, "type", (const char *)sqlite3_column_text(st, 0));
         yyjson_mut_obj_add_int(doc, row, "id", sqlite3_column_int64(st, 1));
-        yyjson_mut_obj_add_strcpy(doc, row, "label",
-                                  (const char *)sqlite3_column_text(st, 2));
-        yyjson_mut_obj_add_strcpy(doc, row, "name",
-                                  (const char *)sqlite3_column_text(st, 3));
+        yyjson_mut_obj_add_strcpy(doc, row, "label", (const char *)sqlite3_column_text(st, 2));
+        yyjson_mut_obj_add_strcpy(doc, row, "name", (const char *)sqlite3_column_text(st, 3));
         const char *file = (const char *)sqlite3_column_text(st, 4);
         if (file)
             yyjson_mut_obj_add_strcpy(doc, row, "file_path", file);
@@ -348,17 +345,16 @@ static void aa_add_connections(yyjson_mut_doc *doc, yyjson_mut_val *root, struct
     yyjson_mut_obj_add_int(doc, section, "offset", offset);
 
     const char *rows_sql =
-        inbound
-            ? "SELECT e.type, n.id, n.label, n.name, n.file_path, n.start_line, "
-              "n.qualified_name FROM edges e JOIN nodes n ON n.project=e.project AND "
-              "n.id=e.source_id WHERE e.project=?1 AND e.target_id=?2 AND e.type IN "
-              "(" AA_CALLISH_TYPES ") ORDER BY CASE e.type WHEN 'CALLS' THEN 0 WHEN "
-              "'CALL_REFERENCE' THEN 1 ELSE 2 END, n.id LIMIT ?3 OFFSET ?4"
-            : "SELECT e.type, n.id, n.label, n.name, n.file_path, n.start_line, "
-              "n.qualified_name FROM edges e JOIN nodes n ON n.project=e.project AND "
-              "n.id=e.target_id WHERE e.project=?1 AND e.source_id=?2 AND e.type IN "
-              "(" AA_CALLISH_TYPES ") ORDER BY CASE e.type WHEN 'CALLS' THEN 0 WHEN "
-              "'CALL_REFERENCE' THEN 1 ELSE 2 END, n.id LIMIT ?3 OFFSET ?4";
+        inbound ? "SELECT e.type, n.id, n.label, n.name, n.file_path, n.start_line, "
+                  "n.qualified_name FROM edges e JOIN nodes n ON n.project=e.project AND "
+                  "n.id=e.source_id WHERE e.project=?1 AND e.target_id=?2 AND e.type IN "
+                  "(" AA_CALLISH_TYPES ") ORDER BY CASE e.type WHEN 'CALLS' THEN 0 WHEN "
+                  "'CALL_REFERENCE' THEN 1 ELSE 2 END, n.id LIMIT ?3 OFFSET ?4"
+                : "SELECT e.type, n.id, n.label, n.name, n.file_path, n.start_line, "
+                  "n.qualified_name FROM edges e JOIN nodes n ON n.project=e.project AND "
+                  "n.id=e.target_id WHERE e.project=?1 AND e.source_id=?2 AND e.type IN "
+                  "(" AA_CALLISH_TYPES ") ORDER BY CASE e.type WHEN 'CALLS' THEN 0 WHEN "
+                  "'CALL_REFERENCE' THEN 1 ELSE 2 END, n.id LIMIT ?3 OFFSET ?4";
     if (sqlite3_prepare_v2(db, rows_sql, -1, &st, NULL) == SQLITE_OK) {
         sqlite3_bind_text(st, 1, project, -1, SQLITE_STATIC);
         sqlite3_bind_int64(st, 2, id);
@@ -384,19 +380,18 @@ char *cbm_atlas_symbol_json(cbm_store_t *store, const char *project, int64_t nod
 
     sqlite3_stmt *st = NULL;
     const char *node_sql =
-        node_id >= 0
-            ? "SELECT id, label, name, qualified_name, file_path, start_line, end_line, "
-              "json_extract(properties,'$.docstring'), "
-              "json_extract(properties,'$.is_entry_point'), "
-              "json_extract(properties,'$.is_test'), "
-              "json_extract(properties,'$.is_exported') "
-              "FROM nodes WHERE project=?1 AND id=?2"
-            : "SELECT id, label, name, qualified_name, file_path, start_line, end_line, "
-              "json_extract(properties,'$.docstring'), "
-              "json_extract(properties,'$.is_entry_point'), "
-              "json_extract(properties,'$.is_test'), "
-              "json_extract(properties,'$.is_exported') "
-              "FROM nodes WHERE project=?1 AND qualified_name=?2 ORDER BY id LIMIT 1";
+        node_id >= 0 ? "SELECT id, label, name, qualified_name, file_path, start_line, end_line, "
+                       "json_extract(properties,'$.docstring'), "
+                       "json_extract(properties,'$.is_entry_point'), "
+                       "json_extract(properties,'$.is_test'), "
+                       "json_extract(properties,'$.is_exported') "
+                       "FROM nodes WHERE project=?1 AND id=?2"
+                     : "SELECT id, label, name, qualified_name, file_path, start_line, end_line, "
+                       "json_extract(properties,'$.docstring'), "
+                       "json_extract(properties,'$.is_entry_point'), "
+                       "json_extract(properties,'$.is_test'), "
+                       "json_extract(properties,'$.is_exported') "
+                       "FROM nodes WHERE project=?1 AND qualified_name=?2 ORDER BY id LIMIT 1";
     if (sqlite3_prepare_v2(db, node_sql, -1, &st, NULL) != SQLITE_OK)
         return NULL;
     sqlite3_bind_text(st, 1, project, -1, SQLITE_STATIC);
@@ -471,8 +466,7 @@ char *cbm_atlas_symbol_json(cbm_store_t *store, const char *project, int64_t nod
         while (sqlite3_step(st) == SQLITE_ROW) {
             yyjson_mut_val *row = yyjson_mut_obj(doc);
             yyjson_mut_obj_add_int(doc, row, "id", sqlite3_column_int64(st, 0));
-            yyjson_mut_obj_add_strcpy(doc, row, "name",
-                                      (const char *)sqlite3_column_text(st, 1));
+            yyjson_mut_obj_add_strcpy(doc, row, "name", (const char *)sqlite3_column_text(st, 1));
             const char *tf = (const char *)sqlite3_column_text(st, 2);
             if (tf)
                 yyjson_mut_obj_add_strcpy(doc, row, "file_path", tf);
@@ -511,6 +505,63 @@ char *cbm_atlas_symbol_json(cbm_store_t *store, const char *project, int64_t nod
         yyjson_mut_obj_add_val(doc, root, "co_change", cochange);
     }
 
+    /* Data flows (the "follow the value" family): in and out, with the
+     * arg→param detail the pipeline stored on the edge. */
+    static const char *const data_sql[2] = {
+        "SELECT n.id, n.label, n.name, n.file_path, e.properties FROM edges e JOIN nodes n "
+        "ON n.project=e.project AND n.id=e.source_id WHERE e.project=?1 AND e.target_id=?2 "
+        "AND e.type='DATA_FLOWS' ORDER BY n.id LIMIT 25",
+        "SELECT n.id, n.label, n.name, n.file_path, e.properties FROM edges e JOIN nodes n "
+        "ON n.project=e.project AND n.id=e.target_id WHERE e.project=?1 AND e.source_id=?2 "
+        "AND e.type='DATA_FLOWS' ORDER BY n.id LIMIT 25",
+    };
+    static const char *const data_field[2] = {"data_in", "data_out"};
+    for (int direction = 0; direction < 2; direction++) {
+        if (sqlite3_prepare_v2(db, data_sql[direction], -1, &st, NULL) != SQLITE_OK)
+            continue;
+        sqlite3_bind_text(st, 1, project, -1, SQLITE_STATIC);
+        sqlite3_bind_int64(st, 2, id);
+        yyjson_mut_val *arr = yyjson_mut_arr(doc);
+        while (sqlite3_step(st) == SQLITE_ROW) {
+            yyjson_mut_val *row = yyjson_mut_obj(doc);
+            yyjson_mut_obj_add_int(doc, row, "id", sqlite3_column_int64(st, 0));
+            yyjson_mut_obj_add_strcpy(doc, row, "label", (const char *)sqlite3_column_text(st, 1));
+            yyjson_mut_obj_add_strcpy(doc, row, "name", (const char *)sqlite3_column_text(st, 2));
+            const char *df = (const char *)sqlite3_column_text(st, 3);
+            if (df)
+                yyjson_mut_obj_add_strcpy(doc, row, "file_path", df);
+            const char *props = (const char *)sqlite3_column_text(st, 4);
+            if (props && props[0] && strcmp(props, "{}") != 0) {
+                yyjson_doc *pdoc = yyjson_read(props, strlen(props), 0);
+                if (pdoc) {
+                    yyjson_mut_val *copy = yyjson_val_mut_copy(doc, yyjson_doc_get_root(pdoc));
+                    if (copy)
+                        yyjson_mut_obj_add_val(doc, row, "detail", copy);
+                    yyjson_doc_free(pdoc);
+                }
+            }
+            yyjson_mut_arr_append(arr, row);
+        }
+        sqlite3_finalize(st);
+        yyjson_mut_obj_add_val(doc, root, data_field[direction], arr);
+    }
+
+    /* Recent change history + ownership of the file — the rationale proxy
+     * (the literature's #1 hardest question). */
+    if (file_copy) {
+        char *history = cbm_atlas_file_history_json(store, project, file_copy);
+        if (history) {
+            yyjson_doc *hdoc = yyjson_read(history, strlen(history), 0);
+            if (hdoc) {
+                yyjson_mut_val *copy = yyjson_val_mut_copy(doc, yyjson_doc_get_root(hdoc));
+                if (copy)
+                    yyjson_mut_obj_add_val(doc, root, "file_history", copy);
+                yyjson_doc_free(hdoc);
+            }
+            free(history);
+        }
+    }
+
     /* Near-clones (SIMILAR_TO either direction). */
     if (sqlite3_prepare_v2(
             db,
@@ -526,8 +577,7 @@ char *cbm_atlas_symbol_json(cbm_store_t *store, const char *project, int64_t nod
         while (sqlite3_step(st) == SQLITE_ROW) {
             yyjson_mut_val *row = yyjson_mut_obj(doc);
             yyjson_mut_obj_add_int(doc, row, "id", sqlite3_column_int64(st, 0));
-            yyjson_mut_obj_add_strcpy(doc, row, "name",
-                                      (const char *)sqlite3_column_text(st, 1));
+            yyjson_mut_obj_add_strcpy(doc, row, "name", (const char *)sqlite3_column_text(st, 1));
             const char *sf = (const char *)sqlite3_column_text(st, 2);
             if (sf)
                 yyjson_mut_obj_add_strcpy(doc, row, "file_path", sf);

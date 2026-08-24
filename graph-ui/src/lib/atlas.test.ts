@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { archRows } from "./atlas";
+import { describe, expect, it, vi } from "vitest";
+import { archRows, fetchTrace } from "./atlas";
 import { surprisingCouplings, suggestedQuestions } from "./firstread";
 import { squarify } from "./treemap";
 import { composePrompt } from "./composer";
@@ -132,5 +132,28 @@ describe("composePrompt", () => {
     expect(prompt).toContain('trace_path(qualified_name: "demo.src.store.cbm_store_close"');
     expect(prompt).toContain("Should src/store be split?");
     expect(prompt).toContain("USAGE edges mean the graph could not prove");
+  });
+});
+
+describe("fetchTrace", () => {
+  it("encodes endpoints + mode and returns the trace payload", async () => {
+    const payload = { mode: "data", max_depth: 12, reachable: true, hops: 1 };
+    const mock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(payload),
+    });
+    vi.stubGlobal("fetch", mock);
+    try {
+      const result = await fetchTrace("demo", "pkg.alpha", "#42", "data");
+      expect(result).toEqual(payload);
+      const url = String(mock.mock.calls[0][0]);
+      expect(url).toContain("/api/trace?");
+      expect(url).toContain("project=demo");
+      expect(url).toContain("from=pkg.alpha");
+      expect(url).toContain("to=%2342");
+      expect(url).toContain("mode=data");
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

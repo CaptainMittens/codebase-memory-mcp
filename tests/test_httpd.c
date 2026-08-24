@@ -1091,9 +1091,9 @@ TEST(ui_server_rpc_allows_only_ui_read_tools) {
      * "allowed and dispatched" — tool-level argument errors still ride inside
      * a 200 JSON-RPC envelope. */
     static const char *allowed_tools[] = {
-        "list_projects",  "get_code_snippet", "get_graph_schema",     "search_graph",
-        "search_code",    "trace_path",       "trace_call_path",      "get_architecture",
-        "query_graph",    "detect_changes",   "check_index_coverage", "index_status",
+        "list_projects", "get_code_snippet", "get_graph_schema",     "search_graph",
+        "search_code",   "trace_path",       "trace_call_path",      "get_architecture",
+        "query_graph",   "detect_changes",   "check_index_coverage", "index_status",
     };
     char req[1024];
     char resp[8192];
@@ -1136,12 +1136,12 @@ TEST(ui_server_rpc_allows_only_ui_read_tools) {
         const char *arguments;
         int expected_status;
     } adr_cases[] = {
-        {"{}", 200},                          /* no mode → default "get" */
-        {"{\"mode\":\"get\"}", 200},          /* explicit read */
-        {"{\"mode\":\"sections\"}", 200},     /* header listing */
-        {"{\"mode\":\"update\"}", 403},       /* write */
-        {"{\"mode\":\"store\"}", 403},        /* legacy write alias */
-        {"{\"mode\":1}", 403},                /* non-string mode */
+        {"{}", 200},                                     /* no mode → default "get" */
+        {"{\"mode\":\"get\"}", 200},                     /* explicit read */
+        {"{\"mode\":\"sections\"}", 200},                /* header listing */
+        {"{\"mode\":\"update\"}", 403},                  /* write */
+        {"{\"mode\":\"store\"}", 403},                   /* legacy write alias */
+        {"{\"mode\":1}", 403},                           /* non-string mode */
         {"{\"mode\":\"get\",\"mode\":\"update\"}", 403}, /* smuggled duplicate */
     };
     for (size_t i = 0; i < sizeof(adr_cases) / sizeof(adr_cases[0]); i++) {
@@ -1191,8 +1191,8 @@ TEST(ui_server_atlas_routes_are_wired) {
      * falls through to the static handler's 404. This pins the /api/flow
      * (singular) route, which once used a "?*" pattern that never matched
      * because req->path carries no query string. */
-    static const char *const routes[] = {"/api/tree", "/api/symbol", "/api/flows", "/api/flow",
-                                         "/api/metrics"};
+    static const char *const routes[] = {"/api/tree", "/api/symbol",  "/api/flows",
+                                         "/api/flow", "/api/metrics", "/api/trace"};
     char req[256];
     char resp[4096];
     for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {
