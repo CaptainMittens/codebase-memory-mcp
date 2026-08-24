@@ -104,6 +104,10 @@ export interface Project {
   name: string;
   root_path: string;
   indexed_at: string;
+  /* Totals reported by list_projects — render these immediately; the
+   * per-label schema arrives lazily (a 13 GB index takes ~30 s to scan). */
+  nodes?: number;
+  edges?: number;
 }
 
 export interface SchemaInfo {
