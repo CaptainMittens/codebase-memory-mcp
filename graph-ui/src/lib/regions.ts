@@ -85,3 +85,11 @@ export function lensRegionsPayload(
 export function isBuiltinQn(qn: string): boolean {
   return /(^|\.)builtins?\./.test(qn) || /(^|\.)__builtins__\./.test(qn);
 }
+
+/* Score → word: numbers alone don't teach. Thresholds match the
+ * moderately-connected convention (0.7 / 0.4). */
+export function cohesionWord(cohesion: number): string {
+  if (cohesion >= 0.7) return "tightly connected";
+  if (cohesion >= 0.4) return "moderately connected";
+  return "loosely connected";
+}

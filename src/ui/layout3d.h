@@ -27,6 +27,7 @@ typedef struct {
     float size;     /* visual size */
     uint32_t color; /* 0xRRGGBB */
     int in_calls;   /* incoming CALLS-family degree (full graph, not sampled) */
+    int out_calls;  /* outgoing CALLS degree (full graph) */
     /* Dead-code classification (string literal, NOT freed):
      * "dead"|"single"|"entry"|"test"|"exported"|"normal"|"structural". */
     const char *status;

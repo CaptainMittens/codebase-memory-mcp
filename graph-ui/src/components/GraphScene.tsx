@@ -124,6 +124,8 @@ interface GraphSceneProps {
   /* Fired when a click hits empty space (no node). Used to fly back to the
    * overview after focusing the missed skeleton. */
   onBackgroundClick?: () => void;
+  /* Custom hover card (the region scene shows region facts, not node ones). */
+  renderTooltip?: (node: GraphNode) => React.ReactNode;
 }
 
 export type { CameraTarget };
@@ -137,6 +139,7 @@ export function GraphScene({
   display = DEFAULT_DISPLAY_SETTINGS,
   onNodeClick,
   onBackgroundClick,
+  renderTooltip,
 }: GraphSceneProps) {
   const [hovered, setHovered] = useState<GraphNode | null>(null);
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
@@ -251,7 +254,8 @@ export function GraphScene({
         );
       })}
 
-      {hovered && <NodeTooltip node={hovered} />}
+      {hovered &&
+        (renderTooltip ? renderTooltip(hovered) : <NodeTooltip node={hovered} />)}
 
       <CameraAnimator target={cameraTarget} controlsRef={controlsRef} />
       <IdleAutoRotate controlsRef={controlsRef} />

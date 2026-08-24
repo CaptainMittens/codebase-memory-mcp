@@ -92,8 +92,12 @@ describe("GraphTab region level", () => {
     render(<GraphTab project="demo" />);
 
     /* The region list is the left panel; both regions are listed. */
-    expect(await screen.findByText("src/alpha")).toBeInTheDocument();
-    expect(screen.getByText("src/beta")).toBeInTheDocument();
+    expect(
+      (await screen.findAllByText("src/alpha")).some((el) => el.tagName === "SPAN"),
+    ).toBe(true);
+    expect(
+      screen.getAllByText("src/beta").some((el) => el.tagName === "SPAN"),
+    ).toBe(true);
     expect(screen.getByRole("button", { name: "Load full galaxy" })).toBeInTheDocument();
 
     /* No full layout was fetched — only the region probe. */
@@ -106,7 +110,9 @@ describe("GraphTab region level", () => {
     const fetchMock = mockAtlasFetch();
     render(<GraphTab project="demo" />);
 
-    fireEvent.click(await screen.findByText("src/alpha"));
+    fireEvent.click(
+      (await screen.findAllByText("src/alpha")).find((el) => el.tagName === "SPAN")!,
+    );
     /* The region panel shows provenance and the door in. */
     expect(
       screen.getByText("call community: 2 files, 100% under src/alpha"),
@@ -139,7 +145,9 @@ describe("GraphTab region level", () => {
     expect(await screen.findByText("region: src/alpha")).toBeInTheDocument();
 
     /* Select the only node via the sidebar symbol row (#1197). */
-    fireEvent.click(screen.getByText("src/alpha")); /* expand the tree */
+    fireEvent.click(
+      screen.getAllByText("src/alpha").find((el) => el.tagName === "SPAN")!,
+    ); /* expand the tree */
     fireEvent.click(await screen.findByText("alpha_one"));
     expect(onRouteChange).toHaveBeenCalledWith("7", "0");
     /* The detail panel now shows the node, not a stale or empty panel. */

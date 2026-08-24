@@ -20,7 +20,7 @@ export function NodeTooltip({ node }: NodeTooltipProps) {
       center
       style={{ pointerEvents: "none" }}
     >
-      <div className="bg-[#1a1a2e]/95 backdrop-blur border border-white/10 rounded-md px-3 py-2 text-xs whitespace-nowrap shadow-xl max-w-[350px]">
+      <div className="bg-popover/95 backdrop-blur border border-border/60 rounded-md px-3 py-2 text-xs whitespace-nowrap shadow-xl max-w-[350px]">
         <div className="flex items-center gap-1.5 mb-1">
           <span
             className="w-2 h-2 rounded-full shrink-0"
@@ -43,8 +43,9 @@ export function NodeTooltip({ node }: NodeTooltipProps) {
             />
             <span className="text-foreground/45">{node.status}</span>
             {node.in_calls !== undefined && (
-              <span className="text-foreground/40">
-                · {node.in_calls} caller{node.in_calls === 1 ? "" : "s"}
+              <span className="text-foreground/40 tabular-nums">
+                · in {node.in_calls}
+                {node.out_calls !== undefined && ` · out ${node.out_calls}`}
               </span>
             )}
           </div>

@@ -1848,6 +1848,24 @@ static void handle_atlas_trace(cbm_http_conn_t *c, const cbm_http_req_t *req) {
     atlas_reply_json(c, json, 500, "{\"error\":\"trace failed\"}");
 }
 
+/* GET /api/scent?project=X&q=pattern — per-region search hit counts. */
+static void handle_atlas_scent(cbm_http_conn_t *c, const cbm_http_req_t *req) {
+    char project[256] = {0};
+    cbm_store_t *store = atlas_open_project(c, req, project, sizeof(project));
+    if (!store)
+        return;
+    char q[256] = {0};
+    cbm_http_query_param(req->query, "q", q, (int)sizeof(q));
+    if (strlen(q) < 2) {
+        cbm_store_close(store);
+        cbm_http_replyf(c, 400, g_cors_json, "{\"error\":\"q must be at least 2 characters\"}");
+        return;
+    }
+    char *json = cbm_atlas_scent_json(store, project, q);
+    cbm_store_close(store);
+    atlas_reply_json(c, json, 500, "{\"error\":\"scent failed\"}");
+}
+
 /* GET /api/flows?project=X — ranked entry→terminal flows. */
 static void handle_atlas_flows(cbm_http_conn_t *c, const cbm_http_req_t *req) {
     char project[256] = {0};
@@ -2164,6 +2182,12 @@ static void dispatch_request(cbm_http_server_t *srv, cbm_http_conn_t *c,
     /* GET /api/metrics → CBM Atlas dashboard payload */
     if (is_get && cbm_http_path_match(req->path, "/api/metrics*")) {
         handle_atlas_metrics(c, req);
+        return;
+    }
+
+    /* GET /api/scent → CBM Atlas per-region search counts */
+    if (is_get && cbm_http_path_match(req->path, "/api/scent*")) {
+        handle_atlas_scent(c, req);
         return;
     }
 

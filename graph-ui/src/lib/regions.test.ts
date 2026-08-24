@@ -4,7 +4,9 @@ import {
   regionsToGraphData,
   regionsViewWorthwhile,
   REGIONS_MIN_TOTAL_NODES,
+  cohesionWord,
 } from "./regions";
+import { minimapLayout } from "../components/Minimap";
 import type { Region, RegionsPayload } from "./types";
 
 function region(partial: Partial<Region> & { id: number; name: string }): Region {
@@ -64,5 +66,48 @@ describe("region adapters", () => {
     expect(
       regionsViewWorthwhile(payload([region({ id: 0, name: "a" })], 99999)),
     ).toBe(false);
+  });
+});
+
+describe("cohesionWord", () => {
+  it("maps scores to the 0.7/0.4 word ladder", () => {
+    expect(cohesionWord(0.84)).toBe("tightly connected");
+    expect(cohesionWord(0.62)).toBe("moderately connected");
+    expect(cohesionWord(0.11)).toBe("loosely connected");
+  });
+});
+
+describe("minimapLayout", () => {
+  const region = (id: number, x: number, y: number, members: number): Region => ({
+    id,
+    name: `r${id}`,
+    files: 1,
+    members,
+    cohesion: 0.5,
+    top_nodes: [],
+    x,
+    y,
+    z: 0,
+    size: 10,
+    color: "#123456",
+  });
+  it("projects region positions into the padded viewport", () => {
+    const dots = minimapLayout([region(0, -100, 0, 100), region(1, 100, 50, 25)], 200, 150);
+    expect(dots).toHaveLength(2);
+    expect(dots[0].cx).toBe(12);
+    expect(dots[1].cx).toBe(188);
+    expect(dots[0].cy).toBe(12);
+    expect(dots[1].cy).toBe(138);
+    /* Biggest region gets the biggest dot; both stay in bounds. */
+    expect(dots[0].r).toBeGreaterThan(dots[1].r);
+    for (const dot of dots) {
+      expect(dot.cx).toBeGreaterThanOrEqual(0);
+      expect(dot.cx).toBeLessThanOrEqual(200);
+    }
+  });
+  it("handles a single region without dividing by zero", () => {
+    const dots = minimapLayout([region(7, 42, 42, 10)], 200, 150);
+    expect(dots).toHaveLength(1);
+    expect(Number.isFinite(dots[0].cx)).toBe(true);
   });
 });

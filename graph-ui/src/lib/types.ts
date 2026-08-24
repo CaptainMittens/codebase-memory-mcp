@@ -16,6 +16,7 @@ export interface GraphNode {
   /* Dead-code classification from the backend layout (layout3d.c). */
   status?: NodeStatus;
   in_calls?: number;
+  out_calls?: number;
 }
 
 export type NodeStatus =

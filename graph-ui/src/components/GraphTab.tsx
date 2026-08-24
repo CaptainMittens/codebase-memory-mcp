@@ -9,6 +9,10 @@ import {
   GRAPH_NODE_BUDGET_MAX,
 } from "../hooks/useGraphData";
 import { regionsToGraphData, regionsViewWorthwhile, disambiguateRegionNames, isTestRegion } from "../lib/regions";
+import { fetchScent } from "../lib/atlas";
+import { RegionTooltip } from "./RegionTooltip";
+import { NodeTooltip } from "./NodeTooltip";
+import { Minimap } from "./Minimap";
 import { RegionPanel } from "./RegionPanel";
 import { GraphLoader } from "./GraphLoader";
 import { DisplaySettingsMenu } from "./DisplaySettingsMenu";
@@ -334,6 +338,44 @@ export function GraphTab({
     };
   }, [project]);
 
+  /* Search scent: a query is answerable from the coarsest view — matched
+   * regions brighten and carry hit counts before any drill. */
+  const [scentQuery, setScentQuery] = useState("");
+  const [scent, setScent] = useState<{
+    total: number;
+    unmapped: number;
+    counts: Map<number, number>;
+  } | null>(null);
+  useEffect(() => {
+    setScentQuery("");
+    setScent(null);
+  }, [project]);
+  useEffect(() => {
+    const q = scentQuery.trim();
+    if (!project || q.length < 2) {
+      setScent(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const payload = await fetchScent(project, q);
+        if (cancelled) return;
+        setScent({
+          total: payload.total,
+          unmapped: payload.unmapped,
+          counts: new Map(payload.regions.map((row) => [row.region, row.count])),
+        });
+      } catch {
+        if (!cancelled) setScent(null);
+      }
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [project, scentQuery]);
+
   const handleSelectPath = useCallback(
     (path: string, nodeIds: Set<number>) => {
       if (!filteredData || !path || nodeIds.size === 0) {
@@ -506,6 +548,20 @@ export function GraphTab({
                 ? "call communities + folder groups"
                 : "folder groups"}
             </p>
+            <input
+              type="text"
+              value={scentQuery}
+              onChange={(e) => setScentQuery(e.target.value)}
+              placeholder="find a symbol…"
+              className="mt-2 w-full bg-popover border border-border/50 rounded-md px-2 py-1 text-[13px] text-foreground placeholder-foreground/30 outline-none focus:border-primary/50 transition-all"
+            />
+            {scent && (
+              <p className="text-[12px] text-primary/70 mt-1 tabular-nums">
+                {scent.total.toLocaleString("en-US")} match
+                {scent.total === 1 ? "" : "es"}
+                {scent.unmapped > 0 && ` · ${scent.unmapped} outside regions`}
+              </p>
+            )}
           </div>
           <div className="flex-1 min-h-0 overflow-y-auto py-1">
             {[...displayRegions]
@@ -526,6 +582,11 @@ export function GraphTab({
                   style={{ backgroundColor: region.color }}
                 />
                 <span className="truncate">{region.name}</span>
+                {(scent?.counts.get(region.id) ?? 0) > 0 && (
+                  <span className="text-primary text-[11px] tabular-nums shrink-0 bg-primary/15 rounded-full px-1.5">
+                    {scent?.counts.get(region.id)}
+                  </span>
+                )}
                 <span className="text-foreground/30 ml-auto text-[12px] tabular-nums shrink-0">
                   {region.members.toLocaleString("en-US")}
                 </span>
@@ -549,7 +610,13 @@ export function GraphTab({
             <GraphScene
               data={regionGraph}
               missed={null}
-              highlightedIds={selected ? new Set([selected.id]) : null}
+              highlightedIds={
+                scent && scent.counts.size > 0
+                  ? new Set(scent.counts.keys())
+                  : selected
+                    ? new Set([selected.id])
+                    : null
+              }
               cameraTarget={cameraTarget}
               showLabels={true}
               display={display}
@@ -563,8 +630,31 @@ export function GraphTab({
                 }
               }}
               onBackgroundClick={() => setSelectedRegion(null)}
+              renderTooltip={(node) => {
+                const region = displayRegions.find((r) => r.id === node.id);
+                return region ? (
+                  <RegionTooltip region={region} node={node} />
+                ) : (
+                  <NodeTooltip node={node} />
+                );
+              }}
             />
           </ErrorBoundary>
+
+          <Minimap
+            regions={displayRegions}
+            openRegionId={null}
+            scentCounts={scent?.counts ?? null}
+            onOpen={openRegion}
+            onHome={() =>
+              setCameraTarget(
+                computeCameraTarget(
+                  regionGraph.nodes,
+                  new Set(regionGraph.nodes.map((n) => n.id)),
+                ),
+              )
+            }
+          />
 
           <div className="absolute top-4 left-4 text-[13px] text-foreground/55 pointer-events-none tabular-nums">
             <p>
@@ -717,6 +807,21 @@ export function GraphTab({
               />
             </ErrorBoundary>
 
+            <Minimap
+              regions={displayRegions}
+              openRegionId={view.kind === "region" ? view.region.id : null}
+              scentCounts={null}
+              onOpen={openRegion}
+              onHome={() =>
+                setCameraTarget(
+                  computeCameraTarget(
+                    filteredData.nodes,
+                    new Set(filteredData.nodes.map((n) => n.id)),
+                  ),
+                )
+              }
+            />
+
             {/* HUD */}
             <div className="absolute top-4 left-4 text-[13px] text-foreground/55 pointer-events-none tabular-nums">
               {regionsError && (
@@ -850,6 +955,17 @@ export function GraphTab({
                 allEdges={filteredData.edges}
                 project={project}
                 repoInfo={repoInfo}
+                scopeNote={(() => {
+                  if (view.kind !== "region" || selectedNode.in_calls === undefined)
+                    return null;
+                  const visible = filteredData.edges.filter(
+                    (e) => e.target === selectedNode.id && e.type === "CALLS",
+                  ).length;
+                  const outside = selectedNode.in_calls - visible;
+                  return outside > 0
+                    ? `+${outside.toLocaleString("en-US")} caller${outside === 1 ? "" : "s"} outside this region`
+                    : null;
+                })()}
                 onClose={() => {
                   setSelectedNode(null);
                   setHighlightedIds(null);

@@ -667,17 +667,19 @@ cbm_layout_result_t *cbm_layout_from_nodes(cbm_store_t *store, const char *proje
      * having zero callers. */
     int64_t *node_ids = malloc((size_t)n * sizeof(int64_t));
     int *in_calls = calloc((size_t)n, sizeof(int));
+    int *out_calls = calloc((size_t)n, sizeof(int));
     int *in_usage = calloc((size_t)n, sizeof(int));
     int *in_call_reference = calloc((size_t)n, sizeof(int));
     int *deg_dummy = calloc((size_t)n, sizeof(int));
-    bool dead_degrees_valid = node_ids && in_calls && in_usage && in_call_reference && deg_dummy;
+    bool dead_degrees_valid =
+        node_ids && in_calls && out_calls && in_usage && in_call_reference && deg_dummy;
     if (dead_degrees_valid) {
         for (int i = 0; i < n; i++)
             node_ids[i] = nodes[i].id;
         for (int off = 0; off < n; off += DEAD_DEGREE_CHUNK) {
             int cnt = (n - off < DEAD_DEGREE_CHUNK) ? (n - off) : DEAD_DEGREE_CHUNK;
             if (cbm_store_batch_count_degrees(store, node_ids + off, cnt, "CALLS", in_calls + off,
-                                              deg_dummy + off) != CBM_STORE_OK ||
+                                              out_calls + off) != CBM_STORE_OK ||
                 cbm_store_batch_count_degrees(store, node_ids + off, cnt, "USAGE", in_usage + off,
                                               deg_dummy + off) != CBM_STORE_OK ||
                 cbm_store_batch_count_degrees(store, node_ids + off, cnt, "CALL_REFERENCE",
@@ -764,6 +766,7 @@ cbm_layout_result_t *cbm_layout_from_nodes(cbm_store_t *store, const char *proje
         else
             status = "normal";
         result->nodes[i].in_calls = ic;
+        result->nodes[i].out_calls = dead_degrees_valid ? out_calls[i] : 0;
         result->nodes[i].status = status;
     }
 
@@ -795,6 +798,7 @@ cbm_layout_result_t *cbm_layout_from_nodes(cbm_store_t *store, const char *proje
     free(cdepth);
     free(node_ids);
     free(in_calls);
+    free(out_calls);
     free(in_usage);
     free(in_call_reference);
     free(deg_dummy);
@@ -853,6 +857,7 @@ char *cbm_layout_to_json(const cbm_layout_result_t *r) {
         snprintf(hex, sizeof(hex), "#%06x", r->nodes[i].color);
         yyjson_mut_obj_add_strcpy(doc, nd, "color", hex);
         yyjson_mut_obj_add_int(doc, nd, "in_calls", r->nodes[i].in_calls);
+        yyjson_mut_obj_add_int(doc, nd, "out_calls", r->nodes[i].out_calls);
         if (r->nodes[i].status)
             yyjson_mut_obj_add_str(doc, nd, "status", r->nodes[i].status);
         yyjson_mut_arr_append(na, nd);

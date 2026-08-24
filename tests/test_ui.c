@@ -1452,6 +1452,51 @@ TEST(atlas_symbol_data_flows_and_history_shape) {
     PASS();
 }
 
+TEST(atlas_scent_buckets_matches_by_region) {
+    cbm_layout_regions_cache_clear();
+    cbm_store_t *store = atlas_fixture(NULL);
+    ASSERT_NOT_NULL(store);
+
+    /* "alpha" matches the three alpha_* functions (one region) plus
+     * test_alpha_one in the tests folder region — File nodes are excluded
+     * so a file does not double-count its own symbols. */
+    char *json = cbm_atlas_scent_json(store, "regions-test", "alpha");
+    ASSERT_NOT_NULL(json);
+    yyjson_doc *doc = yyjson_read(json, strlen(json), 0);
+    ASSERT_NOT_NULL(doc);
+    yyjson_val *root = yyjson_doc_get_root(doc);
+    ASSERT_EQ((int)yyjson_get_int(yyjson_obj_get(root, "total")), 4);
+    yyjson_val *regions = yyjson_obj_get(root, "regions");
+    int max_count = 0;
+    long long bucketed = 0;
+    for (size_t i = 0; i < yyjson_arr_size(regions); i++) {
+        int c = (int)yyjson_get_int(yyjson_obj_get(yyjson_arr_get(regions, i), "count"));
+        bucketed += c;
+        if (c > max_count)
+            max_count = c;
+    }
+    ASSERT_EQ(max_count, 3);
+    ASSERT_EQ((int)(bucketed + yyjson_get_int(yyjson_obj_get(root, "unmapped"))), 4);
+    yyjson_doc_free(doc);
+    free(json);
+
+    json = cbm_atlas_scent_json(store, "regions-test", "_two");
+    ASSERT_NOT_NULL(json);
+    doc = yyjson_read(json, strlen(json), 0);
+    root = yyjson_doc_get_root(doc);
+    ASSERT_EQ((int)yyjson_get_int(yyjson_obj_get(root, "total")), 2);
+    ASSERT_EQ((int)yyjson_arr_size(yyjson_obj_get(root, "regions")), 2);
+    yyjson_doc_free(doc);
+    free(json);
+
+    /* Sub-2-char queries refuse rather than scan everything. */
+    ASSERT_NULL(cbm_atlas_scent_json(store, "regions-test", "a"));
+
+    cbm_store_close(store);
+    cbm_layout_regions_cache_clear();
+    PASS();
+}
+
 /* ── Suite ────────────────────────────────────────────────────── */
 
 SUITE(ui) {
@@ -1491,4 +1536,5 @@ SUITE(ui) {
     RUN_TEST(atlas_metrics_totals_and_certainty);
     RUN_TEST(atlas_trace_reachability_calls_and_data);
     RUN_TEST(atlas_symbol_data_flows_and_history_shape);
+    RUN_TEST(atlas_scent_buckets_matches_by_region);
 }

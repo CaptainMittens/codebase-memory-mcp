@@ -595,3 +595,86 @@ char *cbm_atlas_symbol_json(cbm_store_t *store, const char *project, int64_t nod
     yyjson_mut_doc_free(doc);
     return json;
 }
+
+/* ── Scent: per-region hit counts for a symbol-name search ────────
+ * The search-scent idea: a query should be answerable from the coarsest
+ * view, so region blobs and list rows carry match counts before any drill.
+ * Case-insensitive substring match on node name, bucketed by region via the
+ * cached file->region map. */
+
+char *cbm_atlas_scent_json(cbm_store_t *store, const char *project, const char *query) {
+    if (!store || !project || !query || strlen(query) < 2)
+        return NULL;
+    struct sqlite3 *db = cbm_store_get_db(store);
+    if (!db)
+        return NULL;
+
+    enum { SCENT_MAX_MATCHES = 50000, SCENT_MAX_REGIONS = 4096 };
+    long long *counts = calloc(SCENT_MAX_REGIONS, sizeof(long long));
+    if (!counts)
+        return NULL;
+    long long total = 0, unmapped = 0;
+    bool capped = false;
+
+    /* Escape LIKE wildcards so a literal "_" in the query stays literal. */
+    char pattern[512];
+    {
+        size_t w = 0;
+        pattern[w++] = '%';
+        for (const char *c = query; *c && w < sizeof(pattern) - 3; c++) {
+            if (*c == '%' || *c == '_' || *c == '\\')
+                pattern[w++] = '\\';
+            pattern[w++] = *c;
+        }
+        pattern[w++] = '%';
+        pattern[w] = '\0';
+    }
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+                           "SELECT file_path FROM nodes WHERE project=?1 AND name LIKE ?2 "
+                           "ESCAPE '\\' COLLATE NOCASE AND file_path IS NOT NULL "
+                           "AND label NOT IN ('File','Folder')",
+                           -1, &st, NULL) != SQLITE_OK) {
+        free(counts);
+        return NULL;
+    }
+    sqlite3_bind_text(st, 1, project, -1, SQLITE_STATIC);
+    sqlite3_bind_text(st, 2, pattern, -1, SQLITE_STATIC);
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        if (total >= SCENT_MAX_MATCHES) {
+            capped = true;
+            break;
+        }
+        const char *fp = (const char *)sqlite3_column_text(st, 0);
+        total++;
+        int region = fp ? cbm_layout_region_for_file(store, project, fp, NULL) : -1;
+        if (region >= 0 && region < SCENT_MAX_REGIONS)
+            counts[region]++;
+        else
+            unmapped++;
+    }
+    sqlite3_finalize(st);
+
+    yyjson_mut_doc *doc = yyjson_mut_doc_new(NULL);
+    yyjson_mut_val *root = yyjson_mut_obj(doc);
+    yyjson_mut_doc_set_root(doc, root);
+    yyjson_mut_obj_add_strcpy(doc, root, "query", query);
+    yyjson_mut_obj_add_int(doc, root, "total", total);
+    yyjson_mut_obj_add_int(doc, root, "unmapped", unmapped);
+    yyjson_mut_obj_add_bool(doc, root, "capped", capped);
+    yyjson_mut_val *arr = yyjson_mut_arr(doc);
+    for (int i = 0; i < SCENT_MAX_REGIONS; i++) {
+        if (counts[i] == 0)
+            continue;
+        yyjson_mut_val *row = yyjson_mut_obj(doc);
+        yyjson_mut_obj_add_int(doc, row, "region", i);
+        yyjson_mut_obj_add_int(doc, row, "count", counts[i]);
+        yyjson_mut_arr_append(arr, row);
+    }
+    yyjson_mut_obj_add_val(doc, root, "regions", arr);
+    free(counts);
+    char *json = yyjson_mut_write(doc, 0, NULL);
+    yyjson_mut_doc_free(doc);
+    return json;
+}

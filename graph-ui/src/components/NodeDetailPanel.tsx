@@ -21,6 +21,9 @@ interface NodeDetailPanelProps {
   repoInfo: RepoInfo | null;
   onClose: () => void;
   onNavigate: (node: GraphNode) => void;
+  /* Honest-scope note, e.g. "+12 callers outside this region" — the loaded
+   * edges are a window, never the whole truth. */
+  scopeNote?: string | null;
 }
 
 interface SnippetResult {
@@ -56,6 +59,7 @@ export function NodeDetailPanel({
   repoInfo,
   onClose,
   onNavigate,
+  scopeNote = null,
 }: NodeDetailPanelProps) {
   const [code, setCode] = useState<string | null>(null);
   const [codeLoading, setCodeLoading] = useState(false);
@@ -196,6 +200,9 @@ export function NodeDetailPanel({
         <div className="px-4 py-3 space-y-4">
           {outbound.length > 0 && (
             <ConnectionSection title="References" count={outbound.length} icon="→" groups={groupByType(outbound)} onNavigate={onNavigate} />
+          )}
+          {scopeNote && (
+            <p className="text-[12px] text-warn/80">{scopeNote}</p>
           )}
           {inbound.length > 0 && (
             <ConnectionSection title="Referenced by" count={inbound.length} icon="←" groups={groupByType(inbound)} onNavigate={onNavigate} />

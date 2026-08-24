@@ -277,3 +277,18 @@ export function fetchTrace(
   const params = new URLSearchParams({ project, from, to, mode });
   return getJson(`/api/trace?${params}`);
 }
+
+/* ── /api/scent — per-region search hit counts ─────────────────── */
+
+export interface ScentPayload {
+  query: string;
+  total: number;
+  unmapped: number;
+  capped: boolean;
+  regions: { region: number; count: number }[];
+}
+
+export function fetchScent(project: string, q: string): Promise<ScentPayload> {
+  const params = new URLSearchParams({ project, q });
+  return getJson(`/api/scent?${params}`);
+}
