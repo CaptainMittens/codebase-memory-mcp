@@ -35,6 +35,40 @@ import { ErrorBoundary } from "./ErrorBoundary";
 import type { GraphNode, GraphData, Region, RegionsPayload, RepoInfo } from "../lib/types";
 import { colorForStatus } from "../lib/colors";
 
+/* One-time in-place orientation hint for the region scene. Dismissing
+ * persists; navigating away without dismissing does not (skip != dismiss). */
+function GalaxyHint() {
+  const [dismissed, setDismissed] = useState(() => {
+    try {
+      return localStorage.getItem("cbm-hint-galaxy") === "1";
+    } catch {
+      return true;
+    }
+  });
+  if (dismissed) return null;
+  return (
+    <div className="absolute bottom-4 left-4 bg-card/90 backdrop-blur border border-border/50 rounded-md px-3 py-2.5 max-w-[300px] shadow-lg">
+      <p className="text-[13px] text-foreground/70 leading-relaxed">
+        Each sphere is a region of related code. Double-click one to enter it,
+        type above to light up matches, and use ⌂ on the map to fit everything.
+      </p>
+      <button
+        onClick={() => {
+          try {
+            localStorage.setItem("cbm-hint-galaxy", "1");
+          } catch {
+            /* ignore */
+          }
+          setDismissed(true);
+        }}
+        className="mt-1.5 text-[12px] text-primary hover:text-primary/80 transition-colors"
+      >
+        Got it
+      </button>
+    </div>
+  );
+}
+
 /* Persist panel widths */
 function loadWidth(key: string, fallback: number): number {
   try {
@@ -63,6 +97,8 @@ function saveNodeBudget(project: string, value: number) {
 }
 
 interface GraphTabProps {
+  /* False while the tab is hidden-but-mounted: the render loop pauses. */
+  active?: boolean;
   project: string | null;
   /* Deep-link state from the URL (?node=&region=) and the reporter back. */
   routeNode?: string | null;
@@ -84,6 +120,7 @@ export function formatGraphLimitNotice(data: GraphData | null): string | null {
 }
 
 export function GraphTab({
+  active = true,
   project,
   routeNode = null,
   routeRegion = null,
@@ -608,6 +645,7 @@ export function GraphTab({
         <div className="flex-1 relative overflow-hidden">
           <ErrorBoundary>
             <GraphScene
+              active={active}
               data={regionGraph}
               missed={null}
               highlightedIds={
@@ -665,6 +703,8 @@ export function GraphTab({
               double-click a region (or use its panel) to open it
             </p>
           </div>
+
+          <GalaxyHint />
 
           <div className="absolute top-4 right-4 flex gap-2 items-center">
             <Button variant="outline" size="sm" onClick={loadFullGalaxy}>
@@ -796,6 +836,7 @@ export function GraphTab({
           <>
             <ErrorBoundary>
               <GraphScene
+              active={active}
                 data={filteredData}
                 missed={showMissedSkeleton ? missedSkeleton : null}
                 highlightedIds={highlightedIds}

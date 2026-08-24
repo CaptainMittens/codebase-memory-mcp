@@ -12,6 +12,7 @@ import {
   type FlowsPayload,
   type TracePayload,
 } from "../lib/atlas";
+import { groupFlowsByEntry } from "../lib/flowgroup";
 import { AddToPromptButton } from "./PromptBasket";
 
 interface FlowsTabProps {
@@ -125,6 +126,7 @@ export function FlowsTab({ project, flowId, onOpenFlow, onOpenSymbol }: FlowsTab
   const [traceTo, setTraceTo] = useState<string | null>(null);
   const [traceMode, setTraceMode] = useState<"calls" | "data">("calls");
   const [trace, setTrace] = useState<TracePayload | null>(null);
+  const [expandedEntries, setExpandedEntries] = useState<Set<string>>(new Set());
   const [tracing, setTracing] = useState(false);
 
   const runTrace = async () => {
@@ -299,27 +301,53 @@ export function FlowsTab({ project, flowId, onOpenFlow, onOpenSymbol }: FlowsTab
                   <p className="px-4 pt-2 pb-1 text-[12px] uppercase tracking-widest text-foreground/40">
                     {groupKey === "cross" ? "across regions" : "within one region"}
                   </p>
-                  {flows.map((flow) => (
-                    <button
-                      key={flow.id}
-                      onClick={() => onOpenFlow(flow.id)}
-                      className={`flex items-center gap-2 w-full text-left px-4 py-[6px] transition-colors ${
-                        flowId === flow.id
-                          ? "bg-primary/10 text-primary"
-                          : "text-foreground/60 hover:text-foreground/85 hover:bg-surface-3"
-                      }`}
-                    >
-                      <span className="text-[13px] font-mono truncate flex-1">{flow.label}</span>
-                      <span className="text-[12px] tabular-nums text-foreground/40 shrink-0">
-                        {flow.steps}
-                      </span>
-                      {!flow.sink_terminated && (
-                        <span className="text-[12px] text-foreground/35 shrink-0" title="walk stopped at the depth cap, not at a sink">
-                          …
-                        </span>
-                      )}
-                    </button>
-                  ))}
+                  {groupFlowsByEntry(flows).map((group) => {
+                    const groupKey2 = `${groupKey}:${group.entryName}`;
+                    const expanded = expandedEntries.has(groupKey2);
+                    const visible = expanded ? group.flows : group.flows.slice(0, 1);
+                    return (
+                      <div key={groupKey2}>
+                        {visible.map((flow) => (
+                          <button
+                            key={flow.id}
+                            onClick={() => onOpenFlow(flow.id)}
+                            className={`flex items-center gap-2 w-full text-left px-4 py-[6px] transition-colors ${
+                              flowId === flow.id
+                                ? "bg-primary/10 text-primary"
+                                : "text-foreground/60 hover:text-foreground/85 hover:bg-surface-3"
+                            }`}
+                          >
+                            <span className="text-[13px] font-mono truncate flex-1">{flow.label}</span>
+                            <span className="text-[12px] tabular-nums text-foreground/40 shrink-0">
+                              {flow.steps}
+                            </span>
+                            {!flow.sink_terminated && (
+                              <span className="text-[12px] text-foreground/35 shrink-0" title="walk stopped at the depth cap, not at a sink">
+                                …
+                              </span>
+                            )}
+                          </button>
+                        ))}
+                        {group.flows.length > 1 && (
+                          <button
+                            onClick={() =>
+                              setExpandedEntries((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(groupKey2)) next.delete(groupKey2);
+                                else next.add(groupKey2);
+                                return next;
+                              })
+                            }
+                            className="w-full text-left px-4 py-[3px] text-[12px] text-foreground/40 hover:text-primary transition-colors"
+                          >
+                            {expanded
+                              ? "− collapse"
+                              : `× ${group.flows.length} journeys from ${group.entryName} — show all`}
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               );
             })}

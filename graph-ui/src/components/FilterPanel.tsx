@@ -131,7 +131,7 @@ export function FilterPanel({
                       key={label}
                       onClick={() => onToggleLabel(label)}
                       className={`inline-flex items-center gap-1 px-1.5 py-[3px] rounded-md text-[12px] font-medium transition-all border ${
-                        on ? "border-white/[0.08] bg-popover" : "border-transparent opacity-25"
+                        on ? "border-white/[0.08] bg-popover" : "border-transparent opacity-25 line-through"
                       }`}
                     >
                       <span className="w-[5px] h-[5px] rounded-full" style={{ backgroundColor: on ? c : "#444" }} />
@@ -156,7 +156,7 @@ export function FilterPanel({
                       key={type}
                       onClick={() => onToggleEdgeType(type)}
                       className={`inline-flex items-center gap-1 px-1.5 py-[3px] rounded-md text-[12px] font-medium transition-all border ${
-                        on ? "border-border bg-popover text-foreground/60" : "border-transparent opacity-20 text-foreground/45"
+                        on ? "border-border bg-popover text-foreground/60" : "border-transparent opacity-20 text-foreground/45 line-through"
                       }`}
                     >
                       {type.replace(/_/g, " ").toLowerCase()}

@@ -111,6 +111,8 @@ function IdleAutoRotate({
 /* ── Main scene ─────────────────────────────────────────── */
 
 interface GraphSceneProps {
+  /* False pauses the render loop (hidden-but-mounted tab). */
+  active?: boolean;
   data: GraphData;
   /* Missed skeleton (#963): pre-offset, pre-painted white nodes + edges of
    * the not-fully-indexed files, rendered as a ghost cluster beside the
@@ -131,6 +133,7 @@ interface GraphSceneProps {
 export type { CameraTarget };
 
 export function GraphScene({
+  active = true,
   data,
   missed = null,
   highlightedIds,
@@ -155,6 +158,7 @@ export function GraphScene({
 
   return (
     <Canvas
+      frameloop={active ? "always" : "never"}
       camera={{ position: [0, 0, 800], fov: 50, near: 0.1, far: 100000 }}
       style={{ background: "#0D0F12" }}
       dpr={GRAPH_CANVAS_DPR}

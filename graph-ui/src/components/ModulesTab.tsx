@@ -105,6 +105,22 @@ export function ModulesTab({
     [project],
   );
 
+  const [viewMode, setViewMode] = useState<"map" | "bars">(() => {
+    try {
+      return localStorage.getItem("cbm-modules-view") === "bars" ? "bars" : "map";
+    } catch {
+      return "map";
+    }
+  });
+  const switchView = (mode: "map" | "bars") => {
+    setViewMode(mode);
+    try {
+      localStorage.setItem("cbm-modules-view", mode);
+    } catch {
+      /* ignore */
+    }
+  };
+
   const crumbs = useMemo(() => {
     const parts = path ? path.split("/") : [];
     return [{ label: "root", path: "" }].concat(
@@ -154,8 +170,23 @@ export function ModulesTab({
             </button>
           </span>
         ))}
+        <div className="ml-auto flex items-center gap-0.5 bg-popover rounded-md p-0.5 border border-border/40">
+          {(["map", "bars"] as const).map((mode) => (
+            <button
+              key={mode}
+              onClick={() => switchView(mode)}
+              className={`px-2 py-0.5 rounded text-[12px] transition-colors ${
+                viewMode === mode
+                  ? "bg-primary/20 text-primary"
+                  : "text-foreground/45 hover:text-foreground/70"
+              }`}
+            >
+              {mode}
+            </button>
+          ))}
+        </div>
         {tree && (
-          <span className="ml-auto text-[13px] text-foreground/45 font-mono">
+          <span className="text-[13px] text-foreground/45 font-mono">
             {tree.files.toLocaleString("en-US")} files ·{" "}
             {tree.symbols.toLocaleString("en-US")} symbols
             {tree.children_dropped ? ` · ${tree.children_dropped} children not shown` : ""}
@@ -169,6 +200,47 @@ export function ModulesTab({
           {!tree ? (
             <div className="flex items-center justify-center h-full">
               <p className="text-foreground/45 text-sm">Measuring the territory…</p>
+            </div>
+          ) : viewMode === "bars" ? (
+            <div className="h-full overflow-y-auto pr-2">
+              {[...tree.children]
+                .sort((a, b) => b.symbols - a.symbols)
+                .map((child) => {
+                  const meta =
+                    child.region !== undefined ? regionMeta.get(child.region) : undefined;
+                  const max = Math.max(...tree.children.map((c) => c.symbols), 1);
+                  return (
+                    <button
+                      key={child.path}
+                      onClick={() =>
+                        child.kind === "dir" ? onNavigatePath(child.path) : openFile(child)
+                      }
+                      className="flex items-center gap-2 w-full text-left px-2 py-[5px] rounded-md hover:bg-surface-3 transition-colors group"
+                    >
+                      <span
+                        className="w-[7px] h-[7px] rounded-full shrink-0"
+                        style={{ backgroundColor: meta?.color ?? NEUTRAL }}
+                      />
+                      <span className="text-[13px] font-mono text-foreground/70 group-hover:text-foreground/90 truncate w-[220px] shrink-0 transition-colors">
+                        {child.name}
+                        {child.kind === "dir" ? "/" : ""}
+                      </span>
+                      <span className="flex-1 h-[10px] bg-surface-3/60 rounded-sm overflow-hidden">
+                        <span
+                          className="block h-full rounded-sm"
+                          style={{
+                            width: `${Math.max(1, (child.symbols / max) * 100)}%`,
+                            backgroundColor: meta?.color ?? NEUTRAL,
+                            opacity: 0.65,
+                          }}
+                        />
+                      </span>
+                      <span className="text-[12px] tabular-nums text-foreground/40 shrink-0 w-[70px] text-right">
+                        {child.symbols.toLocaleString("en-US")}
+                      </span>
+                    </button>
+                  );
+                })}
             </div>
           ) : (
             <svg

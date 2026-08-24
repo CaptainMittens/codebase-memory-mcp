@@ -74,6 +74,13 @@ export function App() {
   const t = useUiMessages();
   const [route, setRoute] = useState<RouteState>(readRoute);
   const [commandOpen, setCommandOpen] = useState(false);
+  /* The galaxy keeps its WebGL context and layout across tab switches:
+   * mounted once visited, hidden with `invisible` (never display:none, which
+   * would zero the canvas), frameloop paused while hidden. */
+  const [graphVisited, setGraphVisited] = useState(false);
+  useEffect(() => {
+    if (route.tab === "graph") setGraphVisited(true);
+  }, [route.tab]);
   const { tab: activeTab, project: selectedProject } = route;
 
   useEffect(() => {
@@ -217,7 +224,26 @@ export function App() {
         </header>
 
         {/* Content */}
-        <main className="flex-1 min-h-0">
+        <main className="flex-1 min-h-0 relative">
+          {graphVisited && (
+            <div
+              className={
+                activeTab === "graph"
+                  ? "h-full"
+                  : "invisible pointer-events-none absolute inset-0"
+              }
+            >
+              <GraphTab
+                active={activeTab === "graph"}
+                project={selectedProject}
+                routeNode={route.node}
+                routeRegion={route.region}
+                onRouteChange={(node, region) =>
+                  navigate({ tab: "graph", node, region })
+                }
+              />
+            </div>
+          )}
           {activeTab === "overview" && selectedProject ? (
             <OverviewTab
               project={selectedProject}
@@ -235,16 +261,8 @@ export function App() {
               onOpenSymbol={openSymbol}
               onOpenRegion={openRegion}
             />
-          ) : activeTab === "graph" ? (
-            <GraphTab
-              project={selectedProject}
-              routeNode={route.node}
-              routeRegion={route.region}
-              onRouteChange={(node, region) =>
-                navigate({ tab: "graph", node, region })
-              }
-            />
-          ) : activeTab === "flows" && selectedProject ? (
+          ) : activeTab === "graph" ? null : activeTab === "flows" &&
+            selectedProject ? (
             <FlowsTab
               project={selectedProject}
               flowId={route.flow !== null ? Number(route.flow) : null}
