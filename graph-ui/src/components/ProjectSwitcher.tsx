@@ -20,6 +20,7 @@ export function ProjectSwitcher({
   const [open, setOpen] = useState(false);
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [query, setQuery] = useState("");
+  const [anchor, setAnchor] = useState<{ top: number; left: number } | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
@@ -33,21 +34,21 @@ export function ProjectSwitcher({
   useEffect(() => {
     if (!open) return;
     setQuery("");
+    /* The panel is portaled to <body>, so anchor it to the button. */
+    const rect = rootRef.current?.getBoundingClientRect();
+    if (rect) setAnchor({ top: rect.bottom + 6, left: rect.left });
     /* Focus lands in the filter so typing narrows immediately. */
     const focusTimer = setTimeout(() => inputRef.current?.focus(), 0);
-    const onDocClick = (event: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(event.target as Node))
-        setOpen(false);
-    };
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") setOpen(false);
     };
-    document.addEventListener("mousedown", onDocClick);
+    const onResize = () => setOpen(false);
     document.addEventListener("keydown", onKey);
+    window.addEventListener("resize", onResize);
     return () => {
       clearTimeout(focusTimer);
-      document.removeEventListener("mousedown", onDocClick);
       document.removeEventListener("keydown", onKey);
+      window.removeEventListener("resize", onResize);
     };
   }, [open]);
 
@@ -75,20 +76,23 @@ export function ProjectSwitcher({
         <span className="font-mono truncate">{selected ?? "Select a project…"}</span>
         <span className="text-foreground/40 text-[11px] shrink-0">▾</span>
       </button>
-      {open && (
-        <>
-          {/* Backdrop: dims the page so the panel reads as a layer, and
-           * makes click-away obvious. Portaled to <body> — the header's
-           * backdrop-filter makes it the containing block for fixed
-           * children, which would clamp the overlay to the header bar. */}
-          {createPortal(
+      {open &&
+        anchor &&
+        /* BOTH the backdrop and the panel are portaled to <body>. The
+         * header's backdrop-filter makes it a stacking context, so anything
+         * left inside paints as one atomic layer BELOW a body-level
+         * overlay — the first version dimmed its own panel. Out here the
+         * order is explicit: backdrop z-20, panel z-30. */
+        createPortal(
+          <>
             <div
               className="fixed inset-0 bg-black/50 z-20"
               onMouseDown={() => setOpen(false)}
-            />,
-            document.body,
-          )}
-          <div className="absolute top-full left-0 mt-1.5 w-[340px] bg-surface-3 border border-border rounded-md shadow-2xl shadow-black/60 z-30 overflow-hidden">
+            />
+            <div
+              className="fixed w-[340px] bg-surface-3 border border-border rounded-md shadow-2xl shadow-black/60 z-30 overflow-hidden"
+              style={{ top: anchor.top, left: anchor.left }}
+            >
             <div className="p-2 border-b border-border/60">
               <input
                 ref={inputRef}
@@ -132,20 +136,21 @@ export function ProjectSwitcher({
                 </button>
               ))}
             </div>
-            <div className="border-t border-border/60 py-1 bg-surface-3">
-              <button
-                onClick={() => {
-                  setOpen(false);
-                  onAllProjects();
-                }}
-                className="w-full text-left px-3 py-1.5 text-[13px] text-foreground/55 hover:text-foreground/85 hover:bg-surface-4 transition-colors"
-              >
-                {allProjectsLabel} — manage &amp; index →
-              </button>
+              <div className="border-t border-border/60 py-1 bg-surface-3">
+                <button
+                  onClick={() => {
+                    setOpen(false);
+                    onAllProjects();
+                  }}
+                  className="w-full text-left px-3 py-1.5 text-[13px] text-foreground/55 hover:text-foreground/85 hover:bg-surface-4 transition-colors"
+                >
+                  {allProjectsLabel} — manage &amp; index →
+                </button>
+              </div>
             </div>
-          </div>
-        </>
-      )}
+          </>,
+          document.body,
+        )}
     </div>
   );
 }
