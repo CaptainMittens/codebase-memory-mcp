@@ -3,8 +3,16 @@
  * whole blast radius one click from the prompt composer. */
 import { useEffect, useMemo, useState } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { fetchChanges, archRows, type ArchitectureJson } from "../lib/atlas";
+import {
+  fetchChanges,
+  fetchBlast,
+  archRows,
+  type ArchitectureJson,
+  type BlastPayload,
+} from "../lib/atlas";
 import { usePromptBasket } from "./PromptBasket";
+import { fetchRegions } from "../hooks/useGraphData";
+import { disambiguateRegionNames } from "../lib/regions";
 
 interface ChangesTabProps {
   project: string;
@@ -32,6 +40,8 @@ export function ChangesTab({ project, onOpenSymbol }: ChangesTabProps) {
   const [result, setResult] = useState<ArchitectureJson | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [blast, setBlast] = useState<BlastPayload | null>(null);
+  const [regionNames, setRegionNames] = useState<Map<number, string>>(new Map());
   const basket = usePromptBasket();
 
   const run = () => {
@@ -46,6 +56,21 @@ export function ChangesTab({ project, onOpenSymbol }: ChangesTabProps) {
   useEffect(() => {
     setResult(null);
     setError(null);
+    setBlast(null);
+    /* Region display names, disambiguated the same way the galaxy does
+     * (duplicate folder names get their hub appended). */
+    let cancelled = false;
+    fetchRegions(project)
+      .then((payload) => {
+        if (cancelled) return;
+        setRegionNames(
+          new Map(disambiguateRegionNames(payload.regions).map((r) => [r.id, r.name])),
+        );
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
   }, [project]);
 
   const sections = useMemo(() => {
@@ -75,6 +100,41 @@ export function ChangesTab({ project, onOpenSymbol }: ChangesTabProps) {
       (a, b) => RISK_ORDER.indexOf(riskOf(a)) - RISK_ORDER.indexOf(riskOf(b)),
     );
   }, [sections]);
+
+  /* Blast radius: the impacted symbols' files (falling back to the raw
+   * changed files) bucketed by region server-side — "this change touches
+   * N regions" is the review signal git cannot compute. */
+  useEffect(() => {
+    if (!result) {
+      setBlast(null);
+      return;
+    }
+    const files = new Set<string>();
+    for (const row of affected) {
+      if (typeof row.file === "string" && row.file) files.add(row.file);
+    }
+    const changedFiles = (result as { changed_files?: unknown }).changed_files;
+    if (files.size === 0 && Array.isArray(changedFiles)) {
+      for (const file of changedFiles) {
+        if (typeof file === "string" && !file.endsWith("/")) files.add(file);
+      }
+    }
+    if (files.size === 0) {
+      setBlast(null);
+      return;
+    }
+    let cancelled = false;
+    fetchBlast(project, [...files].slice(0, 200))
+      .then((payload) => {
+        if (!cancelled) setBlast(payload);
+      })
+      .catch(() => {
+        if (!cancelled) setBlast(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [project, result, affected]);
 
   return (
     <ScrollArea className="h-full">
@@ -110,6 +170,44 @@ export function ChangesTab({ project, onOpenSymbol }: ChangesTabProps) {
             </button>
           )}
         </div>
+
+        {blast && blast.regions.length > 0 && (
+          <div className="bg-card border border-border/40 rounded-md p-4 mb-4">
+            <p className="text-[13px] text-foreground/80 mb-2">
+              Your change reaches{" "}
+              <span className="tabular-nums font-medium">{blast.files}</span> file
+              {blast.files === 1 ? "" : "s"} across{" "}
+              <span
+                className={`tabular-nums font-medium ${blast.regions.length >= 3 ? "text-warn" : ""}`}
+              >
+                {blast.regions.length}
+              </span>{" "}
+              region{blast.regions.length === 1 ? "" : "s"}
+              {blast.unmapped > 0 && ` (+${blast.unmapped} outside regions)`}
+              {blast.truncated && " — file list truncated at 200"}
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              {[...blast.regions]
+                .sort((a, b) => b.count - a.count)
+                .map((region) => (
+                  <span
+                    key={region.region}
+                    className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-popover border border-border/50 text-[12px] text-foreground/60 tabular-nums"
+                  >
+                    {regionNames.get(region.region) ?? region.name ?? `region ${region.region}`}
+                    <span className="text-foreground/40">× {region.count}</span>
+                  </span>
+                ))}
+            </div>
+            {blast.regions.length >= 3 && (
+              <p className="text-[12px] text-warn/80 mt-2">
+                Spanning {blast.regions.length} regions in one change is where regressions
+                hide — consider splitting, or cite the region names in your prompt so the
+                agent checks each seam.
+              </p>
+            )}
+          </div>
+        )}
 
         {error && <p className="text-red-400/80 text-[12px] mb-3">{error}</p>}
         {!result && !loading && !error && (

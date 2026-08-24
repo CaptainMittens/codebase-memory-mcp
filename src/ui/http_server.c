@@ -1848,6 +1848,24 @@ static void handle_atlas_trace(cbm_http_conn_t *c, const cbm_http_req_t *req) {
     atlas_reply_json(c, json, 500, "{\"error\":\"trace failed\"}");
 }
 
+/* GET /api/blast?project=X&files=a,b,c — bucket a file list by region. */
+static void handle_atlas_blast(cbm_http_conn_t *c, const cbm_http_req_t *req) {
+    char project[256] = {0};
+    cbm_store_t *store = atlas_open_project(c, req, project, sizeof(project));
+    if (!store)
+        return;
+    char files[8192] = {0};
+    cbm_http_query_param(req->query, "files", files, (int)sizeof(files));
+    if (!files[0]) {
+        cbm_store_close(store);
+        cbm_http_replyf(c, 400, g_cors_json, "{\"error\":\"missing files parameter\"}");
+        return;
+    }
+    char *json = cbm_atlas_blast_json(store, project, files);
+    cbm_store_close(store);
+    atlas_reply_json(c, json, 500, "{\"error\":\"blast failed\"}");
+}
+
 /* GET /api/bridges?project=X — boundary spanners by distinct-region reach. */
 static void handle_atlas_bridges(cbm_http_conn_t *c, const cbm_http_req_t *req) {
     char project[256] = {0};
@@ -2193,6 +2211,12 @@ static void dispatch_request(cbm_http_server_t *srv, cbm_http_conn_t *c,
     /* GET /api/metrics → CBM Atlas dashboard payload */
     if (is_get && cbm_http_path_match(req->path, "/api/metrics*")) {
         handle_atlas_metrics(c, req);
+        return;
+    }
+
+    /* GET /api/blast → CBM Atlas region bucket for a file list */
+    if (is_get && cbm_http_path_match(req->path, "/api/blast*")) {
+        handle_atlas_blast(c, req);
         return;
     }
 

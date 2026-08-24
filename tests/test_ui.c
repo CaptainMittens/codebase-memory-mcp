@@ -1653,6 +1653,43 @@ TEST(atlas_symbol_overflow_tail_and_dataflow_presence) {
     PASS();
 }
 
+TEST(atlas_blast_buckets_files_by_region) {
+    cbm_layout_regions_cache_clear();
+    cbm_store_t *store = atlas_fixture(NULL);
+    ASSERT_NOT_NULL(store);
+
+    char *json = cbm_atlas_blast_json(store, "regions-test",
+                                      "src/alpha/a1.c,src/beta/b1.c,src/alpha/a2.c,unknown.c");
+    ASSERT_NOT_NULL(json);
+    yyjson_doc *doc = yyjson_read(json, strlen(json), 0);
+    ASSERT_NOT_NULL(doc);
+    yyjson_val *root = yyjson_doc_get_root(doc);
+    ASSERT_EQ((int)yyjson_get_int(yyjson_obj_get(root, "files")), 4);
+    yyjson_val *regions = yyjson_obj_get(root, "regions");
+    long long bucketed = 0;
+    int max_count = 0;
+    for (size_t i = 0; i < yyjson_arr_size(regions); i++) {
+        yyjson_val *row = yyjson_arr_get(regions, i);
+        ASSERT_NOT_NULL(yyjson_get_str(yyjson_obj_get(row, "name")));
+        int c = (int)yyjson_get_int(yyjson_obj_get(row, "count"));
+        bucketed += c;
+        if (c > max_count)
+            max_count = c;
+    }
+    /* Every file is accounted for: bucketed + unmapped == files. */
+    long long unmapped = yyjson_get_int(yyjson_obj_get(root, "unmapped"));
+    ASSERT_EQ((int)(bucketed + unmapped), 4);
+    ASSERT_EQ(max_count, 2); /* both alpha files land in one region */
+    yyjson_doc_free(doc);
+    free(json);
+
+    ASSERT_NULL(cbm_atlas_blast_json(store, "regions-test", ""));
+
+    cbm_store_close(store);
+    cbm_layout_regions_cache_clear();
+    PASS();
+}
+
 /* ── Suite ────────────────────────────────────────────────────── */
 
 SUITE(ui) {
@@ -1695,4 +1732,5 @@ SUITE(ui) {
     RUN_TEST(atlas_scent_buckets_matches_by_region);
     RUN_TEST(atlas_bridges_rank_by_region_reach);
     RUN_TEST(atlas_symbol_overflow_tail_and_dataflow_presence);
+    RUN_TEST(atlas_blast_buckets_files_by_region);
 }

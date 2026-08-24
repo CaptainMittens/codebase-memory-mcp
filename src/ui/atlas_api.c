@@ -883,3 +883,82 @@ char *cbm_atlas_bridges_json(cbm_store_t *store, const char *project) {
     yyjson_mut_doc_free(doc);
     return json;
 }
+
+/* ── Blast: bucket a file list by region ──────────────────────────
+ * The Changes tab hands the impacted files here; the answer is the
+ * graph-native review signal "this change touches N regions". */
+
+char *cbm_atlas_blast_json(cbm_store_t *store, const char *project, const char *files_csv) {
+    if (!store || !project || !files_csv || !files_csv[0])
+        return NULL;
+
+    enum { BL_MAX_REGIONS = 4096, BL_MAX_FILES = 200 };
+    long long *counts = calloc(BL_MAX_REGIONS, sizeof(long long));
+    char **names = calloc(BL_MAX_REGIONS, sizeof(char *));
+    if (!counts || !names) {
+        free(counts);
+        free(names);
+        return NULL;
+    }
+    int files = 0, unmapped = 0;
+    bool truncated = false;
+
+    char *copy = strdup(files_csv);
+    if (!copy) {
+        free(counts);
+        free(names);
+        return NULL;
+    }
+    char *cursor = copy;
+    while (cursor && *cursor) {
+        char *comma = strchr(cursor, ',');
+        if (comma)
+            *comma = '\0';
+        if (*cursor) {
+            if (files >= BL_MAX_FILES) {
+                truncated = true;
+                break;
+            }
+            files++;
+            char *region_name = NULL; /* strdup'd by the lookup — we own it */
+            int region = cbm_layout_region_for_file(store, project, cursor, &region_name);
+            if (region >= 0 && region < BL_MAX_REGIONS) {
+                counts[region]++;
+                if (!names[region] && region_name) {
+                    names[region] = region_name;
+                    region_name = NULL;
+                }
+            } else {
+                unmapped++;
+            }
+            free(region_name);
+        }
+        cursor = comma ? comma + 1 : NULL;
+    }
+    free(copy);
+
+    yyjson_mut_doc *doc = yyjson_mut_doc_new(NULL);
+    yyjson_mut_val *root = yyjson_mut_obj(doc);
+    yyjson_mut_doc_set_root(doc, root);
+    yyjson_mut_obj_add_int(doc, root, "files", files);
+    yyjson_mut_obj_add_int(doc, root, "unmapped", unmapped);
+    yyjson_mut_obj_add_bool(doc, root, "truncated", truncated);
+    yyjson_mut_val *arr = yyjson_mut_arr(doc);
+    for (int i = 0; i < BL_MAX_REGIONS; i++) {
+        if (counts[i] == 0)
+            continue;
+        yyjson_mut_val *row = yyjson_mut_obj(doc);
+        yyjson_mut_obj_add_int(doc, row, "region", i);
+        if (names[i])
+            yyjson_mut_obj_add_strcpy(doc, row, "name", names[i]);
+        yyjson_mut_obj_add_int(doc, row, "count", counts[i]);
+        yyjson_mut_arr_append(arr, row);
+        free(names[i]);
+    }
+    yyjson_mut_obj_add_val(doc, root, "regions", arr);
+    free(counts);
+    free(names);
+    char *json = yyjson_mut_write(doc, 0, NULL);
+    yyjson_mut_doc_free(doc);
+    return json;
+}

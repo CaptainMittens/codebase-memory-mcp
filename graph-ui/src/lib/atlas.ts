@@ -313,3 +313,17 @@ export interface BridgeRow {
 export function fetchBridges(project: string): Promise<{ bridges: BridgeRow[] }> {
   return getJson(`/api/bridges?${new URLSearchParams({ project })}`);
 }
+
+/* ── /api/blast — bucket a file list by region ─────────────────── */
+
+export interface BlastPayload {
+  files: number;
+  unmapped: number;
+  truncated: boolean;
+  regions: { region: number; name?: string; count: number }[];
+}
+
+export function fetchBlast(project: string, files: string[]): Promise<BlastPayload> {
+  const params = new URLSearchParams({ project, files: files.join(",") });
+  return getJson(`/api/blast?${params}`);
+}
