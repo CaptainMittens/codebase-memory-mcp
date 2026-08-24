@@ -225,6 +225,7 @@ export function App() {
               onOpenSymbol={(qn) => openSymbol({ qn })}
               onOpenModules={() => navigate({ tab: "modules" })}
               onOpenFlows={() => navigate({ tab: "flows" })}
+              onOpenDashboard={() => navigate({ tab: "dashboard" })}
             />
           ) : activeTab === "modules" && selectedProject ? (
             <ModulesTab
@@ -258,6 +259,7 @@ export function App() {
             <DashboardTab
               project={selectedProject}
               onOpenSymbol={(ref) => openSymbol(ref)}
+              onOpenModulesPath={(path) => navigate({ tab: "modules", path })}
             />
           ) : activeTab === "symbol" && selectedProject && symbolRef ? (
             <SymbolTab

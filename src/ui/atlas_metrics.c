@@ -44,6 +44,7 @@ typedef struct {
     char *name;
     char *file;
     long long value;
+    long long value2; /* secondary detail (e.g. raw commits behind a score) */
 } mx_entry_t;
 
 typedef struct {
@@ -52,8 +53,8 @@ typedef struct {
 } mx_top_t;
 
 /* Keep the MX_TOP_N largest values (stable for ties: first seen wins). */
-static void mx_top_offer(mx_top_t *top, const char *qn, const char *name, const char *file,
-                         long long value) {
+static void mx_top_offer2(mx_top_t *top, const char *qn, const char *name, const char *file,
+                          long long value, long long value2) {
     int pos = top->count < MX_TOP_N ? top->count : MX_TOP_N;
     while (pos > 0 && top->items[pos - 1].value < value)
         pos--;
@@ -64,6 +65,7 @@ static void mx_top_offer(mx_top_t *top, const char *qn, const char *name, const 
     incoming.name = name ? strdup(name) : NULL;
     incoming.file = file ? strdup(file) : NULL;
     incoming.value = value;
+    incoming.value2 = value2;
     mx_entry_t last = {0};
     if (top->count == MX_TOP_N) {
         last = top->items[MX_TOP_N - 1];
@@ -76,6 +78,11 @@ static void mx_top_offer(mx_top_t *top, const char *qn, const char *name, const 
     free(last.qn);
     free(last.name);
     free(last.file);
+}
+
+static void mx_top_offer(mx_top_t *top, const char *qn, const char *name, const char *file,
+                         long long value) {
+    mx_top_offer2(top, qn, name, file, value, 0);
 }
 
 static void mx_top_free(mx_top_t *top) {
@@ -99,6 +106,8 @@ static void mx_top_json(yyjson_mut_doc *doc, yyjson_mut_val *root, const char *f
         if (top->items[i].file)
             yyjson_mut_obj_add_strcpy(doc, obj, "file", top->items[i].file);
         yyjson_mut_obj_add_int(doc, obj, "value", top->items[i].value);
+        if (top->items[i].value2 > 0)
+            yyjson_mut_obj_add_int(doc, obj, "commits", top->items[i].value2);
         yyjson_mut_arr_append(arr, obj);
     }
     yyjson_mut_obj_add_val(doc, root, field, arr);
@@ -368,6 +377,18 @@ static char *mx_build_json(cbm_store_t *store, const char *project, const char *
         sqlite3_finalize(st);
     }
 
+    /* A2. Distinct indexed files (denominator of the cost sentence). */
+    long long total_files = 0;
+    if (sqlite3_prepare_v2(db,
+                           "SELECT COUNT(DISTINCT file_path) FROM nodes WHERE project=?1 AND "
+                           "file_path IS NOT NULL AND file_path != ''",
+                           -1, &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(st, 1, project, -1, SQLITE_STATIC);
+        if (sqlite3_step(st) == SQLITE_ROW)
+            total_files = sqlite3_column_int64(st, 0);
+        sqlite3_finalize(st);
+    }
+
     /* B. Edge certainty. */
     long long calls_edges = 0, ref_edges = 0, usage_edges = 0;
     if (sqlite3_prepare_v2(db,
@@ -446,13 +467,16 @@ static char *mx_build_json(cbm_store_t *store, const char *project, const char *
     mx_churn_t churn = {0};
     mx_churn_scan(root_path, &churn);
     mx_top_t top_churn = {0}, top_risky = {0};
+    long long churn_total_commits = 0;
     for (int i = 0; i < churn.key_count; i++) {
         const char *file = churn.keys[i];
         long long commits = (intptr_t)cbm_ht_get(churn.counts, file);
+        churn_total_commits += commits;
         mx_top_offer(&top_churn, NULL, NULL, file, commits);
         intptr_t max_cplx = file_cplx ? (intptr_t)cbm_ht_get(file_cplx, file) : 0;
         if (max_cplx >= MX_CHURN_MIN_CPLX)
-            mx_top_offer(&top_risky, NULL, NULL, file, commits * (long long)max_cplx);
+            mx_top_offer2(&top_risky, NULL, NULL, file, commits * (long long)max_cplx,
+                          commits);
     }
 
     /* ── Serialize ───────────────────────────────────────────── */
@@ -466,6 +490,7 @@ static char *mx_build_json(cbm_store_t *store, const char *project, const char *
     yyjson_mut_obj_add_int(doc, totals, "documented_exported", documented_exported);
     yyjson_mut_obj_add_real(doc, totals, "avg_complexity",
                             callables > 0 ? (double)cplx_sum / (double)callables : 0.0);
+    yyjson_mut_obj_add_int(doc, totals, "files", total_files);
     yyjson_mut_obj_add_val(doc, root, "totals", totals);
 
     yyjson_mut_val *certainty = yyjson_mut_obj(doc);
@@ -489,6 +514,8 @@ static char *mx_build_json(cbm_store_t *store, const char *project, const char *
     mx_top_json(doc, root, "top_churn", &top_churn);
     mx_top_json(doc, root, "top_churn_complex", &top_risky);
     yyjson_mut_obj_add_bool(doc, root, "churn_available", churn.counts != NULL);
+    yyjson_mut_obj_add_int(doc, root, "churn_total_commits", churn_total_commits);
+    yyjson_mut_obj_add_int(doc, root, "churn_total_files", churn.key_count);
 
     long long callish = calls_edges + ref_edges + usage_edges;
     mx_history_append_and_emit(doc, root, project, stamp, callables, dead,
