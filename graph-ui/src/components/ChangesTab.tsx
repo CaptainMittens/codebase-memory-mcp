@@ -25,7 +25,7 @@ const RISK_TONE: Record<string, string> = {
   CRITICAL: "text-red-300/90 border-red-300/40 bg-red-400/10",
   HIGH: "text-amber-300/90 border-amber-300/40 bg-amber-400/10",
   MEDIUM: "text-sky-300/80 border-sky-300/30 bg-sky-400/5",
-  LOW: "text-foreground/50 border-border/40 bg-white/[0.02]",
+  LOW: "text-foreground/50 border-border/40 bg-card",
 };
 
 export function ChangesTab({ project, onOpenSymbol }: ChangesTabProps) {
@@ -104,7 +104,7 @@ export function ChangesTab({ project, onOpenSymbol }: ChangesTabProps) {
                   });
                 }
               }}
-              className="px-3 py-1.5 rounded-md bg-white/[0.05] text-foreground/60 text-[12px] font-medium hover:bg-white/[0.09] transition-colors"
+              className="px-3 py-1.5 rounded-md bg-surface-3 text-foreground/60 text-[12px] font-medium hover:bg-surface-4 transition-colors"
             >
               Cite blast radius in prompt
             </button>
@@ -125,7 +125,7 @@ export function ChangesTab({ project, onOpenSymbol }: ChangesTabProps) {
           <div className="flex flex-wrap gap-4 mb-4">
             {scalars.map(([key, value]) => (
               <div key={key}>
-                <p className="text-[9px] uppercase tracking-widest text-foreground/25">
+                <p className="text-[12px] uppercase tracking-widest text-foreground/40">
                   {key.replace(/_/g, " ")}
                 </p>
                 <p className="text-[13px] text-foreground/70 tabular-nums">{String(value)}</p>
@@ -149,17 +149,17 @@ export function ChangesTab({ project, onOpenSymbol }: ChangesTabProps) {
                 <button
                   key={`${qn}-${index}`}
                   onClick={() => onOpenSymbol({ qn })}
-                  className="flex items-center gap-2.5 w-full text-left px-2 py-[5px] rounded-md hover:bg-white/[0.04] transition-colors group"
+                  className="flex items-center gap-2.5 w-full text-left px-2 py-[5px] rounded-md hover:bg-surface-3 transition-colors group"
                 >
                   <span
-                    className={`text-[9px] px-1.5 py-0.5 rounded border shrink-0 ${RISK_TONE[risk] ?? RISK_TONE.LOW}`}
+                    className={`text-[12px] px-1.5 py-0.5 rounded border shrink-0 ${RISK_TONE[risk] ?? RISK_TONE.LOW}`}
                   >
                     {risk}
                   </span>
                   <span className="text-[12px] font-mono text-foreground/70 group-hover:text-primary truncate transition-colors">
                     {qn}
                   </span>
-                  <span className="text-[10px] text-foreground/25 truncate ml-auto shrink-0 max-w-[35%]">
+                  <span className="text-[12px] text-foreground/40 truncate ml-auto shrink-0 max-w-[35%]">
                     {(row.file as string) ?? ""}
                   </span>
                 </button>

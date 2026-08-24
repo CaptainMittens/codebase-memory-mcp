@@ -42,13 +42,13 @@ function ConnectionList({
 }) {
   const shown = page.offset + page.items.length;
   return (
-    <div className="bg-white/[0.02] border border-border/40 rounded-xl p-4">
+    <div className="bg-card border border-border/40 rounded-md p-4">
       <div className="flex items-baseline gap-2 mb-2">
-        <p className="text-[10px] uppercase tracking-widest text-foreground/30">{title}</p>
-        <span className="text-[11px] tabular-nums text-foreground/40">
+        <p className="text-[12px] uppercase tracking-widest text-foreground/45">{title}</p>
+        <span className="text-[13px] tabular-nums text-foreground/40">
           {page.total.toLocaleString("en-US")}
         </span>
-        <span className="text-[10px] text-foreground/25 ml-auto">
+        <span className="text-[12px] text-foreground/40 ml-auto">
           {Object.entries(page.by_type)
             .map(([type, count]) => `${CONFIDENCE[type]?.label ?? type.toLowerCase()} ${count}`)
             .join(" · ")}
@@ -59,29 +59,29 @@ function ConnectionList({
           <button
             key={`${item.id}-${index}`}
             onClick={() => onOpenSymbol({ id: item.id })}
-            className="flex items-center gap-2 w-full text-left px-2 py-[4px] rounded-md hover:bg-white/[0.04] transition-colors group"
+            className="flex items-center gap-2 w-full text-left px-2 py-[4px] rounded-md hover:bg-surface-3 transition-colors group"
           >
             <span
-              className={`text-[9px] px-1 rounded border shrink-0 ${CONFIDENCE[item.type ?? ""]?.tone ?? "text-foreground/40 border-border/40"}`}
+              className={`text-[12px] px-1 rounded border shrink-0 ${CONFIDENCE[item.type ?? ""]?.tone ?? "text-foreground/40 border-border/40"}`}
             >
               {CONFIDENCE[item.type ?? ""]?.label ?? item.type}
             </span>
-            <span className="text-[11.5px] font-mono text-foreground/65 group-hover:text-primary truncate transition-colors">
+            <span className="text-[13px] font-mono text-foreground/65 group-hover:text-primary truncate transition-colors">
               {item.name}
             </span>
-            <span className="text-[10px] text-foreground/20 truncate ml-auto shrink-0 max-w-[45%]">
+            <span className="text-[12px] text-foreground/35 truncate ml-auto shrink-0 max-w-[45%]">
               {item.file_path}
             </span>
           </button>
         ))}
         {page.items.length === 0 && (
-          <p className="text-[11px] text-foreground/25 px-2 py-2">None.</p>
+          <p className="text-[13px] text-foreground/40 px-2 py-2">None.</p>
         )}
       </div>
       {shown < page.total && (
         <button
           onClick={onLoadMore}
-          className="mt-1.5 px-2 text-[10.5px] text-primary/70 hover:text-primary transition-colors"
+          className="mt-1.5 px-2 text-[12px] text-primary/70 hover:text-primary transition-colors"
         >
           Show more ({(page.total - shown).toLocaleString("en-US")} hidden)
         </button>
@@ -138,7 +138,7 @@ export function SymbolTab({ project, symbolRef, onOpenSymbol, onOpenRegion }: Sy
   if (!bundle) {
     return (
       <div className="flex items-center justify-center h-full">
-        <p className="text-white/30 text-sm">Loading symbol…</p>
+        <p className="text-foreground/45 text-sm">Loading symbol…</p>
       </div>
     );
   }
@@ -181,21 +181,21 @@ export function SymbolTab({ project, symbolRef, onOpenSymbol, onOpenRegion }: Sy
             <h2 className="text-[20px] font-semibold text-foreground/95 font-mono">
               {node.name}
             </h2>
-            <span className="px-2 py-0.5 rounded-md text-[10px] font-medium bg-white/[0.06] text-foreground/60">
+            <span className="px-2 py-0.5 rounded-md text-[12px] font-medium bg-surface-3 text-foreground/60">
               {node.label}
             </span>
             {node.is_entry && (
-              <span className="px-2 py-0.5 rounded-md text-[10px] bg-emerald-400/10 text-emerald-300/80">
+              <span className="px-2 py-0.5 rounded-md text-[12px] bg-emerald-400/10 text-emerald-300/80">
                 entry point
               </span>
             )}
             {node.is_test && (
-              <span className="px-2 py-0.5 rounded-md text-[10px] bg-white/[0.06] text-foreground/50">
+              <span className="px-2 py-0.5 rounded-md text-[12px] bg-surface-3 text-foreground/50">
                 test
               </span>
             )}
             {node.is_exported && (
-              <span className="px-2 py-0.5 rounded-md text-[10px] bg-sky-400/10 text-sky-300/80">
+              <span className="px-2 py-0.5 rounded-md text-[12px] bg-sky-400/10 text-sky-300/80">
                 exported
               </span>
             )}
@@ -214,13 +214,13 @@ export function SymbolTab({ project, symbolRef, onOpenSymbol, onOpenRegion }: Sy
             </div>
           </div>
           {node.qualified_name && (
-            <p className="text-[11px] font-mono text-foreground/35 mt-1.5 break-all">
+            <p className="text-[13px] font-mono text-foreground/50 mt-1.5 break-all">
               {node.qualified_name}
             </p>
           )}
           <div className="flex items-center gap-3 mt-1.5 flex-wrap">
             {node.file_path && (
-              <p className="text-[11px] font-mono text-foreground/45">
+              <p className="text-[13px] font-mono text-foreground/45">
                 {node.file_path}
                 {node.start_line ? `:${node.start_line}` : ""}
               </p>
@@ -228,13 +228,13 @@ export function SymbolTab({ project, symbolRef, onOpenSymbol, onOpenRegion }: Sy
             {bundle.region && (
               <button
                 onClick={() => onOpenRegion(bundle.region!.id)}
-                className="text-[11px] text-primary/70 hover:text-primary transition-colors"
+                className="text-[13px] text-primary/70 hover:text-primary transition-colors"
               >
                 region: {bundle.region.name ?? bundle.region.id} →
               </button>
             )}
             {editorUrl && (
-              <a href={editorUrl} className="text-[11px] text-foreground/40 hover:text-foreground/70 transition-colors">
+              <a href={editorUrl} className="text-[13px] text-foreground/40 hover:text-foreground/70 transition-colors">
                 Open in editor ↗
               </a>
             )}
@@ -243,7 +243,7 @@ export function SymbolTab({ project, symbolRef, onOpenSymbol, onOpenRegion }: Sy
                 href={ghUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-[11px] text-foreground/40 hover:text-foreground/70 transition-colors"
+                className="text-[13px] text-foreground/40 hover:text-foreground/70 transition-colors"
               >
                 GitHub ↗
               </a>
@@ -258,12 +258,12 @@ export function SymbolTab({ project, symbolRef, onOpenSymbol, onOpenRegion }: Sy
             <button
               onClick={code ? () => setCode(null) : loadCode}
               disabled={codeLoading || !node.qualified_name}
-              className="px-2.5 py-1 rounded-md bg-primary/15 text-primary text-[11px] font-medium hover:bg-primary/25 transition-colors disabled:opacity-40"
+              className="px-2.5 py-1 rounded-md bg-primary/15 text-primary text-[13px] font-medium hover:bg-primary/25 transition-colors disabled:opacity-40"
             >
               {codeLoading ? "Loading…" : code ? "Hide code" : "Show code"}
             </button>
             {code && (
-              <pre className="mt-2 max-h-[360px] overflow-auto rounded-md bg-black/40 border border-white/[0.06] p-3 text-[11px] leading-relaxed font-mono text-foreground/75 whitespace-pre">
+              <pre className="mt-2 max-h-[360px] overflow-auto rounded-md bg-black/40 border border-border p-3 text-[13px] leading-relaxed font-mono text-foreground/75 whitespace-pre">
                 {code}
               </pre>
             )}
@@ -287,59 +287,59 @@ export function SymbolTab({ project, symbolRef, onOpenSymbol, onOpenRegion }: Sy
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          <div className="bg-white/[0.02] border border-border/40 rounded-xl p-4">
-            <p className="text-[10px] uppercase tracking-widest text-foreground/30 mb-2">
+          <div className="bg-card border border-border/40 rounded-md p-4">
+            <p className="text-[12px] uppercase tracking-widest text-foreground/45 mb-2">
               Tested by
             </p>
             {(bundle.tests ?? []).map((test: SymbolRef) => (
               <button
                 key={test.id}
                 onClick={() => onOpenSymbol({ id: test.id })}
-                className="block w-full text-left text-[11px] font-mono text-foreground/60 hover:text-primary py-[3px] truncate transition-colors"
+                className="block w-full text-left text-[13px] font-mono text-foreground/60 hover:text-primary py-[3px] truncate transition-colors"
               >
                 {test.name}
               </button>
             ))}
             {(bundle.tests ?? []).length === 0 && (
-              <p className="text-[11px] text-amber-300/50">No TESTS edges reach this symbol.</p>
+              <p className="text-[13px] text-amber-300/50">No TESTS edges reach this symbol.</p>
             )}
           </div>
 
-          <div className="bg-white/[0.02] border border-border/40 rounded-xl p-4">
-            <p className="text-[10px] uppercase tracking-widest text-foreground/30 mb-2">
+          <div className="bg-card border border-border/40 rounded-md p-4">
+            <p className="text-[12px] uppercase tracking-widest text-foreground/45 mb-2">
               Changes together with
             </p>
             {(bundle.co_change ?? []).map((partner) => (
-              <p key={partner.file_path} className="text-[11px] font-mono text-foreground/55 py-[3px] truncate">
+              <p key={partner.file_path} className="text-[13px] font-mono text-foreground/55 py-[3px] truncate">
                 {partner.file_path}
                 {partner.score !== undefined && (
-                  <span className="text-foreground/25"> · {partner.score.toFixed(2)}</span>
+                  <span className="text-foreground/40"> · {partner.score.toFixed(2)}</span>
                 )}
               </p>
             ))}
             {(bundle.co_change ?? []).length === 0 && (
-              <p className="text-[11px] text-foreground/25">No co-change history.</p>
+              <p className="text-[13px] text-foreground/40">No co-change history.</p>
             )}
           </div>
 
-          <div className="bg-white/[0.02] border border-border/40 rounded-xl p-4">
-            <p className="text-[10px] uppercase tracking-widest text-foreground/30 mb-2">
+          <div className="bg-card border border-border/40 rounded-md p-4">
+            <p className="text-[12px] uppercase tracking-widest text-foreground/45 mb-2">
               Near-clones
             </p>
             {(bundle.similar ?? []).map((clone) => (
               <button
                 key={clone.id}
                 onClick={() => onOpenSymbol({ id: clone.id })}
-                className="block w-full text-left text-[11px] font-mono text-foreground/60 hover:text-primary py-[3px] truncate transition-colors"
+                className="block w-full text-left text-[13px] font-mono text-foreground/60 hover:text-primary py-[3px] truncate transition-colors"
               >
                 {clone.name}
                 {clone.score !== undefined && (
-                  <span className="text-foreground/25"> · {clone.score.toFixed(2)}</span>
+                  <span className="text-foreground/40"> · {clone.score.toFixed(2)}</span>
                 )}
               </button>
             ))}
             {(bundle.similar ?? []).length === 0 && (
-              <p className="text-[11px] text-foreground/25">No near-clones.</p>
+              <p className="text-[13px] text-foreground/40">No near-clones.</p>
             )}
           </div>
         </div>

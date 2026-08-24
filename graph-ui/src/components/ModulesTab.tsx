@@ -141,7 +141,7 @@ export function ModulesTab({
       <div className="flex items-center gap-1 px-5 py-2.5 border-b border-border/30 shrink-0 flex-wrap">
         {crumbs.map((crumb, index) => (
           <span key={crumb.path} className="flex items-center gap-1">
-            {index > 0 && <span className="text-foreground/20 text-[11px]">/</span>}
+            {index > 0 && <span className="text-foreground/35 text-[13px]">/</span>}
             <button
               onClick={() => onNavigatePath(crumb.path)}
               className={`text-[12px] transition-colors ${
@@ -155,7 +155,7 @@ export function ModulesTab({
           </span>
         ))}
         {tree && (
-          <span className="ml-auto text-[11px] text-foreground/30 font-mono">
+          <span className="ml-auto text-[13px] text-foreground/45 font-mono">
             {tree.files.toLocaleString("en-US")} files ·{" "}
             {tree.symbols.toLocaleString("en-US")} symbols
             {tree.children_dropped ? ` · ${tree.children_dropped} children not shown` : ""}
@@ -168,14 +168,14 @@ export function ModulesTab({
         <div ref={measureRef} className="flex-1 min-w-0 relative m-3">
           {!tree ? (
             <div className="flex items-center justify-center h-full">
-              <p className="text-white/30 text-sm">Measuring the territory…</p>
+              <p className="text-foreground/45 text-sm">Measuring the territory…</p>
             </div>
           ) : (
             <svg
               width="100%"
               height="100%"
               viewBox={`0 0 ${size.w} ${size.h}`}
-              className="rounded-lg"
+              className="rounded-md"
               role="img"
               aria-label={`Treemap of ${path || "the repository root"}`}
             >
@@ -263,7 +263,7 @@ export function ModulesTab({
 
         {/* File panel */}
         {selectedFile && (
-          <div className="w-[320px] shrink-0 border-l border-border/40 bg-[#0b1920]/90 flex flex-col">
+          <div className="w-[320px] shrink-0 border-l border-border/40 bg-card/90 flex flex-col">
             <div className="px-4 py-3 border-b border-border/30">
               <div className="flex items-start justify-between gap-2">
                 <p className="text-[12px] font-mono text-foreground/80 break-all">
@@ -271,32 +271,32 @@ export function ModulesTab({
                 </p>
                 <button
                   onClick={() => setSelectedFile(null)}
-                  className="text-foreground/25 hover:text-foreground/60 text-[15px] leading-none"
+                  className="text-foreground/40 hover:text-foreground/60 text-[15px] leading-none"
                 >
                   ×
                 </button>
               </div>
-              <p className="text-[10px] text-foreground/30 mt-1">
+              <p className="text-[12px] text-foreground/45 mt-1">
                 {selectedFile.symbols.toLocaleString("en-US")} symbols
                 {selectedFile.missed ? " · not fully indexed" : ""}
               </p>
             </div>
             <div className="flex-1 min-h-0 overflow-y-auto py-1">
               {fileSymbols === null ? (
-                <p className="text-[11px] text-foreground/25 px-4 py-3">Loading…</p>
+                <p className="text-[13px] text-foreground/40 px-4 py-3">Loading…</p>
               ) : fileSymbols.length === 0 ? (
-                <p className="text-[11px] text-foreground/25 px-4 py-3">No symbols found.</p>
+                <p className="text-[13px] text-foreground/40 px-4 py-3">No symbols found.</p>
               ) : (
                 fileSymbols.map((symbol) => (
                   <button
                     key={symbol.qualified_name}
                     onClick={() => onOpenSymbol({ qn: symbol.qualified_name })}
-                    className="flex items-center gap-2 w-full text-left px-4 py-[4px] text-[11px] hover:bg-white/[0.04] transition-colors group"
+                    className="flex items-center gap-2 w-full text-left px-4 py-[4px] text-[13px] hover:bg-surface-3 transition-colors group"
                   >
                     <span className="font-mono text-foreground/60 group-hover:text-primary truncate transition-colors">
                       {symbol.name}
                     </span>
-                    <span className="text-foreground/20 text-[10px] ml-auto shrink-0">
+                    <span className="text-foreground/35 text-[12px] ml-auto shrink-0">
                       {symbol.label}
                     </span>
                   </button>
@@ -306,7 +306,7 @@ export function ModulesTab({
             {selectedFile.region !== undefined && regionMeta.get(selectedFile.region) && (
               <button
                 onClick={() => onOpenRegion(selectedFile.region!)}
-                className="px-4 py-2.5 border-t border-border/30 text-left text-[11px] text-primary/70 hover:text-primary transition-colors"
+                className="px-4 py-2.5 border-t border-border/30 text-left text-[13px] text-primary/70 hover:text-primary transition-colors"
               >
                 region: {regionMeta.get(selectedFile.region)!.name} — view in galaxy →
               </button>

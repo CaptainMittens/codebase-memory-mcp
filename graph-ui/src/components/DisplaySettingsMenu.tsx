@@ -24,8 +24,8 @@ function SliderRow({ label, hint, value, min, max, onChange }: SliderRowProps) {
   return (
     <label className="block">
       <div className="flex items-center justify-between mb-1">
-        <span className="text-[11px] text-foreground/70">{label}</span>
-        <span className="text-[10px] font-mono text-cyan-300/70 tabular-nums">
+        <span className="text-[13px] text-foreground/70">{label}</span>
+        <span className="text-[12px] font-mono text-cyan-300/70 tabular-nums">
           {value.toFixed(2)}×
         </span>
       </div>
@@ -39,7 +39,7 @@ function SliderRow({ label, hint, value, min, max, onChange }: SliderRowProps) {
         className="w-full accent-cyan-400 cursor-pointer"
         aria-label={`${label} (${hint})`}
       />
-      <p className="text-[9px] text-foreground/30 mt-0.5">{hint}</p>
+      <p className="text-[12px] text-foreground/45 mt-0.5">{hint}</p>
     </label>
   );
 }
@@ -98,15 +98,15 @@ export function DisplaySettingsMenu({
         <div
           role="dialog"
           aria-label="Display settings"
-          className="absolute top-10 right-0 w-64 p-4 rounded-lg border border-border/60 bg-[#0b1920]/95 backdrop-blur-md shadow-xl z-20 space-y-3.5"
+          className="absolute top-10 right-0 w-64 p-4 rounded-md border border-border/60 bg-card/95 backdrop-blur-md shadow-xl z-20 space-y-3.5"
         >
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-medium text-foreground/50 uppercase tracking-widest">
+            <span className="text-[13px] font-medium text-foreground/50 uppercase tracking-widest">
               Contrast
             </span>
             <button
               onClick={() => onChange(DEFAULT_DISPLAY_SETTINGS)}
-              className="text-[10px] text-primary/70 hover:text-primary transition-colors disabled:opacity-30"
+              className="text-[12px] text-primary/70 hover:text-primary transition-colors disabled:opacity-30"
               disabled={isDefault}
             >
               Reset
@@ -138,7 +138,7 @@ export function DisplaySettingsMenu({
             onChange={(bloom) => set({ bloom })}
           />
 
-          <p className="text-[9px] text-foreground/30 pt-1 border-t border-border/30">
+          <p className="text-[12px] text-foreground/45 pt-1 border-t border-border/30">
             1.00× follows the automatic density compensation. Lower the
             edge/glow/bloom values when a large graph washes out to white.
           </p>

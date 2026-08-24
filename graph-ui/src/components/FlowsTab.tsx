@@ -90,7 +90,7 @@ export function FlowsTab({ project, flowId, onOpenFlow, onOpenSymbol }: FlowsTab
   if (!payload) {
     return (
       <div className="flex items-center justify-center h-full">
-        <p className="text-white/30 text-sm">Tracing the journeys…</p>
+        <p className="text-foreground/45 text-sm">Tracing the journeys…</p>
       </div>
     );
   }
@@ -98,12 +98,12 @@ export function FlowsTab({ project, flowId, onOpenFlow, onOpenSymbol }: FlowsTab
   return (
     <div className="h-full flex">
       {/* Flow list */}
-      <div className="w-[380px] shrink-0 border-r border-border/40 flex flex-col bg-[#0b1920]/60">
+      <div className="w-[380px] shrink-0 border-r border-border/40 flex flex-col bg-card/60">
         <div className="px-4 py-3 border-b border-border/30 shrink-0">
-          <p className="text-[10px] uppercase tracking-widest text-foreground/30">
+          <p className="text-[12px] uppercase tracking-widest text-foreground/45">
             Flows — entry → terminal
           </p>
-          <p className="text-[10.5px] text-foreground/30 mt-1">
+          <p className="text-[12px] text-foreground/45 mt-1">
             {payload.flows.length} journeys from{" "}
             {payload.callable_total.toLocaleString("en-US")} callables
             {payload.candidates_dropped > 0 &&
@@ -117,7 +117,7 @@ export function FlowsTab({ project, flowId, onOpenFlow, onOpenSymbol }: FlowsTab
               if (flows.length === 0) return null;
               return (
                 <div key={groupKey}>
-                  <p className="px-4 pt-2 pb-1 text-[9px] uppercase tracking-widest text-foreground/25">
+                  <p className="px-4 pt-2 pb-1 text-[12px] uppercase tracking-widest text-foreground/40">
                     {groupKey === "cross" ? "across regions" : "within one region"}
                   </p>
                   {flows.map((flow) => (
@@ -127,15 +127,15 @@ export function FlowsTab({ project, flowId, onOpenFlow, onOpenSymbol }: FlowsTab
                       className={`flex items-center gap-2 w-full text-left px-4 py-[6px] transition-colors ${
                         flowId === flow.id
                           ? "bg-primary/10 text-primary"
-                          : "text-foreground/60 hover:text-foreground/85 hover:bg-white/[0.03]"
+                          : "text-foreground/60 hover:text-foreground/85 hover:bg-surface-3"
                       }`}
                     >
-                      <span className="text-[11.5px] font-mono truncate flex-1">{flow.label}</span>
-                      <span className="text-[10px] tabular-nums text-foreground/25 shrink-0">
+                      <span className="text-[13px] font-mono truncate flex-1">{flow.label}</span>
+                      <span className="text-[12px] tabular-nums text-foreground/40 shrink-0">
                         {flow.steps}
                       </span>
                       {!flow.sink_terminated && (
-                        <span className="text-[9px] text-foreground/20 shrink-0" title="walk stopped at the depth cap, not at a sink">
+                        <span className="text-[12px] text-foreground/35 shrink-0" title="walk stopped at the depth cap, not at a sink">
                           …
                         </span>
                       )}
@@ -145,7 +145,7 @@ export function FlowsTab({ project, flowId, onOpenFlow, onOpenSymbol }: FlowsTab
               );
             })}
             {payload.flows.length === 0 && (
-              <p className="text-[11px] text-foreground/25 px-4 py-4">
+              <p className="text-[13px] text-foreground/40 px-4 py-4">
                 No flows detected — the project may have no clear entry points.
               </p>
             )}
@@ -157,7 +157,7 @@ export function FlowsTab({ project, flowId, onOpenFlow, onOpenSymbol }: FlowsTab
       <div className="flex-1 min-w-0">
         {flowId === null || !detail ? (
           <div className="flex items-center justify-center h-full">
-            <p className="text-white/30 text-sm">
+            <p className="text-foreground/45 text-sm">
               {flowId === null ? "Pick a journey on the left" : "Loading…"}
             </p>
           </div>
@@ -167,7 +167,7 @@ export function FlowsTab({ project, flowId, onOpenFlow, onOpenSymbol }: FlowsTab
               <div className="flex items-center gap-3 flex-wrap mb-1">
                 <h3 className="text-[16px] font-semibold font-mono text-foreground/90">
                   {detail.entry.name}
-                  <span className="text-foreground/30"> → </span>
+                  <span className="text-foreground/45"> → </span>
                   {detail.terminal.name}
                 </h3>
                 <AddToPromptButton
@@ -182,12 +182,12 @@ export function FlowsTab({ project, flowId, onOpenFlow, onOpenSymbol }: FlowsTab
                   onClick={() => {
                     navigator.clipboard?.writeText(flowToMermaid(detail)).then(() => setCopied(true));
                   }}
-                  className="px-2.5 py-1 rounded-md bg-white/[0.05] text-foreground/60 text-[11px] font-medium hover:bg-white/[0.09] transition-colors"
+                  className="px-2.5 py-1 rounded-md bg-surface-3 text-foreground/60 text-[13px] font-medium hover:bg-surface-4 transition-colors"
                 >
                   {copied ? "Copied ✓" : "Copy as mermaid"}
                 </button>
               </div>
-              <p className="text-[11px] text-foreground/35 mb-4">
+              <p className="text-[13px] text-foreground/50 mb-4">
                 {detail.steps.length} steps
                 {detail.sink_terminated ? " · ends at a sink" : " · stopped at the depth cap"}
                 {detail.cross_region ? " · crosses regions" : ""}
@@ -201,16 +201,16 @@ export function FlowsTab({ project, flowId, onOpenFlow, onOpenSymbol }: FlowsTab
                   <button
                     key={index}
                     onClick={() => onOpenSymbol({ id: step.id })}
-                    className="flex items-center gap-2 w-full text-left py-[3.5px] rounded-md hover:bg-white/[0.04] transition-colors group"
+                    className="flex items-center gap-2 w-full text-left py-[3.5px] rounded-md hover:bg-surface-3 transition-colors group"
                     style={{ paddingLeft: `${step.depth * 22 + 8}px` }}
                   >
-                    <span className="text-foreground/20 text-[10px] shrink-0">
+                    <span className="text-foreground/35 text-[12px] shrink-0">
                       {step.depth === 0 ? "▶" : "└"}
                     </span>
                     <span className="text-[12px] font-mono text-foreground/70 group-hover:text-primary transition-colors truncate">
                       {step.name}
                     </span>
-                    <span className="text-[10px] text-foreground/20 truncate ml-auto shrink-0 max-w-[40%]">
+                    <span className="text-[12px] text-foreground/35 truncate ml-auto shrink-0 max-w-[40%]">
                       {step.file_path}
                     </span>
                   </button>

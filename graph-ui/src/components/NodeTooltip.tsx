@@ -20,19 +20,19 @@ export function NodeTooltip({ node }: NodeTooltipProps) {
       center
       style={{ pointerEvents: "none" }}
     >
-      <div className="bg-[#1a1a2e]/95 backdrop-blur border border-white/10 rounded-lg px-3 py-2 text-xs whitespace-nowrap shadow-xl max-w-[350px]">
+      <div className="bg-[#1a1a2e]/95 backdrop-blur border border-white/10 rounded-md px-3 py-2 text-xs whitespace-nowrap shadow-xl max-w-[350px]">
         <div className="flex items-center gap-1.5 mb-1">
           <span
             className="w-2 h-2 rounded-full shrink-0"
             style={{ backgroundColor: colorForLabel(node.label) }}
           />
           <span className="text-white font-medium truncate">{node.name}</span>
-          <span className="text-white/30 ml-1 shrink-0">{node.label}</span>
+          <span className="text-foreground/45 ml-1 shrink-0">{node.label}</span>
         </div>
         {node.file_path && (
-          <p className="text-white/30 font-mono truncate">
+          <p className="text-foreground/45 font-mono truncate">
             {node.file_path}
-            {lineRange(node) && <span className="text-white/40"> · {lineRange(node)}</span>}
+            {lineRange(node) && <span className="text-foreground/40"> · {lineRange(node)}</span>}
           </p>
         )}
         {node.status && node.status !== "structural" && (
@@ -41,15 +41,15 @@ export function NodeTooltip({ node }: NodeTooltipProps) {
               className="w-1.5 h-1.5 rounded-full shrink-0"
               style={{ backgroundColor: colorForStatus(node.status) }}
             />
-            <span className="text-white/45">{node.status}</span>
+            <span className="text-foreground/45">{node.status}</span>
             {node.in_calls !== undefined && (
-              <span className="text-white/25">
+              <span className="text-foreground/40">
                 · {node.in_calls} caller{node.in_calls === 1 ? "" : "s"}
               </span>
             )}
           </div>
         )}
-        <p className="text-white/20 mt-1 text-[10px]">click for code →</p>
+        <p className="text-foreground/35 mt-1 text-[12px]">click for code →</p>
       </div>
     </Html>
   );

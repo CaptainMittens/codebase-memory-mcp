@@ -11,7 +11,7 @@ interface RegionPanelProps {
  * its representative symbols, and the door into its full-detail layout. */
 export function RegionPanel({ region, onOpen, onClose }: RegionPanelProps) {
   return (
-    <div className="w-full bg-[#0b1920]/95 backdrop-blur-xl flex flex-col h-full min-h-0 overflow-hidden">
+    <div className="w-full bg-card/95 backdrop-blur-xl flex flex-col h-full min-h-0 overflow-hidden">
       <div className="px-4 pt-4 pb-3 border-b border-border/30">
         <div className="flex items-start justify-between gap-2 mb-2">
           <div className="min-w-0 flex-1">
@@ -24,27 +24,27 @@ export function RegionPanel({ region, onOpen, onClose }: RegionPanelProps) {
                 {region.name}
               </h3>
             </div>
-            <span className="inline-block px-2 py-0.5 rounded-md text-[10px] font-medium bg-white/[0.06] text-foreground/60">
+            <span className="inline-block px-2 py-0.5 rounded-md text-[12px] font-medium bg-surface-3 text-foreground/60">
               Region
             </span>
           </div>
           <button
             onClick={onClose}
-            className="text-foreground/20 hover:text-foreground/50 transition-colors text-[16px] leading-none p-1"
+            className="text-foreground/35 hover:text-foreground/50 transition-colors text-[16px] leading-none p-1"
           >
             ×
           </button>
         </div>
 
         {region.why && (
-          <p className="text-[11px] text-foreground/40 mt-2 leading-relaxed">
+          <p className="text-[13px] text-foreground/40 mt-2 leading-relaxed">
             {region.why}
           </p>
         )}
 
         <button
           onClick={() => onOpen(region)}
-          className="mt-3 px-2.5 py-1 rounded-md bg-primary/15 text-primary text-[11px] font-medium hover:bg-primary/25 transition-colors"
+          className="mt-3 px-2.5 py-1 rounded-md bg-primary/15 text-primary text-[13px] font-medium hover:bg-primary/25 transition-colors"
         >
           Open region →
         </button>
@@ -56,7 +56,7 @@ export function RegionPanel({ region, onOpen, onClose }: RegionPanelProps) {
             { label: "Cohesion", value: region.cohesion.toFixed(2) },
           ].map((stat) => (
             <div key={stat.label}>
-              <p className="text-[9px] text-foreground/25 uppercase tracking-widest">
+              <p className="text-[12px] text-foreground/40 uppercase tracking-widest">
                 {stat.label}
               </p>
               <p className="text-[16px] font-semibold tabular-nums text-foreground">
@@ -69,20 +69,20 @@ export function RegionPanel({ region, onOpen, onClose }: RegionPanelProps) {
 
       <ScrollArea className="flex-1 min-h-0">
         <div className="px-4 py-3">
-          <p className="text-[11px] font-medium text-foreground/40 mb-2">
+          <p className="text-[13px] font-medium text-foreground/40 mb-2">
             Most connected
           </p>
           <div className="space-y-px">
             {region.top_nodes.map((name) => (
               <p
                 key={name}
-                className="px-2 py-[4px] text-[11px] font-mono text-foreground/55 truncate"
+                className="px-2 py-[4px] text-[13px] font-mono text-foreground/55 truncate"
               >
                 {name}
               </p>
             ))}
             {region.top_nodes.length === 0 && (
-              <p className="text-[12px] text-foreground/20 py-4 text-center">
+              <p className="text-[12px] text-foreground/35 py-4 text-center">
                 No callable members
               </p>
             )}

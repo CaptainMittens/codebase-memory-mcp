@@ -57,3 +57,31 @@ export function regionsViewWorthwhile(payload: RegionsPayload): boolean {
     payload.total_nodes > REGIONS_MIN_TOTAL_NODES && payload.regions.length > 1
   );
 }
+
+/* The product-code lens: test regions teach how the code is exercised, not
+ * how it works — hide them by default, one toggle away. A region is
+ * test-ish when its display name lives under a test folder. */
+export function isTestRegion(name: string): boolean {
+  return /(^|\/)(tests?|__tests__|spec|specs)($|\/|\b)/i.test(name.split(" · ")[0] ?? name);
+}
+
+export function lensRegionsPayload(
+  payload: RegionsPayload,
+  includeTests: boolean,
+): RegionsPayload {
+  if (includeTests) return payload;
+  const kept = new Set(
+    payload.regions.filter((region) => !isTestRegion(region.name)).map((r) => r.id),
+  );
+  return {
+    ...payload,
+    regions: payload.regions.filter((region) => kept.has(region.id)),
+    edges: payload.edges.filter((edge) => kept.has(edge.source) && kept.has(edge.target)),
+  };
+}
+
+/* Hub lists must never headline builtins — a `len` hub reads as a bug and
+ * costs trust in everything else on the page. */
+export function isBuiltinQn(qn: string): boolean {
+  return /(^|\.)builtins?\./.test(qn) || /(^|\.)__builtins__\./.test(qn);
+}

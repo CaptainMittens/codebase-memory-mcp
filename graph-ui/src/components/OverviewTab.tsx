@@ -6,7 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { fetchArchitecture, archRows, type ArchitectureJson } from "../lib/atlas";
 import { fetchRegions } from "../hooks/useGraphData";
-import { disambiguateRegionNames } from "../lib/regions";
+import { disambiguateRegionNames, lensRegionsPayload, isBuiltinQn } from "../lib/regions";
 import { surprisingCouplings, suggestedQuestions } from "../lib/firstread";
 import { AddToPromptButton } from "./PromptBasket";
 import type { RegionsPayload } from "../lib/types";
@@ -44,8 +44,8 @@ function shortQn(qn: string): string {
 
 function Card({ title, children, wide }: { title: string; children: React.ReactNode; wide?: boolean }) {
   return (
-    <div className={`bg-white/[0.02] border border-border/40 rounded-xl p-4 ${wide ? "col-span-full" : ""}`}>
-      <p className="text-[10px] uppercase tracking-widest text-foreground/30 mb-3">{title}</p>
+    <div className={`bg-card border border-border/40 rounded-md p-4 ${wide ? "col-span-full" : ""}`}>
+      <p className="text-[12px] uppercase tracking-widest text-foreground/45 mb-3">{title}</p>
       {children}
     </div>
   );
@@ -61,6 +61,7 @@ export function OverviewTab({
   const [arch, setArch] = useState<ArchitectureJson | null>(null);
   const [regions, setRegions] = useState<RegionsPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [includeTests, setIncludeTests] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -81,14 +82,22 @@ export function OverviewTab({
     };
   }, [project]);
 
-  const displayRegions = useMemo(
-    () => (regions ? disambiguateRegionNames(regions.regions) : []),
-    [regions],
+  const lensed = useMemo(
+    () => (regions ? lensRegionsPayload(regions, includeTests) : null),
+    [regions, includeTests],
   );
-  const couplings = useMemo(() => (regions ? surprisingCouplings(regions, 4) : []), [regions]);
-  const questions = useMemo(() => (regions ? suggestedQuestions(regions, {}, 4) : []), [regions]);
+  const displayRegions = useMemo(
+    () => (lensed ? disambiguateRegionNames(lensed.regions) : []),
+    [lensed],
+  );
+  const couplings = useMemo(() => (lensed ? surprisingCouplings(lensed, 4) : []), [lensed]);
+  const questions = useMemo(() => (lensed ? suggestedQuestions(lensed, {}, 4) : []), [lensed]);
 
-  const hotspots = useMemo(() => archRows<HotspotRow>(arch, "hotspots"), [arch]);
+  const hiddenTestRegions = regions && lensed ? regions.regions.length - lensed.regions.length : 0;
+  const hotspots = useMemo(
+    () => archRows<HotspotRow>(arch, "hotspots").filter((row) => !isBuiltinQn(row.qn)),
+    [arch],
+  );
   const entries = useMemo(() => archRows<EntryRow>(arch, "entry_points"), [arch]);
   const boundaries = useMemo(() => archRows<BoundaryRow>(arch, "boundaries"), [arch]);
   const languages = useMemo(() => archRows<LanguageRow>(arch, "languages"), [arch]);
@@ -105,7 +114,7 @@ export function OverviewTab({
   if (!arch && !regions) {
     return (
       <div className="flex items-center justify-center h-full">
-        <p className="text-white/30 text-sm">Reading the map…</p>
+        <p className="text-foreground/45 text-sm">Reading the map…</p>
       </div>
     );
   }
@@ -129,7 +138,7 @@ export function OverviewTab({
             },
           ].map((stat) => (
             <div key={stat.label}>
-              <p className="text-[9px] uppercase tracking-widest text-foreground/25">{stat.label}</p>
+              <p className="text-[12px] uppercase tracking-widest text-foreground/40">{stat.label}</p>
               <p className="text-[17px] font-semibold text-foreground/90 tabular-nums">
                 {stat.value}
               </p>
@@ -137,7 +146,7 @@ export function OverviewTab({
           ))}
           {regions && regions.unmapped_nodes > 0 && (
             <div>
-              <p className="text-[9px] uppercase tracking-widest text-foreground/25">Unmapped</p>
+              <p className="text-[12px] uppercase tracking-widest text-foreground/40">Unmapped</p>
               <p className="text-[17px] font-semibold text-amber-300/70 tabular-nums">
                 {regions.unmapped_nodes.toLocaleString("en-US")}
               </p>
@@ -148,12 +157,22 @@ export function OverviewTab({
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {/* Regions — the map */}
           <Card title={`Regions — the de-facto modules (${regions?.method ?? "…"})`} wide>
+            {hiddenTestRegions > 0 && (
+              <button
+                onClick={() => setIncludeTests((value) => !value)}
+                className="float-right -mt-7 text-[12px] text-foreground/40 hover:text-foreground/70 transition-colors"
+              >
+                {includeTests
+                  ? "hide test code"
+                  : `${hiddenTestRegions} test region${hiddenTestRegions > 1 ? "s" : ""} hidden — show`}
+              </button>
+            )}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
               {displayRegions.slice(0, 12).map((region) => (
                 <button
                   key={region.id}
                   onClick={() => onOpenRegion(region.id)}
-                  className="text-left rounded-lg border border-border/30 bg-white/[0.02] hover:bg-white/[0.05] hover:border-primary/30 p-3 transition-all group"
+                  className="text-left rounded-md border border-border/30 bg-card hover:bg-surface-3 hover:border-primary/30 p-3 transition-all group"
                 >
                   <div className="flex items-center gap-2 mb-1">
                     <span
@@ -164,12 +183,12 @@ export function OverviewTab({
                       {region.name}
                     </span>
                   </div>
-                  <p className="text-[10px] text-foreground/30 truncate">
+                  <p className="text-[12px] text-foreground/45 truncate">
                     {region.members.toLocaleString("en-US")} symbols · cohesion{" "}
                     {region.cohesion.toFixed(2)}
                   </p>
                   {region.why && (
-                    <p className="text-[10px] text-foreground/25 mt-1 line-clamp-2">{region.why}</p>
+                    <p className="text-[12px] text-foreground/40 mt-1 line-clamp-2">{region.why}</p>
                   )}
                 </button>
               ))}
@@ -177,7 +196,7 @@ export function OverviewTab({
             {displayRegions.length > 12 && (
               <button
                 onClick={onOpenModules}
-                className="mt-2 text-[11px] text-primary/70 hover:text-primary transition-colors"
+                className="mt-2 text-[13px] text-primary/70 hover:text-primary transition-colors"
               >
                 all {displayRegions.length} regions in Modules →
               </button>
@@ -191,18 +210,18 @@ export function OverviewTab({
                 <div key={hotspot.qn} className="flex items-center gap-2 py-[3px]">
                   <button
                     onClick={() => onOpenSymbol(hotspot.qn)}
-                    className="text-[11px] font-mono text-foreground/60 hover:text-primary truncate flex-1 text-left transition-colors"
+                    className="text-[13px] font-mono text-foreground/60 hover:text-primary truncate flex-1 text-left transition-colors"
                     title={hotspot.qn}
                   >
                     {shortQn(hotspot.qn)}
                   </button>
-                  <span className="text-[10px] tabular-nums text-foreground/30 shrink-0">
+                  <span className="text-[12px] tabular-nums text-foreground/45 shrink-0">
                     {Number(hotspot.fan_in).toLocaleString("en-US")}
                   </span>
                 </div>
               ))}
               {hotspots.length === 0 && (
-                <p className="text-[11px] text-foreground/25">No hotspot data.</p>
+                <p className="text-[13px] text-foreground/40">No hotspot data.</p>
               )}
             </div>
           </Card>
@@ -217,21 +236,21 @@ export function OverviewTab({
                   className="flex items-center gap-2 w-full text-left py-[3px] group"
                   title={entry.qn}
                 >
-                  <span className="text-[11px] font-mono text-foreground/60 group-hover:text-primary truncate transition-colors">
+                  <span className="text-[13px] font-mono text-foreground/60 group-hover:text-primary truncate transition-colors">
                     {shortQn(entry.qn)}
                   </span>
-                  <span className="text-[10px] text-foreground/20 truncate ml-auto shrink-0 max-w-[40%]">
+                  <span className="text-[12px] text-foreground/35 truncate ml-auto shrink-0 max-w-[40%]">
                     {entry.file}
                   </span>
                 </button>
               ))}
               {entries.length === 0 && (
-                <p className="text-[11px] text-foreground/25">No entry points detected.</p>
+                <p className="text-[13px] text-foreground/40">No entry points detected.</p>
               )}
             </div>
             <button
               onClick={onOpenFlows}
-              className="mt-2 text-[11px] text-primary/70 hover:text-primary transition-colors"
+              className="mt-2 text-[13px] text-primary/70 hover:text-primary transition-colors"
             >
               follow them in Flows →
             </button>
@@ -242,16 +261,16 @@ export function OverviewTab({
             <div className="space-y-2">
               {couplings.map((coupling) => (
                 <div key={`${coupling.source.id}-${coupling.target.id}`}>
-                  <p className="text-[11.5px] text-foreground/70">
+                  <p className="text-[13px] text-foreground/70">
                     <span className="font-medium">{coupling.source.name}</span>
-                    <span className="text-foreground/30"> ⇄ </span>
+                    <span className="text-foreground/45"> ⇄ </span>
                     <span className="font-medium">{coupling.target.name}</span>
                   </p>
-                  <p className="text-[10px] text-foreground/30">{coupling.reasons.join(" · ")}</p>
+                  <p className="text-[12px] text-foreground/45">{coupling.reasons.join(" · ")}</p>
                 </div>
               ))}
               {couplings.length === 0 && (
-                <p className="text-[11px] text-foreground/25">
+                <p className="text-[13px] text-foreground/40">
                   No cross-region couplings stand out.
                 </p>
               )}
@@ -264,8 +283,8 @@ export function OverviewTab({
               {questions.map((question) => (
                 <div key={question.question} className="flex items-start gap-2">
                   <div className="flex-1 min-w-0">
-                    <p className="text-[11.5px] text-foreground/70">{question.question}</p>
-                    <p className="text-[10px] text-foreground/30">{question.why}</p>
+                    <p className="text-[13px] text-foreground/70">{question.question}</p>
+                    <p className="text-[12px] text-foreground/45">{question.why}</p>
                   </div>
                   <AddToPromptButton
                     small
@@ -274,7 +293,7 @@ export function OverviewTab({
                 </div>
               ))}
               {questions.length === 0 && (
-                <p className="text-[11px] text-foreground/25">Nothing stands out structurally.</p>
+                <p className="text-[13px] text-foreground/40">Nothing stands out structurally.</p>
               )}
             </div>
           </Card>
@@ -282,9 +301,9 @@ export function OverviewTab({
           {/* Boundaries */}
           <Card title="Boundaries — who calls across packages" wide>
             <div className="overflow-x-auto">
-              <table className="w-full text-[11px]">
+              <table className="w-full text-[13px]">
                 <thead>
-                  <tr className="text-left text-[9px] uppercase tracking-wider text-foreground/25">
+                  <tr className="text-left text-[12px] uppercase tracking-wider text-foreground/40">
                     <th className="py-1 pr-4 font-medium">from</th>
                     <th className="py-1 pr-4 font-medium">to</th>
                     <th className="py-1 text-right font-medium">calls</th>
@@ -303,7 +322,7 @@ export function OverviewTab({
                 </tbody>
               </table>
               {boundaries.length === 0 && (
-                <p className="text-[11px] text-foreground/25">No cross-package calls recorded.</p>
+                <p className="text-[13px] text-foreground/40">No cross-package calls recorded.</p>
               )}
             </div>
           </Card>

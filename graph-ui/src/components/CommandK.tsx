@@ -131,7 +131,7 @@ export function CommandK({ project, open, onClose, onOpenSymbol }: CommandKProps
       onClick={onClose}
     >
       <div
-        className="w-[620px] max-w-[92vw] bg-[#0b1920] border border-border/60 rounded-xl shadow-2xl overflow-hidden"
+        className="w-[620px] max-w-[92vw] bg-card border border-border/60 rounded-md shadow-2xl overflow-hidden"
         onClick={(event) => event.stopPropagation()}
       >
         <input
@@ -145,13 +145,13 @@ export function CommandK({ project, open, onClose, onOpenSymbol }: CommandKProps
         />
         <div className="max-h-[50vh] overflow-y-auto py-1">
           {busy && entries.length === 0 && (
-            <p className="text-[11px] text-foreground/25 px-4 py-3">Searching…</p>
+            <p className="text-[13px] text-foreground/40 px-4 py-3">Searching…</p>
           )}
           {!busy && query.trim().length >= 2 && entries.length === 0 && (
-            <p className="text-[11px] text-foreground/25 px-4 py-3">No matches.</p>
+            <p className="text-[13px] text-foreground/40 px-4 py-3">No matches.</p>
           )}
           {symbols.length > 0 && (
-            <p className="px-4 pt-2 pb-1 text-[9px] uppercase tracking-widest text-foreground/25">
+            <p className="px-4 pt-2 pb-1 text-[12px] uppercase tracking-widest text-foreground/40">
               Symbols
             </p>
           )}
@@ -165,14 +165,14 @@ export function CommandK({ project, open, onClose, onOpenSymbol }: CommandKProps
               }`}
             >
               <span className="text-[12px] font-mono text-foreground/75 truncate">{row.name}</span>
-              <span className="text-[10px] text-foreground/30 shrink-0">{row.label}</span>
-              <span className="text-[10px] text-foreground/20 truncate ml-auto max-w-[45%]">
+              <span className="text-[12px] text-foreground/45 shrink-0">{row.label}</span>
+              <span className="text-[12px] text-foreground/35 truncate ml-auto max-w-[45%]">
                 {row.file}
               </span>
             </button>
           ))}
           {textHits.length > 0 && (
-            <p className="px-4 pt-2 pb-1 text-[9px] uppercase tracking-widest text-foreground/25">
+            <p className="px-4 pt-2 pb-1 text-[12px] uppercase tracking-widest text-foreground/40">
               In code
             </p>
           )}
@@ -181,14 +181,14 @@ export function CommandK({ project, open, onClose, onOpenSymbol }: CommandKProps
               key={`${hit.file}:${hit.line}:${index}`}
               className={`px-4 py-[5px] ${active === symbols.length + index ? "bg-primary/10" : ""}`}
             >
-              <p className="text-[10px] font-mono text-foreground/35 truncate">
+              <p className="text-[12px] font-mono text-foreground/50 truncate">
                 {hit.file}:{hit.line}
               </p>
-              <p className="text-[11px] font-mono text-foreground/60 truncate">{hit.text}</p>
+              <p className="text-[13px] font-mono text-foreground/60 truncate">{hit.text}</p>
             </div>
           ))}
         </div>
-        <div className="px-4 py-2 border-t border-border/40 text-[10px] text-foreground/25">
+        <div className="px-4 py-2 border-t border-border/40 text-[12px] text-foreground/40">
           ↑↓ navigate · Enter opens the symbol · Esc closes
         </div>
       </div>

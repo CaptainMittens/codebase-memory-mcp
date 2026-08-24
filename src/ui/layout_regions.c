@@ -175,27 +175,28 @@ static int32_t rg_region_of(const rg_id_region_t *map, long long n, int64_t id) 
     return -1;
 }
 
-/* HSV(h, 0.62, 0.95) → 0xRRGGBB, hue in degrees. */
+/* Region colors: Okabe-Ito (color-blind safe) for the first ten regions —
+ * ranking already orders regions by size, so the vivid hues land on the
+ * regions that matter — and a neutral gray for the tail, where labels and
+ * position carry identity. Beyond ~10 hues distinguishability collapses
+ * anyway (Okabe & Ito; Tol). */
 static uint32_t rg_wheel_color(int index, int count) {
-    float h = count > 0 ? (360.0f * (float)index / (float)count) : 0.0f;
-    float s = 0.62f, v = 0.95f;
-    float c = v * s;
-    float x = c * (1.0f - fabsf(fmodf(h / 60.0f, 2.0f) - 1.0f));
-    float m = v - c;
-    float rf = 0, gf = 0, bf = 0;
-    int seg = (int)(h / 60.0f) % 6;
-    switch (seg) {
-    case 0: rf = c; gf = x; break;
-    case 1: rf = x; gf = c; break;
-    case 2: gf = c; bf = x; break;
-    case 3: gf = x; bf = c; break;
-    case 4: rf = x; bf = c; break;
-    default: rf = c; bf = x; break;
-    }
-    uint32_t r = (uint32_t)((rf + m) * 255.0f);
-    uint32_t g = (uint32_t)((gf + m) * 255.0f);
-    uint32_t b = (uint32_t)((bf + m) * 255.0f);
-    return (r << 16) | (g << 8) | b;
+    (void)count;
+    static const uint32_t okabe_ito[10] = {
+        0xE69F00, /* orange */
+        0x56B4E9, /* sky */
+        0x009E73, /* bluish green */
+        0xF0E442, /* yellow */
+        0x4393C9, /* blue, lightened for dark grounds */
+        0xD55E00, /* vermilion */
+        0xCC79A7, /* reddish purple */
+        0xEE3377, /* magenta (Tol) */
+        0x33BBEE, /* cyan (Tol) */
+        0x999999, /* gray */
+    };
+    if (index >= 0 && index < 10)
+        return okabe_ito[index];
+    return 0x6E7A87; /* neutral tail — labels do the work */
 }
 
 /* ── Leiden vote: (file_idx, community) pairs → per-file winner ── */

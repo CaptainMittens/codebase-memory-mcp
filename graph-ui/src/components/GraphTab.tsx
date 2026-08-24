@@ -8,7 +8,7 @@ import {
   GRAPH_NODE_BUDGET_STEP,
   GRAPH_NODE_BUDGET_MAX,
 } from "../hooks/useGraphData";
-import { regionsToGraphData, regionsViewWorthwhile, disambiguateRegionNames } from "../lib/regions";
+import { regionsToGraphData, regionsViewWorthwhile, disambiguateRegionNames, isTestRegion } from "../lib/regions";
 import { RegionPanel } from "./RegionPanel";
 import { GraphLoader } from "./GraphLoader";
 import { DisplaySettingsMenu } from "./DisplaySettingsMenu";
@@ -473,7 +473,7 @@ export function GraphTab({
   if (!project) {
     return (
       <div className="flex items-center justify-center h-full">
-        <p className="text-white/30 text-sm">
+        <p className="text-foreground/45 text-sm">
           Select a project from the Projects tab
         </p>
       </div>
@@ -483,7 +483,7 @@ export function GraphTab({
   if (view.kind === "deciding") {
     return (
       <div className="flex items-center justify-center h-full">
-        <p className="text-white/30 text-sm">Mapping regions…</p>
+        <p className="text-foreground/45 text-sm">Mapping regions…</p>
       </div>
     );
   }
@@ -494,21 +494,23 @@ export function GraphTab({
     return (
       <div className="h-full flex">
         <div
-          className="border-r border-border/30 flex flex-col h-full bg-[#0b1920]/90 backdrop-blur-md shrink-0"
+          className="border-r border-border/30 flex flex-col h-full bg-card/90 backdrop-blur-md shrink-0"
           style={{ width: leftWidth }}
         >
           <div className="px-4 pt-3 pb-2 shrink-0">
-            <span className="text-[11px] font-medium text-foreground/50 uppercase tracking-widest">
+            <span className="text-[13px] font-medium text-foreground/50 uppercase tracking-widest">
               Regions
             </span>
-            <p className="text-[10px] text-foreground/25 mt-1">
+            <p className="text-[12px] text-foreground/40 mt-1">
               {regionsPayload?.method === "leiden+folders"
                 ? "call communities + folder groups"
                 : "folder groups"}
             </p>
           </div>
           <div className="flex-1 min-h-0 overflow-y-auto py-1">
-            {displayRegions.map((region) => (
+            {[...displayRegions]
+              .sort((a, b) => Number(isTestRegion(a.name)) - Number(isTestRegion(b.name)))
+              .map((region) => (
               <button
                 key={region.id}
                 onClick={() => setSelectedRegion(region)}
@@ -516,7 +518,7 @@ export function GraphTab({
                 className={`flex items-center gap-2 w-full text-left px-4 py-[5px] text-[12px] transition-colors ${
                   selected?.id === region.id
                     ? "bg-primary/10 text-primary"
-                    : "text-foreground/60 hover:text-foreground/80 hover:bg-white/[0.03]"
+                    : "text-foreground/60 hover:text-foreground/80 hover:bg-surface-3"
                 }`}
               >
                 <span
@@ -524,7 +526,7 @@ export function GraphTab({
                   style={{ backgroundColor: region.color }}
                 />
                 <span className="truncate">{region.name}</span>
-                <span className="text-foreground/15 ml-auto text-[10px] tabular-nums shrink-0">
+                <span className="text-foreground/30 ml-auto text-[12px] tabular-nums shrink-0">
                   {region.members.toLocaleString("en-US")}
                 </span>
               </button>
@@ -564,12 +566,12 @@ export function GraphTab({
             />
           </ErrorBoundary>
 
-          <div className="absolute top-4 left-4 text-[11px] text-white/30 pointer-events-none font-mono">
+          <div className="absolute top-4 left-4 text-[13px] text-foreground/55 pointer-events-none tabular-nums">
             <p>
               {displayRegions.length} regions /{" "}
               {regionsPayload?.total_nodes.toLocaleString("en-US")} nodes
             </p>
-            <p className="text-white/20 mt-0.5">
+            <p className="text-foreground/35 mt-0.5">
               double-click a region (or use its panel) to open it
             </p>
           </div>
@@ -637,7 +639,7 @@ export function GraphTab({
   if (!data || !filteredData || data.nodes.length === 0) {
     return (
       <div className="flex items-center justify-center h-full">
-        <p className="text-white/30 text-sm">No nodes in this project</p>
+        <p className="text-foreground/45 text-sm">No nodes in this project</p>
       </div>
     );
   }
@@ -646,7 +648,7 @@ export function GraphTab({
     <div className="h-full flex">
       {/* Left sidebar — resizable */}
       <div
-        className="border-r border-border/30 flex flex-col h-full bg-[#0b1920]/90 backdrop-blur-md shrink-0"
+        className="border-r border-border/30 flex flex-col h-full bg-card/90 backdrop-blur-md shrink-0"
         style={{ width: leftWidth }}
       >
         <FilterPanel
@@ -694,7 +696,7 @@ export function GraphTab({
         {filteredData.nodes.length === 0 ? (
           <div className="flex items-center justify-center h-full">
             <div className="text-center">
-              <p className="text-white/30 text-sm mb-3">All nodes filtered out</p>
+              <p className="text-foreground/45 text-sm mb-3">All nodes filtered out</p>
               <Button size="sm" onClick={enableAll}>
                 Reset Filters
               </Button>
@@ -716,7 +718,7 @@ export function GraphTab({
             </ErrorBoundary>
 
             {/* HUD */}
-            <div className="absolute top-4 left-4 text-[11px] text-white/30 pointer-events-none font-mono">
+            <div className="absolute top-4 left-4 text-[13px] text-foreground/55 pointer-events-none tabular-nums">
               {regionsError && (
                 <p className="text-amber-300/60">regions unavailable: {regionsError}</p>
               )}
@@ -728,7 +730,7 @@ export function GraphTab({
                 {filteredData.edges.length.toLocaleString()} edges
               </p>
               {data.nodes.length > filteredData.nodes.length && (
-                <p className="text-white/25 mt-0.5">
+                <p className="text-foreground/40 mt-0.5">
                   filtered from {data.nodes.length.toLocaleString()}
                 </p>
               )}
@@ -761,10 +763,10 @@ export function GraphTab({
                   Clear selection
                 </Button>
               )}
-              <div className="flex items-center gap-1.5 h-8 px-2 rounded-md border border-border/50 bg-[#0b1920]/80 backdrop-blur-sm">
+              <div className="flex items-center gap-1.5 h-8 px-2 rounded-md border border-border/50 bg-card/80 backdrop-blur-sm">
                 <label
                   htmlFor="node-budget"
-                  className="text-[10px] uppercase tracking-wider text-white/40"
+                  className="text-[12px] uppercase tracking-wider text-foreground/40"
                 >
                   Nodes
                 </label>

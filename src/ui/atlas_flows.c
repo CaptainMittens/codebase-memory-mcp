@@ -510,6 +510,26 @@ static void fl_add_node_ref(yyjson_mut_doc *doc, yyjson_mut_val *obj, const char
     yyjson_mut_obj_add_val(doc, obj, field, ref);
 }
 
+/* A display name with context when the bare name is ambiguous: dunders and
+ * very short names get their file stem prefixed ("datastructures.__init__"),
+ * because "__init__ → clone" teaches nobody anything. */
+static void fl_display_name(const flow_node_t *node, char *out, size_t cap) {
+    const char *name = node->name ? node->name : "?";
+    bool ambiguous = name[0] == '_' || strlen(name) <= 3;
+    if (ambiguous && node->file_path) {
+        const char *base = strrchr(node->file_path, '/');
+        base = base ? base + 1 : node->file_path;
+        char stem[128];
+        snprintf(stem, sizeof(stem), "%s", base);
+        char *dot = strrchr(stem, '.');
+        if (dot && dot != stem)
+            *dot = '\0';
+        snprintf(out, cap, "%s.%s", stem, name);
+        return;
+    }
+    snprintf(out, cap, "%s", name);
+}
+
 char *cbm_atlas_flows_json(cbm_store_t *store, const char *project) {
     if (!store || !project)
         return NULL;
@@ -528,13 +548,13 @@ char *cbm_atlas_flows_json(cbm_store_t *store, const char *project) {
         const flow_t *flow = &g_flow_cache.flows[i];
         yyjson_mut_val *obj = yyjson_mut_obj(doc);
         yyjson_mut_obj_add_int(doc, obj, "id", i);
+        char entry_name[192];
+        char terminal_name[192];
+        fl_display_name(&g_flow_cache.nodes[flow->entry], entry_name, sizeof(entry_name));
+        fl_display_name(&g_flow_cache.nodes[flow->terminal], terminal_name,
+                        sizeof(terminal_name));
         char label[CBM_SZ_512];
-        snprintf(label, sizeof(label), "%s → %s",
-                 g_flow_cache.nodes[flow->entry].name ? g_flow_cache.nodes[flow->entry].name
-                                                      : "?",
-                 g_flow_cache.nodes[flow->terminal].name
-                     ? g_flow_cache.nodes[flow->terminal].name
-                     : "?");
+        snprintf(label, sizeof(label), "%s → %s", entry_name, terminal_name);
         yyjson_mut_obj_add_strcpy(doc, obj, "label", label);
         fl_add_node_ref(doc, obj, "entry", &g_flow_cache.nodes[flow->entry]);
         fl_add_node_ref(doc, obj, "terminal", &g_flow_cache.nodes[flow->terminal]);

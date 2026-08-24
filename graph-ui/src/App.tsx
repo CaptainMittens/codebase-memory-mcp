@@ -154,7 +154,7 @@ export function App() {
     <PromptBasketProvider>
       <div className="h-screen flex flex-col bg-background text-foreground">
         {/* Header */}
-        <header className="flex items-center justify-between px-5 h-12 border-b border-border bg-[#0b1920]/80 backdrop-blur-md shrink-0">
+        <header className="flex items-center justify-between px-5 h-12 border-b border-border bg-card/80 backdrop-blur-md shrink-0">
           <div className="flex items-center gap-6 min-w-0">
             <div className="flex items-center gap-2.5 shrink-0">
               <div className="w-[7px] h-[7px] rounded-full bg-primary" />
@@ -179,10 +179,10 @@ export function App() {
                     title={disabled ? "Select a project first" : undefined}
                     className={`px-3 py-1 rounded-md text-[12px] font-medium transition-all whitespace-nowrap ${
                       disabled
-                        ? "text-muted-foreground/30 cursor-not-allowed"
+                        ? "text-muted-foreground/50 cursor-not-allowed"
                         : activeTab === tab.id
                           ? "bg-primary/15 text-primary"
-                          : "text-muted-foreground hover:text-foreground hover:bg-white/[0.04]"
+                          : "text-muted-foreground hover:text-foreground hover:bg-surface-3"
                     }`}
                   >
                     {tab.label}
@@ -195,19 +195,19 @@ export function App() {
           <div className="flex items-center gap-2 shrink-0">
             <button
               onClick={() => setCommandOpen(true)}
-              className="px-2.5 py-1 rounded-md text-[11px] text-muted-foreground hover:text-foreground bg-white/[0.03] hover:bg-white/[0.06] border border-border/40 transition-all"
+              className="px-2.5 py-1 rounded-md text-[13px] text-muted-foreground hover:text-foreground bg-popover hover:bg-surface-3 border border-border/40 transition-all"
               title="Search symbols and code"
             >
               ⌘K
             </button>
             {selectedProject && (
-              <div className="flex items-center gap-2 px-3 py-1 rounded-lg bg-white/[0.04] border border-border/30">
-                <span className="text-[11px] text-primary font-mono truncate max-w-[240px]">
+              <div className="flex items-center gap-2 px-3 py-1 rounded-md bg-popover border border-border/30">
+                <span className="text-[13px] text-primary font-mono truncate max-w-[240px]">
                   {selectedProject}
                 </span>
                 <button
                   onClick={() => navigate({ tab: "stats", project: null })}
-                  className="text-foreground/20 hover:text-foreground/50 text-[12px] transition-colors"
+                  className="text-foreground/35 hover:text-foreground/50 text-[12px] transition-colors"
                 >
                   ×
                 </button>

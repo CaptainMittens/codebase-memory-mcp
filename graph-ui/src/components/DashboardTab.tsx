@@ -57,14 +57,14 @@ function Histogram({ values, labels }: { values: number[]; labels: string[] }) {
     <div className="flex items-end gap-1.5 h-[72px] mt-2">
       {values.map((value, index) => (
         <div key={index} className="flex-1 flex flex-col items-center gap-1 min-w-0">
-          <span className="text-[9px] tabular-nums text-foreground/30">
+          <span className="text-[12px] tabular-nums text-foreground/45">
             {value.toLocaleString("en-US")}
           </span>
           <div
             className="w-full rounded-sm bg-primary/40"
             style={{ height: `${Math.max(2, (value / max) * 46)}px` }}
           />
-          <span className="text-[8.5px] text-foreground/25">{labels[index]}</span>
+          <span className="text-[12px] text-foreground/40">{labels[index]}</span>
         </div>
       ))}
     </div>
@@ -104,8 +104,8 @@ function StatCard({
   trend?: number[];
 }) {
   return (
-    <div className="bg-white/[0.02] border border-border/40 rounded-xl p-4 min-w-0">
-      <p className="text-[9px] uppercase tracking-widest text-foreground/30">{label}</p>
+    <div className="bg-card border border-border/40 rounded-md p-4 min-w-0">
+      <p className="text-[12px] uppercase tracking-widest text-foreground/45">{label}</p>
       <p
         className={`text-[22px] font-semibold tabular-nums mt-1 ${
           tone === "crit"
@@ -117,7 +117,7 @@ function StatCard({
       >
         {value}
       </p>
-      {sub && <p className="text-[10px] text-foreground/30 mt-0.5">{sub}</p>}
+      {sub && <p className="text-[12px] text-foreground/45 mt-0.5">{sub}</p>}
       {trend && trend.length > 1 && <Sparkline points={trend} />}
     </div>
   );
@@ -135,8 +135,8 @@ function TopList({
   onOpenSymbol?: (ref: { qn: string }) => void;
 }) {
   return (
-    <div className="bg-white/[0.02] border border-border/40 rounded-xl p-4">
-      <p className="text-[10px] uppercase tracking-widest text-foreground/30 mb-2">{title}</p>
+    <div className="bg-card border border-border/40 rounded-md p-4">
+      <p className="text-[12px] uppercase tracking-widest text-foreground/45 mb-2">{title}</p>
       <div className="space-y-px">
         {entries.map((entry, index) => {
           const label = entry.name ?? entry.file ?? "?";
@@ -151,7 +151,7 @@ function TopList({
               }`}
             >
               <span
-                className={`text-[11px] font-mono truncate flex-1 ${
+                className={`text-[13px] font-mono truncate flex-1 ${
                   clickable
                     ? "text-foreground/60 group-hover:text-primary transition-colors"
                     : "text-foreground/55"
@@ -160,13 +160,13 @@ function TopList({
               >
                 {label}
               </span>
-              <span className="text-[10px] tabular-nums text-foreground/35 shrink-0">
+              <span className="text-[12px] tabular-nums text-foreground/50 shrink-0">
                 {entry.value.toLocaleString("en-US")} {unit}
               </span>
             </Row>
           );
         })}
-        {entries.length === 0 && <p className="text-[11px] text-foreground/25">None.</p>}
+        {entries.length === 0 && <p className="text-[13px] text-foreground/40">None.</p>}
       </div>
     </div>
   );
@@ -206,7 +206,7 @@ export function DashboardTab({ project, onOpenSymbol }: DashboardTabProps) {
   if (!metrics) {
     return (
       <div className="flex items-center justify-center h-full">
-        <p className="text-white/30 text-sm">Measuring…</p>
+        <p className="text-foreground/45 text-sm">Measuring…</p>
       </div>
     );
   }
@@ -221,7 +221,7 @@ export function DashboardTab({ project, onOpenSymbol }: DashboardTabProps) {
   return (
     <ScrollArea className="h-full">
       <div className="max-w-[1200px] mx-auto px-6 py-6">
-        <p className="text-[10px] text-foreground/25 font-mono mb-4">
+        <p className="text-[12px] text-foreground/40 font-mono mb-4">
           computed from index {metrics.generated_from}
           {history.length > 1 && ` · trends across ${history.length} index runs`}
         </p>
@@ -271,8 +271,8 @@ export function DashboardTab({ project, onOpenSymbol }: DashboardTabProps) {
             sub="the missed skeleton in the galaxy"
             tone={totals.missed_files > 0 ? "warn" : undefined}
           />
-          <div className="bg-white/[0.02] border border-border/40 rounded-xl p-4">
-            <p className="text-[9px] uppercase tracking-widest text-foreground/30">
+          <div className="bg-card border border-border/40 rounded-md p-4">
+            <p className="text-[12px] uppercase tracking-widest text-foreground/45">
               Complexity distribution
             </p>
             <Histogram values={metrics.complexity_hist} labels={CPLX_LABELS} />
@@ -280,8 +280,8 @@ export function DashboardTab({ project, onOpenSymbol }: DashboardTabProps) {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
-          <div className="bg-white/[0.02] border border-border/40 rounded-xl p-4">
-            <p className="text-[9px] uppercase tracking-widest text-foreground/30">
+          <div className="bg-card border border-border/40 rounded-md p-4">
+            <p className="text-[12px] uppercase tracking-widest text-foreground/45">
               Function length (lines)
             </p>
             <Histogram values={metrics.lines_hist} labels={LINE_LABELS} />

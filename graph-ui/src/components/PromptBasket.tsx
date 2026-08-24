@@ -78,9 +78,9 @@ export function AddToPromptButton({ item, small }: { item: BasketItem; small?: b
     <button
       onClick={() => basket.add(item)}
       disabled={inBasket}
-      className={`${small ? "px-1.5 py-0.5 text-[10px]" : "px-2.5 py-1 text-[11px]"} rounded-md font-medium transition-colors ${
+      className={`${small ? "px-1.5 py-0.5 text-[12px]" : "px-2.5 py-1 text-[13px]"} rounded-md font-medium transition-colors ${
         inBasket
-          ? "bg-white/[0.04] text-foreground/25 cursor-default"
+          ? "bg-popover text-foreground/40 cursor-default"
           : "bg-primary/15 text-primary hover:bg-primary/25"
       }`}
       title={inBasket ? "Already in the prompt" : "Cite this in the prompt composer"}
@@ -131,23 +131,23 @@ export function PromptBasketDrawer({ project }: { project: string | null }) {
   }
 
   return (
-    <div className="fixed bottom-0 right-0 z-40 w-full sm:w-[440px] max-h-[70vh] bg-[#0b1920]/98 border-l border-t border-border/60 rounded-tl-xl backdrop-blur-xl flex flex-col shadow-2xl">
+    <div className="fixed bottom-0 right-0 z-40 w-full sm:w-[440px] max-h-[70vh] bg-card/95 border-l border-t border-border/60 rounded-tl-xl backdrop-blur-xl flex flex-col shadow-2xl">
       <div className="flex items-center justify-between px-4 py-2.5 border-b border-border/40">
         <span className="text-[12px] font-semibold text-foreground/80">
-          Prompt composer <span className="text-foreground/30">({basket.items.length} cited)</span>
+          Prompt composer <span className="text-foreground/45">({basket.items.length} cited)</span>
         </span>
         <div className="flex gap-2 items-center">
           {basket.items.length > 0 && (
             <button
               onClick={basket.clear}
-              className="text-[11px] text-foreground/30 hover:text-foreground/60 transition-colors"
+              className="text-[13px] text-foreground/45 hover:text-foreground/60 transition-colors"
             >
               clear
             </button>
           )}
           <button
             onClick={() => basket.setOpen(false)}
-            className="text-foreground/25 hover:text-foreground/60 text-[15px] leading-none transition-colors"
+            className="text-foreground/40 hover:text-foreground/60 text-[15px] leading-none transition-colors"
           >
             ×
           </button>
@@ -160,27 +160,27 @@ export function PromptBasketDrawer({ project }: { project: string | null }) {
           placeholder="What do you want your agent to do?"
           value={goal}
           onChange={(event) => setGoal(event.target.value)}
-          className="w-full bg-white/[0.04] border border-white/[0.06] rounded-lg px-3 py-1.5 text-[12px] text-foreground placeholder-foreground/25 outline-none focus:border-primary/40 transition-all"
+          className="w-full bg-popover border border-border rounded-md px-3 py-1.5 text-[12px] text-foreground placeholder-foreground/25 outline-none focus:border-primary/40 transition-all"
         />
       </div>
 
       <div className="px-4 py-2 border-b border-border/30 max-h-[120px] overflow-y-auto">
         {basket.items.length === 0 ? (
-          <p className="text-[11px] text-foreground/25 py-1">
+          <p className="text-[13px] text-foreground/40 py-1">
             Cite symbols, regions, flows or questions with “+ prompt” anywhere in Atlas.
           </p>
         ) : (
           basket.items.map((item) => (
             <div key={basketKey(item)} className="flex items-center gap-2 py-[3px]">
-              <span className="text-[10px] uppercase tracking-wider text-foreground/25 w-14 shrink-0">
+              <span className="text-[12px] uppercase tracking-wider text-foreground/40 w-14 shrink-0">
                 {item.kind}
               </span>
-              <span className="text-[11px] font-mono text-foreground/60 truncate flex-1">
+              <span className="text-[13px] font-mono text-foreground/60 truncate flex-1">
                 {itemLabel(item)}
               </span>
               <button
                 onClick={() => basket.remove(basketKey(item))}
-                className="text-foreground/20 hover:text-foreground/50 text-[12px] transition-colors"
+                className="text-foreground/35 hover:text-foreground/50 text-[12px] transition-colors"
               >
                 ×
               </button>
@@ -189,7 +189,7 @@ export function PromptBasketDrawer({ project }: { project: string | null }) {
         )}
       </div>
 
-      <pre className="flex-1 min-h-[120px] overflow-auto px-4 py-3 text-[10.5px] leading-relaxed font-mono text-foreground/70 whitespace-pre-wrap">
+      <pre className="flex-1 min-h-[120px] overflow-auto px-4 py-3 text-[12px] leading-relaxed font-mono text-foreground/70 whitespace-pre-wrap">
         {prompt}
       </pre>
 

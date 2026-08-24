@@ -153,7 +153,7 @@ export function GraphScene({
   return (
     <Canvas
       camera={{ position: [0, 0, 800], fov: 50, near: 0.1, far: 100000 }}
-      style={{ background: "#06090f" }}
+      style={{ background: "#0D0F12" }}
       dpr={GRAPH_CANVAS_DPR}
       gl={{
         antialias: false,
@@ -162,7 +162,7 @@ export function GraphScene({
       }}
       onPointerMissed={onBackgroundClick}
     >
-      <color attach="background" args={["#06090f"]} />
+      <color attach="background" args={["#0D0F12"]} />
       <ambientLight intensity={0.5} />
       <pointLight position={[500, 500, 500]} intensity={0.6} />
       <pointLight
