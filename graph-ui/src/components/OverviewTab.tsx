@@ -252,6 +252,18 @@ export function OverviewTab({
   return (
     <ScrollArea className="h-full">
       <div className="max-w-[1200px] mx-auto px-6 py-6">
+        <div className="flex justify-end mb-2">
+          <a
+            href={`/api/handout?${new URLSearchParams({ project })}`}
+            target="_blank"
+            rel="noreferrer"
+            className="text-[12px] text-foreground/45 hover:text-primary transition-colors"
+            title="A self-contained, shareable document explaining this codebase — generated from the graph, print-friendly"
+          >
+            Handout ↗
+          </a>
+        </div>
+
         {/* The four slots: is anything wrong? */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
           <Slot

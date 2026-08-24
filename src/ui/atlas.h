@@ -55,6 +55,8 @@ char *cbm_atlas_file_history_json(cbm_store_t *store, const char *project, const
  * Reachability between two callables over CALLS ("calls") or DATA_FLOWS
  * ("data"): shortest path within a bounded depth, honest about the bound.
  * Endpoints resolve by node id (>=0) or qualified name. */
+char *cbm_atlas_handout_html(cbm_store_t *store, const char *project);
+
 char *cbm_atlas_blast_json(cbm_store_t *store, const char *project, const char *files_csv);
 
 char *cbm_atlas_bridges_json(cbm_store_t *store, const char *project);

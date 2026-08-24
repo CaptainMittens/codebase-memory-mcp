@@ -1191,9 +1191,9 @@ TEST(ui_server_atlas_routes_are_wired) {
      * falls through to the static handler's 404. This pins the /api/flow
      * (singular) route, which once used a "?*" pattern that never matched
      * because req->path carries no query string. */
-    static const char *const routes[] = {"/api/tree",  "/api/symbol",  "/api/flows",
-                                         "/api/flow",  "/api/metrics", "/api/trace",
-                                         "/api/scent", "/api/bridges", "/api/blast"};
+    static const char *const routes[] = {
+        "/api/tree",  "/api/symbol", "/api/flows",   "/api/flow",  "/api/metrics",
+        "/api/trace", "/api/scent",  "/api/bridges", "/api/blast", "/api/handout"};
     char req[256];
     char resp[4096];
     for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {

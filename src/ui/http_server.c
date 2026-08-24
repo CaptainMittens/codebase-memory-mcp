@@ -77,6 +77,7 @@
  * which makes these statics safe. */
 static char g_cors[256];      /* CORS headers only */
 static char g_cors_json[512]; /* CORS + Content-Type: application/json */
+static char g_cors_html[512]; /* CORS + Content-Type: text/html */
 
 static bool origin_is_same_server(const char *origin, int port) {
     char expected[128];
@@ -113,6 +114,8 @@ static void update_cors(const cbm_http_req_t *req, int port) {
                  "Access-Control-Allow-Headers: Content-Type\r\n");
     }
     snprintf(g_cors_json, sizeof(g_cors_json), "%sContent-Type: application/json\r\n", g_cors);
+    snprintf(g_cors_html, sizeof(g_cors_html), "%sContent-Type: text/html; charset=utf-8\r\n",
+             g_cors);
 }
 
 static const char *detect_ui_lang(const char *accept_language) {
@@ -1848,6 +1851,22 @@ static void handle_atlas_trace(cbm_http_conn_t *c, const cbm_http_req_t *req) {
     atlas_reply_json(c, json, 500, "{\"error\":\"trace failed\"}");
 }
 
+/* GET /api/handout?project=X — the self-contained newcomer document. */
+static void handle_atlas_handout(cbm_http_conn_t *c, const cbm_http_req_t *req) {
+    char project[256] = {0};
+    cbm_store_t *store = atlas_open_project(c, req, project, sizeof(project));
+    if (!store)
+        return;
+    char *html = cbm_atlas_handout_html(store, project);
+    cbm_store_close(store);
+    if (!html) {
+        cbm_http_replyf(c, 500, g_cors_json, "{\"error\":\"handout generation failed\"}");
+        return;
+    }
+    cbm_http_replyf(c, 200, g_cors_html, "%s", html);
+    free(html);
+}
+
 /* GET /api/blast?project=X&files=a,b,c — bucket a file list by region. */
 static void handle_atlas_blast(cbm_http_conn_t *c, const cbm_http_req_t *req) {
     char project[256] = {0};
@@ -2211,6 +2230,12 @@ static void dispatch_request(cbm_http_server_t *srv, cbm_http_conn_t *c,
     /* GET /api/metrics → CBM Atlas dashboard payload */
     if (is_get && cbm_http_path_match(req->path, "/api/metrics*")) {
         handle_atlas_metrics(c, req);
+        return;
+    }
+
+    /* GET /api/handout → CBM Atlas newcomer document */
+    if (is_get && cbm_http_path_match(req->path, "/api/handout*")) {
+        handle_atlas_handout(c, req);
         return;
     }
 

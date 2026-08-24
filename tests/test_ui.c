@@ -1690,6 +1690,33 @@ TEST(atlas_blast_buckets_files_by_region) {
     PASS();
 }
 
+TEST(atlas_handout_is_selfcontained_and_escaped) {
+    cbm_layout_regions_cache_clear();
+    cbm_atlas_flows_cache_clear();
+    cbm_atlas_metrics_cache_clear();
+    cbm_store_t *store = atlas_fixture(NULL);
+    ASSERT_NOT_NULL(store);
+
+    char *html = cbm_atlas_handout_html(store, "regions-test");
+    ASSERT_NOT_NULL(html);
+    ASSERT_NOT_NULL(strstr(html, "<!doctype html>"));
+    ASSERT_NOT_NULL(strstr(html, "regions-test"));
+    /* The map renders the fixture regions. */
+    ASSERT_NOT_NULL(strstr(html, "src/alpha"));
+    /* No host paths leak into the shareable artifact. */
+    ASSERT_NULL(strstr(html, "/tmp/"));
+    ASSERT_NULL(strstr(html, "/Users/"));
+    /* Honest churn: fixture root has no git history → the section says so. */
+    ASSERT_NOT_NULL(strstr(html, "No readable git history"));
+    free(html);
+
+    cbm_store_close(store);
+    cbm_atlas_metrics_cache_clear();
+    cbm_atlas_flows_cache_clear();
+    cbm_layout_regions_cache_clear();
+    PASS();
+}
+
 /* ── Suite ────────────────────────────────────────────────────── */
 
 SUITE(ui) {
@@ -1733,4 +1760,5 @@ SUITE(ui) {
     RUN_TEST(atlas_bridges_rank_by_region_reach);
     RUN_TEST(atlas_symbol_overflow_tail_and_dataflow_presence);
     RUN_TEST(atlas_blast_buckets_files_by_region);
+    RUN_TEST(atlas_handout_is_selfcontained_and_escaped);
 }
