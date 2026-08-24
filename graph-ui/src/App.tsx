@@ -9,6 +9,7 @@ import { FlowsTab } from "./components/FlowsTab";
 import { ChangesTab } from "./components/ChangesTab";
 import { DashboardTab } from "./components/DashboardTab";
 import { CommandK } from "./components/CommandK";
+import { ProjectSwitcher } from "./components/ProjectSwitcher";
 import {
   PromptBasketProvider,
   PromptBasketDrawer,
@@ -29,7 +30,6 @@ const TAB_IDS: TabId[] = [
 ];
 
 /* Tabs that need a selected project. "symbol" is reachable only via links. */
-const PROJECT_TABS: TabId[] = ["overview", "modules", "graph", "flows", "changes", "dashboard"];
 
 interface RouteState {
   tab: TabId;
@@ -140,15 +140,16 @@ export function App() {
     [navigate],
   );
 
-  const tabs: { id: TabId; label: string }[] = [
+  /* Project-scoped views only — they render once a project is chosen.
+   * App-level destinations (Projects, Control) live on the right instead of
+   * being mixed into this row as dead buttons. */
+  const projectTabs: { id: TabId; label: string }[] = [
     { id: "overview", label: "Overview" },
     { id: "modules", label: "Modules" },
     { id: "graph", label: "Galaxy" },
     { id: "flows", label: "Flows" },
     { id: "changes", label: "Changes" },
     { id: "dashboard", label: "Dashboard" },
-    { id: "stats", label: t.tabs.projects },
-    { id: "control", label: t.tabs.control },
   ];
 
   const symbolRef = route.sym
@@ -162,7 +163,7 @@ export function App() {
       <div className="h-screen flex flex-col bg-background text-foreground">
         {/* Header */}
         <header className="flex items-center justify-between px-5 h-12 border-b border-border bg-card/80 backdrop-blur-md shrink-0">
-          <div className="flex items-center gap-6 min-w-0">
+          <div className="flex items-center gap-4 min-w-0">
             <div className="flex items-center gap-2.5 shrink-0">
               <div className="w-[7px] h-[7px] rounded-full bg-primary" />
               <span className="text-[13px] font-semibold text-foreground/90 tracking-tight">
@@ -170,56 +171,56 @@ export function App() {
               </span>
             </div>
 
-            <nav className="flex items-center gap-0.5 overflow-x-auto">
-              {tabs.map((tab) => {
-                const disabled = PROJECT_TABS.includes(tab.id) && !selectedProject;
-                return (
-                  <button
-                    key={tab.id}
-                    onClick={() =>
-                      navigate({
-                        tab: tab.id,
-                        project: tab.id === "stats" ? null : selectedProject,
-                      })
-                    }
-                    disabled={disabled}
-                    title={disabled ? "Select a project first" : undefined}
-                    className={`px-3 py-1 rounded-md text-[12px] font-medium transition-all whitespace-nowrap ${
-                      disabled
-                        ? "text-muted-foreground/50 cursor-not-allowed"
-                        : activeTab === tab.id
+            {/* Context first: which project is everything below about? */}
+            <ProjectSwitcher
+              selected={selectedProject}
+              allProjectsLabel={t.tabs.projects}
+              onSelect={(project) => navigate({ tab: "overview", project })}
+              onAllProjects={() => navigate({ tab: "stats", project: null })}
+            />
+
+            {selectedProject && (
+              <>
+                <div className="w-px h-5 bg-border/50 shrink-0" />
+                <nav className="flex items-center gap-0.5 overflow-x-auto">
+                  {projectTabs.map((tab) => (
+                    <button
+                      key={tab.id}
+                      onClick={() => navigate({ tab: tab.id, project: selectedProject })}
+                      className={`px-3 py-1 rounded-md text-[12px] font-medium transition-all whitespace-nowrap ${
+                        activeTab === tab.id
                           ? "bg-primary/15 text-primary"
                           : "text-muted-foreground hover:text-foreground hover:bg-surface-3"
-                    }`}
-                  >
-                    {tab.label}
-                  </button>
-                );
-              })}
-            </nav>
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
+                </nav>
+              </>
+            )}
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
-            <button
-              onClick={() => setCommandOpen(true)}
-              className="px-2.5 py-1 rounded-md text-[13px] text-muted-foreground hover:text-foreground bg-popover hover:bg-surface-3 border border-border/40 transition-all"
-              title="Search symbols and code"
-            >
-              ⌘K
-            </button>
             {selectedProject && (
-              <div className="flex items-center gap-2 px-3 py-1 rounded-md bg-popover border border-border/30">
-                <span className="text-[13px] text-primary font-mono truncate max-w-[240px]">
-                  {selectedProject}
-                </span>
-                <button
-                  onClick={() => navigate({ tab: "stats", project: null })}
-                  className="text-foreground/35 hover:text-foreground/50 text-[12px] transition-colors"
-                >
-                  ×
-                </button>
-              </div>
+              <button
+                onClick={() => setCommandOpen(true)}
+                className="px-2.5 py-1 rounded-md text-[13px] text-muted-foreground hover:text-foreground bg-popover hover:bg-surface-3 border border-border/40 transition-all"
+                title="Search symbols and code"
+              >
+                ⌘K
+              </button>
             )}
+            <button
+              onClick={() => navigate({ tab: "control", project: selectedProject })}
+              className={`px-3 py-1 rounded-md text-[12px] font-medium transition-all ${
+                activeTab === "control"
+                  ? "bg-primary/15 text-primary"
+                  : "text-muted-foreground hover:text-foreground hover:bg-surface-3"
+              }`}
+            >
+              {t.tabs.control}
+            </button>
           </div>
         </header>
 
