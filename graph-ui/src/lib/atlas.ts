@@ -142,6 +142,8 @@ export interface FlowStep {
   depth: number;
   parent: number;
   guards?: { kind: string; cond?: string; negated?: boolean }[];
+  /* Resolver confidence of the edge from the parent step (0..1). */
+  confidence?: number;
 }
 
 export interface FlowDetail {

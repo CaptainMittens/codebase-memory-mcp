@@ -109,6 +109,65 @@ function IdleAutoRotate({
   return null;
 }
 
+/* ── Semantic-zoom approach watcher ──────────────────────────
+ * Auto-open fires only when ALL guards pass (the anti-annoyance set from
+ * the Understand-Anything study): (1) the movement is user-driven — a
+ * wheel/pinch happened within the last 600 ms, so programmatic fly-tos
+ * never trigger it; (2) the camera is APPROACHING (distance decreasing);
+ * (3) debounced — the same node fires once, with a 1.5 s global grace
+ * period so backing out doesn't bounce straight back in. */
+
+function ApproachWatcher({
+  nodes,
+  onApproachNode,
+}: {
+  nodes: GraphNode[];
+  onApproachNode: (node: GraphNode) => void;
+}) {
+  const { camera, gl } = useThree();
+  const lastWheel = useRef(0);
+  const lastDist = useRef(Infinity);
+  const lastFiredAt = useRef(0);
+  const lastCheck = useRef(0);
+
+  useEffect(() => {
+    const canvas = gl.domElement;
+    const onWheel = () => {
+      lastWheel.current = performance.now();
+    };
+    canvas.addEventListener("wheel", onWheel, { passive: true });
+    return () => canvas.removeEventListener("wheel", onWheel);
+  }, [gl]);
+
+  useFrame(() => {
+    const now = performance.now();
+    if (now - lastCheck.current < 200) return;
+    lastCheck.current = now;
+    if (now - lastWheel.current > 600) return; /* guard 1: user-driven */
+    if (now - lastFiredAt.current < 1500) return; /* guard 3: grace */
+
+    let nearest: GraphNode | null = null;
+    let nearestDist = Infinity;
+    for (const node of nodes) {
+      const dx = camera.position.x - node.x;
+      const dy = camera.position.y - node.y;
+      const dz = camera.position.z - node.z;
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (dist < nearestDist) {
+        nearestDist = dist;
+        nearest = node;
+      }
+    }
+    const approaching = nearestDist < lastDist.current - 0.5; /* guard 2 */
+    lastDist.current = nearestDist;
+    if (!nearest || !approaching) return;
+    if (nearestDist > Math.max(nearest.size * 2.2, 30)) return;
+    lastFiredAt.current = now;
+    onApproachNode(nearest);
+  });
+  return null;
+}
+
 /* ── Orbit-target reporter (throttled) ───────────────────── */
 
 function ViewTargetReporter({
@@ -163,6 +222,9 @@ interface GraphSceneProps {
   /* Reports the orbit target (throttled) so the 2D minimap can show where
    * the camera is looking. */
   onViewTarget?: (x: number, y: number) => void;
+  /* Semantic zoom: fired once when the USER zooms close onto a node (the
+   * region scene opens that region). Guards live in ApproachWatcher. */
+  onApproachNode?: (node: GraphNode) => void;
 }
 
 export type { CameraTarget };
@@ -180,6 +242,7 @@ export function GraphScene({
   renderTooltip,
   landmarks = false,
   onViewTarget,
+  onApproachNode,
 }: GraphSceneProps) {
   const [hovered, setHovered] = useState<GraphNode | null>(null);
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
@@ -313,6 +376,9 @@ export function GraphScene({
       <CameraAnimator target={cameraTarget} controlsRef={controlsRef} />
       {onViewTarget && (
         <ViewTargetReporter controlsRef={controlsRef} onViewTarget={onViewTarget} />
+      )}
+      {onApproachNode && (
+        <ApproachWatcher nodes={data.nodes} onApproachNode={onApproachNode} />
       )}
       <IdleAutoRotate controlsRef={controlsRef} />
 

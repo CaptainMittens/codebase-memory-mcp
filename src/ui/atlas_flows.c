@@ -653,6 +653,16 @@ char *cbm_atlas_flow_json(cbm_store_t *store, const char *project, int flow_id) 
     yyjson_mut_obj_add_bool(doc, root, "cross_region", flow->cross_region);
     if (flow->steps_capped > 0)
         yyjson_mut_obj_add_int(doc, root, "steps_capped", flow->steps_capped);
+    /* Per-step resolver confidence: the CALLS edge from the parent step.
+     * A low value marks steps the resolver was unsure about (e.g. a short
+     * name matched across languages) — shown, never hidden. */
+    struct sqlite3 *conf_db = cbm_store_get_db(store);
+    sqlite3_stmt *conf_st = NULL;
+    if (conf_db)
+        sqlite3_prepare_v2(conf_db,
+                           "SELECT properties FROM edges WHERE project=?1 AND source_id=?2 "
+                           "AND target_id=?3 AND type='CALLS' LIMIT 1",
+                           -1, &conf_st, NULL);
     yyjson_mut_val *steps = yyjson_mut_arr(doc);
     for (int s = 0; s < flow->step_count; s++) {
         const flow_node_t *node = &g_flow_cache.nodes[flow->steps[s]];
@@ -663,8 +673,28 @@ char *cbm_atlas_flow_json(cbm_store_t *store, const char *project, int flow_id) 
             yyjson_mut_obj_add_strcpy(doc, obj, "file_path", node->file_path);
         yyjson_mut_obj_add_int(doc, obj, "depth", flow->depth[s]);
         yyjson_mut_obj_add_int(doc, obj, "parent", flow->parent[s]);
+        if (conf_st && flow->parent[s] >= 0) {
+            sqlite3_reset(conf_st);
+            sqlite3_bind_text(conf_st, 1, project, -1, SQLITE_STATIC);
+            sqlite3_bind_int64(conf_st, 2, g_flow_cache.nodes[flow->steps[flow->parent[s]]].id);
+            sqlite3_bind_int64(conf_st, 3, node->id);
+            if (sqlite3_step(conf_st) == SQLITE_ROW) {
+                const char *props = (const char *)sqlite3_column_text(conf_st, 0);
+                if (props) {
+                    yyjson_doc *pd = yyjson_read(props, strlen(props), 0);
+                    if (pd) {
+                        yyjson_val *cv = yyjson_obj_get(yyjson_doc_get_root(pd), "confidence");
+                        if (cv)
+                            yyjson_mut_obj_add_real(doc, obj, "confidence", yyjson_get_num(cv));
+                        yyjson_doc_free(pd);
+                    }
+                }
+            }
+        }
         yyjson_mut_arr_append(steps, obj);
     }
+    if (conf_st)
+        sqlite3_finalize(conf_st);
     yyjson_mut_obj_add_val(doc, root, "steps", steps);
     pthread_mutex_unlock(&g_flow_mu);
     char *json = yyjson_mut_write(doc, 0, NULL);

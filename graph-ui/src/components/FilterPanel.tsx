@@ -101,6 +101,19 @@ export function FilterPanel({
 
   const deadCount = statusCounts.get("dead") ?? 0;
 
+  /* Tri-state master over everything the panel lists (node types + edge
+   * types — the same global scope enableAll/disableAll always had). */
+  const filterCount = labelCounts.length + edgeTypeCounts.length;
+  let enabledCount = 0;
+  for (const [label] of labelCounts) if (enabledLabels.has(label)) enabledCount++;
+  for (const [type] of edgeTypeCounts) if (enabledEdgeTypes.has(type)) enabledCount++;
+  const master: "all" | "none" | "some" =
+    filterCount > 0 && enabledCount === filterCount
+      ? "all"
+      : enabledCount === 0
+        ? "none"
+        : "some";
+
   return (
     <div className="flex flex-col shrink-0 max-h-[45%] border-b border-border/40">
       {/* Header row — always visible */}
@@ -108,11 +121,25 @@ export function FilterPanel({
         <span className="text-[13px] font-medium text-foreground/50 uppercase tracking-widest">
           Filters
         </span>
-        <div className="flex items-center gap-2">
-          <button onClick={onEnableAll} className="text-[12px] text-primary/70 hover:text-primary transition-colors">All</button>
-          <span className="text-foreground/30">|</span>
-          <button onClick={onDisableAll} className="text-[12px] text-primary/70 hover:text-primary transition-colors">None</button>
-        </div>
+        <button
+          role="checkbox"
+          aria-checked={master === "all" ? "true" : master === "none" ? "false" : "mixed"}
+          aria-label="All filters"
+          onClick={master === "all" ? onDisableAll : onEnableAll}
+          className={`flex items-center gap-1.5 text-[12px] font-medium transition-all ${
+            master === "none" ? "text-foreground/40" : "text-primary"
+          }`}
+        >
+          <span
+            className={`w-3.5 h-3.5 rounded border flex items-center justify-center transition-all ${
+              master === "none" ? "border-foreground/15" : "border-primary bg-primary/20"
+            }`}
+          >
+            {master === "all" && <span className="text-primary text-[12px]">✓</span>}
+            {master === "some" && <span className="w-2 h-[2px] rounded-full bg-primary" />}
+          </span>
+          All
+        </button>
       </div>
 
       {/* Scrollable filter groups */}

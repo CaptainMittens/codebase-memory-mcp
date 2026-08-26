@@ -680,6 +680,10 @@ export function GraphTab({
                 );
               }}
               onViewTarget={(x, y) => setViewTarget({ x, y })}
+              onApproachNode={(node) => {
+                const region = displayRegions.find((r) => r.id === node.id);
+                if (region) openRegion(region);
+              }}
             />
           </ErrorBoundary>
 
@@ -705,7 +709,7 @@ export function GraphTab({
               {regionsPayload?.total_nodes.toLocaleString("en-US")} nodes
             </p>
             <p className="text-foreground/35 mt-0.5">
-              double-click a region (or use its panel) to open it
+              double-click a region — or just zoom into it — to open it
             </p>
           </div>
 

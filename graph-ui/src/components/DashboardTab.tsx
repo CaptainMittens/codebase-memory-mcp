@@ -116,16 +116,28 @@ function TopList({
   title,
   entries,
   unit,
+  total,
   onOpenSymbol,
 }: {
   title: string;
   entries: MetricEntry[];
   unit: string;
+  /* Size of the population the list was ranked over — only when the payload
+   * carries a real total; never estimated. Absent → the cap reads "top N". */
+  total?: number;
   onOpenSymbol?: (ref: { qn: string }) => void;
 }) {
   return (
     <div className="bg-card border border-border/50 rounded-md p-4">
-      <p className="text-[12px] uppercase tracking-widest text-foreground/40 mb-2">{title}</p>
+      <p className="text-[12px] uppercase tracking-widest text-foreground/40 mb-2 flex items-baseline justify-between gap-2">
+        <span className="truncate">{title}</span>
+        {entries.length > 0 && (
+          <span className="text-foreground/30 tabular-nums shrink-0">
+            top {entries.length.toLocaleString("en-US")}
+            {total !== undefined && ` of ${total.toLocaleString("en-US")}`}
+          </span>
+        )}
+      </p>
       <div className="space-y-px">
         {entries.map((entry, index) => {
           const label = entry.name ?? entry.file ?? "?";
@@ -260,6 +272,11 @@ export function DashboardTab({ project, onOpenSymbol, onOpenModulesPath }: Dashb
             <h2 className="text-[17px] font-semibold text-foreground/90">
               Where the bugs live — churn × complexity
             </h2>
+            {metrics.top_churn_complex.length > 0 && (
+              <span className="text-[12px] uppercase tracking-widest text-foreground/35 tabular-nums">
+                top {metrics.top_churn_complex.length.toLocaleString("en-US")}
+              </span>
+            )}
             {hero.mutedCount > 0 && (
               <button
                 onClick={() => setShowMuted((value) => !value)}
@@ -380,6 +397,7 @@ export function DashboardTab({ project, onOpenSymbol, onOpenModulesPath }: Dashb
             title="Most churned files (1y)"
             entries={metrics.top_churn}
             unit="commits"
+            total={metrics.churn_total_files}
           />
         </div>
 
@@ -389,18 +407,21 @@ export function DashboardTab({ project, onOpenSymbol, onOpenModulesPath }: Dashb
             title="Most complex"
             entries={metrics.top_complex}
             unit="cyclo"
+            total={totals.callables}
             onOpenSymbol={onOpenSymbol}
           />
           <TopList
             title="Hardest to follow"
             entries={metrics.top_cognitive}
             unit="cog"
+            total={totals.callables}
             onOpenSymbol={onOpenSymbol}
           />
           <TopList
             title="Longest"
             entries={metrics.top_long}
             unit="lines"
+            total={totals.callables}
             onOpenSymbol={onOpenSymbol}
           />
         </div>

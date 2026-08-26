@@ -431,6 +431,14 @@ export function FlowsTab({ project, flowId, onOpenFlow, onOpenSymbol }: FlowsTab
                     <span className="text-[12px] font-mono text-foreground/70 group-hover:text-primary transition-colors truncate">
                       {step.name}
                     </span>
+                    {step.confidence !== undefined && step.confidence < 0.75 && (
+                      <span
+                        className="text-[11px] text-warn/80 shrink-0"
+                        title={`resolver confidence ${Math.round(step.confidence * 100)}% — this hop may be misresolved`}
+                      >
+                        ≈{Math.round(step.confidence * 100)}%
+                      </span>
+                    )}
                     {(step.guards ?? []).slice(0, 3).map((guard, gi) => (
                       <span
                         key={gi}
