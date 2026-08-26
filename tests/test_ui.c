@@ -1717,6 +1717,139 @@ TEST(atlas_handout_is_selfcontained_and_escaped) {
     PASS();
 }
 
+/* A real on-disk C file so the on-demand guard extraction has something to
+ * parse: alpha calls beta under two nested ifs, gamma inside a loop, and
+ * delta in the else arm. */
+static const char *WHY_SAMPLE_C = "void beta(void);\n"
+                                  "void gamma_fn(void);\n"
+                                  "void delta(void);\n"
+                                  "void alpha(int mode, int strict) {\n"
+                                  "    if (mode > 2) {\n"
+                                  "        if (strict) {\n"
+                                  "            beta();\n"
+                                  "        } else {\n"
+                                  "            delta();\n"
+                                  "        }\n"
+                                  "    }\n"
+                                  "    for (int i = 0; i < mode; i++) {\n"
+                                  "        gamma_fn();\n"
+                                  "    }\n"
+                                  "}\n";
+
+TEST(atlas_why_extracts_guard_chains) {
+    char tmpl[] = "/tmp/cbm_why_XXXXXX";
+    char *root = cbm_mkdtemp(tmpl);
+    ASSERT_NOT_NULL(root);
+    char dir[1024];
+    snprintf(dir, sizeof(dir), "%s/src", root);
+    cbm_mkdir_p(dir, 0755);
+    char file[1024];
+    snprintf(file, sizeof(file), "%s/src/w1.c", root);
+    FILE *fp = cbm_fopen(file, "wb");
+    ASSERT_NOT_NULL(fp);
+    fputs(WHY_SAMPLE_C, fp);
+    fclose(fp);
+
+    cbm_store_t *store = cbm_store_open_memory();
+    ASSERT_NOT_NULL(store);
+    cbm_store_upsert_project(store, "why-test", root);
+
+    static const char *names[4] = {"beta", "gamma_fn", "delta", "alpha"};
+    int64_t ids[4];
+    for (int i = 0; i < 4; i++) {
+        cbm_node_t node;
+        memset(&node, 0, sizeof(node));
+        node.project = "why-test";
+        node.label = "Function";
+        node.name = names[i];
+        char qn[64];
+        snprintf(qn, sizeof(qn), "why-test::%s", names[i]);
+        node.qualified_name = qn;
+        node.file_path = "src/w1.c";
+        node.start_line = i == 3 ? 4 : 1;
+        node.end_line = i == 3 ? 15 : 1;
+        ids[i] = cbm_store_upsert_node(store, &node);
+        ASSERT_GT(ids[i], 0);
+    }
+    /* alpha → beta at line 7 (if mode>2 → if strict), alpha → gamma_fn at
+     * line 13 (loop), alpha → delta at line 9 (else arm of strict). */
+    struct {
+        int target;
+        const char *props;
+    } calls[3] = {{0, "{\"line\":7}"}, {1, "{\"line\":13}"}, {2, "{\"line\":9}"}};
+    for (int i = 0; i < 3; i++) {
+        cbm_edge_t edge;
+        memset(&edge, 0, sizeof(edge));
+        edge.project = "why-test";
+        edge.source_id = ids[3];
+        edge.target_id = ids[calls[i].target];
+        edge.type = "CALLS";
+        edge.properties_json = calls[i].props;
+        ASSERT_GT(cbm_store_insert_edge(store, &edge), 0);
+    }
+
+    /* Upward: when does beta run? One caller (alpha), guards outermost-first
+     * = [mode > 2, strict]. */
+    char *json = cbm_atlas_why_json(store, "why-test", ids[0], NULL, true);
+    ASSERT_NOT_NULL(json);
+    yyjson_doc *doc = yyjson_read(json, strlen(json), 0);
+    ASSERT_NOT_NULL(doc);
+    yyjson_val *root_v = yyjson_doc_get_root(doc);
+    yyjson_val *entries = yyjson_obj_get(root_v, "entries");
+    ASSERT_EQ((int)yyjson_arr_size(entries), 1);
+    yyjson_val *entry = yyjson_arr_get(entries, 0);
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(entry, "name")), "alpha");
+    yyjson_val *guards = yyjson_obj_get(entry, "guards");
+    ASSERT_EQ((int)yyjson_arr_size(guards), 2);
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(yyjson_arr_get(guards, 0), "cond")), "mode > 2");
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(yyjson_arr_get(guards, 1), "cond")), "strict");
+    ASSERT_NULL(yyjson_obj_get(yyjson_arr_get(guards, 1), "negated"));
+    yyjson_doc_free(doc);
+    free(json);
+
+    /* delta sits in the ELSE arm: same conditions, innermost negated. */
+    json = cbm_atlas_why_json(store, "why-test", ids[2], NULL, true);
+    ASSERT_NOT_NULL(json);
+    doc = yyjson_read(json, strlen(json), 0);
+    entry = yyjson_arr_get(yyjson_obj_get(yyjson_doc_get_root(doc), "entries"), 0);
+    guards = yyjson_obj_get(entry, "guards");
+    ASSERT_EQ((int)yyjson_arr_size(guards), 2);
+    ASSERT_TRUE(yyjson_get_bool(yyjson_obj_get(yyjson_arr_get(guards, 1), "negated")));
+    yyjson_doc_free(doc);
+    free(json);
+
+    /* gamma_fn runs in a loop; downward from alpha lists all three callees
+     * with their guards computed from alpha's own file. */
+    json = cbm_atlas_why_json(store, "why-test", ids[1], NULL, true);
+    ASSERT_NOT_NULL(json);
+    doc = yyjson_read(json, strlen(json), 0);
+    entry = yyjson_arr_get(yyjson_obj_get(yyjson_doc_get_root(doc), "entries"), 0);
+    ASSERT_TRUE(yyjson_get_bool(yyjson_obj_get(entry, "loop")));
+    yyjson_doc_free(doc);
+    free(json);
+
+    json = cbm_atlas_why_json(store, "why-test", ids[3], NULL, false);
+    ASSERT_NOT_NULL(json);
+    doc = yyjson_read(json, strlen(json), 0);
+    root_v = yyjson_doc_get_root(doc);
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(root_v, "direction")), "down");
+    ASSERT_EQ((int)yyjson_arr_size(yyjson_obj_get(root_v, "entries")), 3);
+    yyjson_doc_free(doc);
+    free(json);
+
+    /* Callsite guards helper (the A→B trace hop path). */
+    json = cbm_atlas_callsite_guards_json(store, "why-test", "src/w1.c", 7);
+    ASSERT_NOT_NULL(json);
+    doc = yyjson_read(json, strlen(json), 0);
+    ASSERT_EQ((int)yyjson_arr_size(yyjson_obj_get(yyjson_doc_get_root(doc), "guards")), 2);
+    yyjson_doc_free(doc);
+    free(json);
+
+    cbm_store_close(store);
+    th_rmtree(root);
+    PASS();
+}
+
 /* ── Suite ────────────────────────────────────────────────────── */
 
 SUITE(ui) {
@@ -1761,4 +1894,5 @@ SUITE(ui) {
     RUN_TEST(atlas_symbol_overflow_tail_and_dataflow_presence);
     RUN_TEST(atlas_blast_buckets_files_by_region);
     RUN_TEST(atlas_handout_is_selfcontained_and_escaped);
+    RUN_TEST(atlas_why_extracts_guard_chains);
 }

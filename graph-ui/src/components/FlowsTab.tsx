@@ -13,6 +13,7 @@ import {
   type TracePayload,
 } from "../lib/atlas";
 import { groupFlowsByEntry } from "../lib/flowgroup";
+import { formatGuard } from "../lib/why";
 import { AddToPromptButton } from "./PromptBasket";
 
 interface FlowsTabProps {
@@ -255,7 +256,7 @@ export function FlowsTab({ project, flowId, onOpenFlow, onOpenSymbol }: FlowsTab
                   </p>
                   <div className="flex items-center gap-1 flex-wrap">
                     {(trace.path ?? []).map((step, index) => (
-                      <span key={index} className="flex items-center gap-1">
+                      <span key={index} className="flex items-center gap-1 flex-wrap">
                         {index > 0 && (
                           <span className="text-foreground/25 text-[12px]">→</span>
                         )}
@@ -266,6 +267,19 @@ export function FlowsTab({ project, flowId, onOpenFlow, onOpenSymbol }: FlowsTab
                         >
                           {step.name}
                         </button>
+                        {(step.guards ?? []).map((guard, gi) => (
+                          <span
+                            key={gi}
+                            className={`text-[10px] px-1 rounded-full border font-mono ${
+                              guard.negated
+                                ? "border-warn/50 text-warn/80"
+                                : "border-primary/40 text-primary/80"
+                            }`}
+                            title="syntactic guard at this hop's call site"
+                          >
+                            {formatGuard(guard)}
+                          </span>
+                        ))}
                       </span>
                     ))}
                   </div>

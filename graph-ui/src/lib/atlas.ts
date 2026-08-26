@@ -271,7 +271,12 @@ export interface TracePayload {
   explored?: number;
   error?: string;
   hops?: number;
-  path?: { id: number; name: string; file_path?: string }[];
+  path?: {
+    id: number;
+    name: string;
+    file_path?: string;
+    guards?: { kind: string; cond?: string; negated?: boolean }[];
+  }[];
 }
 
 export function fetchTrace(
@@ -280,7 +285,7 @@ export function fetchTrace(
   to: string,
   mode: "calls" | "data",
 ): Promise<TracePayload> {
-  const params = new URLSearchParams({ project, from, to, mode });
+  const params = new URLSearchParams({ project, from, to, mode, guards: "1" });
   return getJson(`/api/trace?${params}`);
 }
 

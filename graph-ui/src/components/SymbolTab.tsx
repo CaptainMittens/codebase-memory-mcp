@@ -13,6 +13,7 @@ import {
   type SymbolRef,
 } from "../lib/atlas";
 import { AddToPromptButton } from "./PromptBasket";
+import { TriggerTree } from "./TriggerTree";
 import type { RepoInfo } from "../lib/types";
 
 interface SymbolTabProps {
@@ -310,6 +311,16 @@ export function SymbolTab({ project, symbolRef, onOpenSymbol, onOpenRegion }: Sy
             page={bundle.callees}
             homeRegion={bundle.region?.id}
             onLoadMore={() => setLimit((value) => value + 100)}
+            onOpenSymbol={onOpenSymbol}
+          />
+        </div>
+
+        {/* The Why view — condition→action, the abstraction code text
+         * serves worst (Pennington 1987). */}
+        <div className="mb-4">
+          <TriggerTree
+            project={project}
+            symbolId={bundle.node.id}
             onOpenSymbol={onOpenSymbol}
           />
         </div>

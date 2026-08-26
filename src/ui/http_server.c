@@ -1826,6 +1826,80 @@ static void handle_atlas_metrics(cbm_http_conn_t *c, const cbm_http_req_t *req) 
     atlas_reply_json(c, json, 500, "{\"error\":\"metrics computation failed\"}");
 }
 
+/* Attach per-hop guard chains to a trace JSON (guards=1): for each
+ * consecutive path pair, find the CALLS edge's call-site line and run the
+ * on-demand guard extraction in the caller's file. Best-effort — hops
+ * without a resolvable site simply get no guards array. */
+static char *atlas_trace_attach_guards(cbm_store_t *store, const char *project, char *json) {
+    yyjson_doc *doc = yyjson_read(json, strlen(json), 0);
+    if (!doc)
+        return json;
+    yyjson_val *path = yyjson_obj_get(yyjson_doc_get_root(doc), "path");
+    size_t hops = path ? yyjson_arr_size(path) : 0;
+    if (hops < 2) {
+        yyjson_doc_free(doc);
+        return json;
+    }
+    yyjson_mut_doc *mut = yyjson_doc_mut_copy(doc, NULL);
+    yyjson_doc_free(doc);
+    if (!mut)
+        return json;
+    yyjson_mut_val *mpath = yyjson_mut_obj_get(yyjson_mut_doc_get_root(mut), "path");
+    struct sqlite3 *db = cbm_store_get_db(store);
+    for (size_t i = 0; i + 1 < hops && db; i++) {
+        yyjson_mut_val *from = yyjson_mut_arr_get(mpath, i);
+        yyjson_mut_val *to = yyjson_mut_arr_get(mpath, i + 1);
+        int64_t from_id = yyjson_mut_get_int(yyjson_mut_obj_get(from, "id"));
+        int64_t to_id = yyjson_mut_get_int(yyjson_mut_obj_get(to, "id"));
+        const char *from_file = yyjson_mut_get_str(yyjson_mut_obj_get(from, "file_path"));
+        if (!from_file)
+            continue;
+        sqlite3_stmt *st = NULL;
+        int line = -1;
+        if (sqlite3_prepare_v2(db,
+                               "SELECT properties FROM edges WHERE project=?1 AND "
+                               "source_id=?2 AND target_id=?3 AND type='CALLS' LIMIT 1",
+                               -1, &st, NULL) == SQLITE_OK) {
+            sqlite3_bind_text(st, 1, project, -1, SQLITE_STATIC);
+            sqlite3_bind_int64(st, 2, from_id);
+            sqlite3_bind_int64(st, 3, to_id);
+            if (sqlite3_step(st) == SQLITE_ROW) {
+                const char *props = (const char *)sqlite3_column_text(st, 0);
+                if (props) {
+                    yyjson_doc *pd = yyjson_read(props, strlen(props), 0);
+                    if (pd) {
+                        line = (int)yyjson_get_int(yyjson_obj_get(yyjson_doc_get_root(pd), "line"));
+                        yyjson_doc_free(pd);
+                    }
+                }
+            }
+            sqlite3_finalize(st);
+        }
+        if (line <= 0)
+            continue;
+        char *gj = cbm_atlas_callsite_guards_json(store, project, from_file, line);
+        if (!gj)
+            continue;
+        yyjson_doc *gd = yyjson_read(gj, strlen(gj), 0);
+        free(gj);
+        if (!gd)
+            continue;
+        yyjson_val *garr = yyjson_obj_get(yyjson_doc_get_root(gd), "guards");
+        if (garr) {
+            yyjson_mut_val *copy = yyjson_val_mut_copy(mut, garr);
+            if (copy)
+                yyjson_mut_obj_add_val(mut, to, "guards", copy);
+        }
+        yyjson_doc_free(gd);
+    }
+    char *out = yyjson_mut_write(mut, 0, NULL);
+    yyjson_mut_doc_free(mut);
+    if (!out)
+        return json;
+    free(json);
+    return out;
+}
+
 /* GET /api/trace?project=X&from=QN|#id&to=QN|#id&mode=calls|data — A→B. */
 static void handle_atlas_trace(cbm_http_conn_t *c, const cbm_http_req_t *req) {
     char project[256] = {0};
@@ -1847,8 +1921,36 @@ static void handle_atlas_trace(cbm_http_conn_t *c, const cbm_http_req_t *req) {
     int64_t to_id = to_str[0] == '#' ? strtoll(to_str + 1, NULL, 10) : -1;
     char *json = cbm_atlas_trace_json(store, project, from_id, from_id < 0 ? from_str : NULL, to_id,
                                       to_id < 0 ? to_str : NULL, mode[0] ? mode : "calls");
+    char wantg[8] = {0};
+    cbm_http_query_param(req->query, "guards", wantg, (int)sizeof(wantg));
+    if (json && wantg[0] == '1')
+        json = atlas_trace_attach_guards(store, project, json);
     cbm_store_close(store);
     atlas_reply_json(c, json, 500, "{\"error\":\"trace failed\"}");
+}
+
+/* GET /api/why?project=X&id=N|qn=Q&dir=up|down — the trigger tree. */
+static void handle_atlas_why(cbm_http_conn_t *c, const cbm_http_req_t *req) {
+    char project[256] = {0};
+    cbm_store_t *store = atlas_open_project(c, req, project, sizeof(project));
+    if (!store)
+        return;
+    char idbuf[32] = {0};
+    char qn[1024] = {0};
+    char dir[8] = {0};
+    cbm_http_query_param(req->query, "id", idbuf, (int)sizeof(idbuf));
+    cbm_http_query_param(req->query, "qn", qn, (int)sizeof(qn));
+    cbm_http_query_param(req->query, "dir", dir, (int)sizeof(dir));
+    if (!idbuf[0] && !qn[0]) {
+        cbm_store_close(store);
+        cbm_http_replyf(c, 400, g_cors_json, "{\"error\":\"missing id or qn parameter\"}");
+        return;
+    }
+    int64_t id = idbuf[0] ? strtoll(idbuf, NULL, 10) : -1;
+    bool upward = strcmp(dir, "down") != 0;
+    char *json = cbm_atlas_why_json(store, project, id, qn[0] ? qn : NULL, upward);
+    cbm_store_close(store);
+    atlas_reply_json(c, json, 404, "{\"error\":\"symbol not found\"}");
 }
 
 /* GET /api/handout?project=X — the self-contained newcomer document. */
@@ -2230,6 +2332,12 @@ static void dispatch_request(cbm_http_server_t *srv, cbm_http_conn_t *c,
     /* GET /api/metrics → CBM Atlas dashboard payload */
     if (is_get && cbm_http_path_match(req->path, "/api/metrics*")) {
         handle_atlas_metrics(c, req);
+        return;
+    }
+
+    /* GET /api/why → CBM Atlas trigger tree */
+    if (is_get && cbm_http_path_match(req->path, "/api/why*")) {
+        handle_atlas_why(c, req);
         return;
     }
 
