@@ -5,9 +5,19 @@ export type UiLanguage = "en" | "zh";
 export const messages = {
   en: {
     tabs: {
-      graph: "Graph",
+      overview: "Overview",
+      modules: "Modules",
+      graph: "Galaxy",
+      flows: "Flows",
+      changes: "Changes",
+      dashboard: "Dashboard",
       projects: "Projects",
       control: "Control",
+    },
+    switcher: {
+      select: "Select a project…",
+      search: "Search projects…",
+      manage: "manage & index",
     },
     common: {
       cancel: "Cancel",
@@ -76,9 +86,19 @@ export const messages = {
   },
   zh: {
     tabs: {
-      graph: "图谱",
+      overview: "总览",
+      modules: "模块",
+      graph: "星系",
+      flows: "流程",
+      changes: "变更",
+      dashboard: "仪表盘",
       projects: "项目",
       control: "控制",
+    },
+    switcher: {
+      select: "选择项目…",
+      search: "搜索项目…",
+      manage: "管理与索引",
     },
     common: {
       cancel: "取消",

@@ -8,11 +8,13 @@ import type { Project } from "../lib/types";
  * of dead tabs. */
 export function ProjectSwitcher({
   selected,
+  labels,
   allProjectsLabel,
   onSelect,
   onAllProjects,
 }: {
   selected: string | null;
+  labels: { select: string; search: string; manage: string };
   allProjectsLabel: string;
   onSelect: (project: string) => void;
   onAllProjects: () => void;
@@ -73,7 +75,7 @@ export function ProjectSwitcher({
         }`}
         title={selected ?? "Choose which indexed project to explore"}
       >
-        <span className="font-mono truncate">{selected ?? "Select a project…"}</span>
+        <span className="font-mono truncate">{selected ?? labels.select}</span>
         <span className="text-foreground/40 text-[11px] shrink-0">▾</span>
       </button>
       {open &&
@@ -105,7 +107,7 @@ export function ProjectSwitcher({
                     onSelect(filtered[0].name);
                   }
                 }}
-                placeholder="Search projects…"
+                placeholder={labels.search}
                 className="w-full bg-background border border-border/60 rounded-md px-2.5 py-1.5 text-[13px] text-foreground placeholder-foreground/35 outline-none focus:border-primary/60 transition-all"
               />
             </div>
@@ -144,7 +146,7 @@ export function ProjectSwitcher({
                   }}
                   className="w-full text-left px-3 py-1.5 text-[13px] text-foreground/55 hover:text-foreground/85 hover:bg-surface-4 transition-colors"
                 >
-                  {allProjectsLabel} — manage &amp; index →
+                  {allProjectsLabel} — {labels.manage} →
                 </button>
               </div>
             </div>

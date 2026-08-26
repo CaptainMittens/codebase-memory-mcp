@@ -144,12 +144,12 @@ export function App() {
    * App-level destinations (Projects, Control) live on the right instead of
    * being mixed into this row as dead buttons. */
   const projectTabs: { id: TabId; label: string }[] = [
-    { id: "overview", label: "Overview" },
-    { id: "modules", label: "Modules" },
-    { id: "graph", label: "Galaxy" },
-    { id: "flows", label: "Flows" },
-    { id: "changes", label: "Changes" },
-    { id: "dashboard", label: "Dashboard" },
+    { id: "overview", label: t.tabs.overview },
+    { id: "modules", label: t.tabs.modules },
+    { id: "graph", label: t.tabs.graph },
+    { id: "flows", label: t.tabs.flows },
+    { id: "changes", label: t.tabs.changes },
+    { id: "dashboard", label: t.tabs.dashboard },
   ];
 
   const symbolRef = route.sym
@@ -174,6 +174,7 @@ export function App() {
             {/* Context first: which project is everything below about? */}
             <ProjectSwitcher
               selected={selectedProject}
+              labels={t.switcher}
               allProjectsLabel={t.tabs.projects}
               onSelect={(project) => navigate({ tab: "overview", project })}
               onAllProjects={() => navigate({ tab: "stats", project: null })}
