@@ -287,6 +287,19 @@ static int why_edge_line(const char *properties_json) {
     return line > 0 ? line : -1;
 }
 
+/* Dynamic-dispatch uncertainty: how many candidate targets the resolver saw
+ * for this call site (1 = certain, >1 = the ◇ case). */
+static int why_edge_candidates(const char *properties_json) {
+    if (!properties_json)
+        return 0;
+    yyjson_doc *doc = yyjson_read(properties_json, strlen(properties_json), 0);
+    if (!doc)
+        return 0;
+    int candidates = (int)yyjson_get_int(yyjson_obj_get(yyjson_doc_get_root(doc), "candidates"));
+    yyjson_doc_free(doc);
+    return candidates;
+}
+
 /* ── The Why endpoint ───────────────────────────────────────────── */
 
 char *cbm_atlas_why_json(cbm_store_t *store, const char *project, int64_t node_id,
@@ -399,6 +412,9 @@ char *cbm_atlas_why_json(cbm_store_t *store, const char *project, int64_t node_i
             int line = why_edge_line(props);
             if (line > 0)
                 yyjson_mut_obj_add_int(doc, entry, "line", line);
+            int candidates = why_edge_candidates(props);
+            if (candidates > 1)
+                yyjson_mut_obj_add_int(doc, entry, "candidates", candidates);
             /* The file holding the call site. */
             const char *site_file = upward ? f : (sym_file[0] ? sym_file : NULL);
             bool ok = false;

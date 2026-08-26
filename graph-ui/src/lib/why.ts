@@ -18,6 +18,8 @@ export interface WhyEntry {
   guards: Guard[];
   loop?: boolean;
   guards_unavailable?: boolean;
+  /* >1 = dynamic dispatch: this is one of N possible targets. */
+  candidates?: number;
   more: number;
 }
 

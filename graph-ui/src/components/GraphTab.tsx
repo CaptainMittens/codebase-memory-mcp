@@ -872,12 +872,12 @@ export function GraphTab({
                 <p className="text-primary/60">region: {view.region.name}</p>
               )}
               <p>
-                {filteredData.nodes.length.toLocaleString()} nodes /{" "}
-                {filteredData.edges.length.toLocaleString()} edges
+                {filteredData.nodes.length.toLocaleString("en-US")} nodes /{" "}
+                {filteredData.edges.length.toLocaleString("en-US")} edges
               </p>
               {data.nodes.length > filteredData.nodes.length && (
                 <p className="text-foreground/40 mt-0.5">
-                  filtered from {data.nodes.length.toLocaleString()}
+                  filtered from {data.nodes.length.toLocaleString("en-US")}
                 </p>
               )}
               {limitNotice && (

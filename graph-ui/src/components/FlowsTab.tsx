@@ -431,6 +431,19 @@ export function FlowsTab({ project, flowId, onOpenFlow, onOpenSymbol }: FlowsTab
                     <span className="text-[12px] font-mono text-foreground/70 group-hover:text-primary transition-colors truncate">
                       {step.name}
                     </span>
+                    {(step.guards ?? []).slice(0, 3).map((guard, gi) => (
+                      <span
+                        key={gi}
+                        className={`text-[10px] px-1 rounded-full border font-mono shrink-0 max-w-[220px] truncate ${
+                          guard.negated
+                            ? "border-warn/50 text-warn/80"
+                            : "border-primary/40 text-primary/80"
+                        }`}
+                        title="syntactic guard at this step's call site"
+                      >
+                        {formatGuard(guard)}
+                      </span>
+                    ))}
                     <span className="text-[12px] text-foreground/35 truncate ml-auto shrink-0 max-w-[40%]">
                       {step.file_path}
                     </span>

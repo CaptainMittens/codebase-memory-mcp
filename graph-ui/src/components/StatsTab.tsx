@@ -22,7 +22,7 @@ function HealthDot({ name }: { name: string }) {
         setStatus(d.status ?? "corrupt");
         if (d.nodes !== undefined) {
           const sizeMB = ((d.size_bytes ?? 0) / 1024 / 1024).toFixed(1);
-          setInfo(`${d.nodes.toLocaleString()} nodes, ${d.edges.toLocaleString()} edges, ${sizeMB} MB`);
+          setInfo(`${d.nodes.toLocaleString("en-US")} nodes, ${d.edges.toLocaleString("en-US")} edges, ${sizeMB} MB`);
         } else if (d.reason) {
           setInfo(d.reason);
         }
@@ -531,7 +531,7 @@ export function StatsTab({ onSelectProject }: StatsTabProps) {
             ].map((s) => (
               <div key={s.label} className="flex-1 rounded-md border border-border/30 bg-card p-4">
                 <p className="text-[12px] text-foreground/40 uppercase tracking-widest mb-1">{s.label}</p>
-                <p className={`text-[22px] font-semibold tabular-nums ${s.color}`}>{s.value.toLocaleString()}</p>
+                <p className={`text-[22px] font-semibold tabular-nums ${s.color}`}>{s.value.toLocaleString("en-US")}</p>
               </div>
             ))}
           </div>
@@ -581,14 +581,14 @@ export function StatsTab({ onSelectProject }: StatsTabProps) {
                 {p.schema && (
                   <>
                     <div className="flex gap-6 text-[12px] text-foreground/45 mb-3">
-                      <span><strong className="text-foreground/55 tabular-nums">{totalNodes.toLocaleString()}</strong> {t.projects.nodes}</span>
-                      <span><strong className="text-foreground/55 tabular-nums">{totalEdges.toLocaleString()}</strong> {t.projects.edges}</span>
+                      <span><strong className="text-foreground/55 tabular-nums">{totalNodes.toLocaleString("en-US")}</strong> {t.projects.nodes}</span>
+                      <span><strong className="text-foreground/55 tabular-nums">{totalEdges.toLocaleString("en-US")}</strong> {t.projects.edges}</span>
                     </div>
                     <div className="flex flex-wrap gap-1">
                       {p.schema.node_labels?.map((l) => (
                         <span key={l.label} className="inline-flex items-center gap-1 px-1.5 py-[2px] rounded-md text-[12px] font-medium" style={{ backgroundColor: colorForLabel(l.label) + "10", color: colorForLabel(l.label) + "bb" }}>
                           <span className="w-[4px] h-[4px] rounded-full" style={{ backgroundColor: colorForLabel(l.label) }} />
-                          {l.label} {l.count.toLocaleString()}
+                          {l.label} {l.count.toLocaleString("en-US")}
                         </span>
                       ))}
                     </div>

@@ -8,7 +8,7 @@ interface ProjectCardProps {
 }
 
 function formatNumber(n: number): string {
-  return n.toLocaleString();
+  return n.toLocaleString("en-US");
 }
 
 export function ProjectCard({ project, schema, onSelect }: ProjectCardProps) {

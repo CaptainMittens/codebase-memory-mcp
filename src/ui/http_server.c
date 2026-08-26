@@ -1929,6 +1929,82 @@ static void handle_atlas_trace(cbm_http_conn_t *c, const cbm_http_req_t *req) {
     atlas_reply_json(c, json, 500, "{\"error\":\"trace failed\"}");
 }
 
+/* Attach guard chains to a flow-detail JSON (guards=1): each step's call
+ * site is (steps[step.parent] → step); the guard chain is extracted in the
+ * parent's file. Best-effort, same contract as the trace variant. */
+static char *atlas_flow_attach_guards(cbm_store_t *store, const char *project, char *json) {
+    yyjson_doc *doc = yyjson_read(json, strlen(json), 0);
+    if (!doc)
+        return json;
+    yyjson_val *steps = yyjson_obj_get(yyjson_doc_get_root(doc), "steps");
+    size_t count = steps ? yyjson_arr_size(steps) : 0;
+    if (count < 2) {
+        yyjson_doc_free(doc);
+        return json;
+    }
+    yyjson_mut_doc *mut = yyjson_doc_mut_copy(doc, NULL);
+    yyjson_doc_free(doc);
+    if (!mut)
+        return json;
+    yyjson_mut_val *msteps = yyjson_mut_obj_get(yyjson_mut_doc_get_root(mut), "steps");
+    struct sqlite3 *db = cbm_store_get_db(store);
+    for (size_t i = 1; i < count && db; i++) {
+        yyjson_mut_val *step = yyjson_mut_arr_get(msteps, i);
+        int64_t parent_index = yyjson_mut_get_int(yyjson_mut_obj_get(step, "parent"));
+        if (parent_index < 0 || (size_t)parent_index >= count)
+            continue;
+        yyjson_mut_val *parent = yyjson_mut_arr_get(msteps, (size_t)parent_index);
+        int64_t from_id = yyjson_mut_get_int(yyjson_mut_obj_get(parent, "id"));
+        int64_t to_id = yyjson_mut_get_int(yyjson_mut_obj_get(step, "id"));
+        const char *from_file = yyjson_mut_get_str(yyjson_mut_obj_get(parent, "file_path"));
+        if (!from_file)
+            continue;
+        sqlite3_stmt *st = NULL;
+        int line = -1;
+        if (sqlite3_prepare_v2(db,
+                               "SELECT properties FROM edges WHERE project=?1 AND "
+                               "source_id=?2 AND target_id=?3 AND type='CALLS' LIMIT 1",
+                               -1, &st, NULL) == SQLITE_OK) {
+            sqlite3_bind_text(st, 1, project, -1, SQLITE_STATIC);
+            sqlite3_bind_int64(st, 2, from_id);
+            sqlite3_bind_int64(st, 3, to_id);
+            if (sqlite3_step(st) == SQLITE_ROW) {
+                const char *props = (const char *)sqlite3_column_text(st, 0);
+                if (props) {
+                    yyjson_doc *pd = yyjson_read(props, strlen(props), 0);
+                    if (pd) {
+                        line = (int)yyjson_get_int(yyjson_obj_get(yyjson_doc_get_root(pd), "line"));
+                        yyjson_doc_free(pd);
+                    }
+                }
+            }
+            sqlite3_finalize(st);
+        }
+        if (line <= 0)
+            continue;
+        char *gj = cbm_atlas_callsite_guards_json(store, project, from_file, line);
+        if (!gj)
+            continue;
+        yyjson_doc *gd = yyjson_read(gj, strlen(gj), 0);
+        free(gj);
+        if (!gd)
+            continue;
+        yyjson_val *garr = yyjson_obj_get(yyjson_doc_get_root(gd), "guards");
+        if (garr && yyjson_arr_size(garr) > 0) {
+            yyjson_mut_val *copy = yyjson_val_mut_copy(mut, garr);
+            if (copy)
+                yyjson_mut_obj_add_val(mut, step, "guards", copy);
+        }
+        yyjson_doc_free(gd);
+    }
+    char *out = yyjson_mut_write(mut, 0, NULL);
+    yyjson_mut_doc_free(mut);
+    if (!out)
+        return json;
+    free(json);
+    return out;
+}
+
 /* GET /api/why?project=X&id=N|qn=Q&dir=up|down — the trigger tree. */
 static void handle_atlas_why(cbm_http_conn_t *c, const cbm_http_req_t *req) {
     char project[256] = {0};
@@ -2038,6 +2114,10 @@ static void handle_atlas_flow(cbm_http_conn_t *c, const cbm_http_req_t *req) {
     if (cbm_http_query_param(req->query, "id", id_str, (int)sizeof(id_str)))
         id = atoi(id_str);
     char *json = cbm_atlas_flow_json(store, project, id);
+    char wantg[8] = {0};
+    cbm_http_query_param(req->query, "guards", wantg, (int)sizeof(wantg));
+    if (json && wantg[0] == '1')
+        json = atlas_flow_attach_guards(store, project, json);
     cbm_store_close(store);
     atlas_reply_json(c, json, 404, "{\"error\":\"unknown flow\"}");
 }

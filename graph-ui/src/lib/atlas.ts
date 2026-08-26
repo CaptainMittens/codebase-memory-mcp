@@ -141,6 +141,7 @@ export interface FlowStep {
   file_path?: string;
   depth: number;
   parent: number;
+  guards?: { kind: string; cond?: string; negated?: boolean }[];
 }
 
 export interface FlowDetail {
@@ -158,7 +159,8 @@ export function fetchFlows(project: string): Promise<FlowsPayload> {
 }
 
 export function fetchFlow(project: string, id: number): Promise<FlowDetail> {
-  return getJson(`/api/flow?${new URLSearchParams({ project, id: String(id) })}`);
+  /* guards=1: per-step syntactic guard chips, computed on demand. */
+  return getJson(`/api/flow?${new URLSearchParams({ project, id: String(id), guards: "1" })}`);
 }
 
 /* ── get_architecture (format:"json" → {cols, rows} sections) ── */

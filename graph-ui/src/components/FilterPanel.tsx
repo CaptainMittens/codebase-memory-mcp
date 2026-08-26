@@ -56,7 +56,7 @@ function CheckRow({
       </span>
       {label}
       {count !== undefined && (
-        <span className="text-foreground/40 tabular-nums">{count.toLocaleString()}</span>
+        <span className="text-foreground/40 tabular-nums">{count.toLocaleString("en-US")}</span>
       )}
     </button>
   );
@@ -136,7 +136,7 @@ export function FilterPanel({
                     >
                       <span className="w-[5px] h-[5px] rounded-full" style={{ backgroundColor: on ? c : "#444" }} />
                       <span style={{ color: on ? c : "#555" }}>{label}</span>
-                      <span className="text-foreground/35 tabular-nums">{count.toLocaleString()}</span>
+                      <span className="text-foreground/35 tabular-nums">{count.toLocaleString("en-US")}</span>
                     </button>
                   );
                 })}
@@ -160,7 +160,7 @@ export function FilterPanel({
                       }`}
                     >
                       {type.replace(/_/g, " ").toLowerCase()}
-                      <span className="text-foreground/30 tabular-nums">{count.toLocaleString()}</span>
+                      <span className="text-foreground/30 tabular-nums">{count.toLocaleString("en-US")}</span>
                     </button>
                   );
                 })}
@@ -180,7 +180,7 @@ export function FilterPanel({
           </span>
           {missedCount > 0 && (
             <span className="text-[12px] text-foreground/50 tabular-nums">
-              {missedCount.toLocaleString()} files
+              {missedCount.toLocaleString("en-US")} files
             </span>
           )}
         </div>
@@ -203,7 +203,7 @@ export function FilterPanel({
             Dead code
           </span>
           <span className="text-[12px] text-red-400/80 tabular-nums">
-            {deadCount.toLocaleString()} dead
+            {deadCount.toLocaleString("en-US")} dead
           </span>
         </div>
 
