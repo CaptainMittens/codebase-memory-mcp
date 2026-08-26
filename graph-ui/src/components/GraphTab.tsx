@@ -137,6 +137,7 @@ export function GraphTab({
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
   const [cameraTarget, setCameraTarget] = useState<CameraTarget | null>(null);
+  const [viewTarget, setViewTarget] = useState<{ x: number; y: number } | null>(null);
   const [repoInfo, setRepoInfo] = useState<RepoInfo | null>(null);
   const [showLabels, setShowLabels] = useState(true);
   const [display, setDisplay] = useState<DisplaySettings>(() =>
@@ -337,13 +338,15 @@ export function GraphTab({
     return computeCameraTarget(all, new Set(all.map((n) => n.id)));
   }, [data, missedSkeleton]);
 
-  /* With a skeleton beside the galaxy, auto-frame BOTH clusters on load so
-   * the side-by-side composition is visible without manual zooming. */
+  /* Auto-frame the scene on load (skeleton or not): the fixed default
+   * camera lands inside larger clouds. Deep-linked nodes keep their own
+   * focus fly-to instead. */
   useEffect(() => {
-    if (missedSkeleton && overviewTarget) {
+    if (overviewTarget && !routeNode) {
       setCameraTarget(overviewTarget);
     }
-  }, [missedSkeleton, overviewTarget]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [overviewTarget]);
 
   /* Clicking empty space while the skeleton has focus flies back to the
    * overview (the galaxy may be entirely off-screen at that point, so there
@@ -676,6 +679,7 @@ export function GraphTab({
                   <NodeTooltip node={node} />
                 );
               }}
+              onViewTarget={(x, y) => setViewTarget({ x, y })}
             />
           </ErrorBoundary>
 
@@ -683,6 +687,7 @@ export function GraphTab({
             regions={displayRegions}
             openRegionId={null}
             scentCounts={scent?.counts ?? null}
+            viewTarget={viewTarget}
             onOpen={openRegion}
             onHome={() =>
               setCameraTarget(
@@ -836,7 +841,7 @@ export function GraphTab({
           <>
             <ErrorBoundary>
               <GraphScene
-              active={active}
+                active={active}
                 data={filteredData}
                 missed={showMissedSkeleton ? missedSkeleton : null}
                 highlightedIds={highlightedIds}
@@ -845,6 +850,8 @@ export function GraphTab({
                 display={display}
                 onNodeClick={handleNodeClick}
                 onBackgroundClick={handleBackgroundClick}
+                landmarks
+                onViewTarget={(x, y) => setViewTarget({ x, y })}
               />
             </ErrorBoundary>
 
@@ -852,6 +859,7 @@ export function GraphTab({
               regions={displayRegions}
               openRegionId={view.kind === "region" ? view.region.id : null}
               scentCounts={null}
+              viewTarget={viewTarget}
               onOpen={openRegion}
               onHome={() =>
                 setCameraTarget(

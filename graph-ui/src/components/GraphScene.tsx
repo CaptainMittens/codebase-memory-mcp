@@ -5,6 +5,7 @@ import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { EffectComposer, Bloom } from "@react-three/postprocessing";
 import * as THREE from "three";
 import { NodeCloud } from "./NodeCloud";
+import { HaloLayer } from "./HaloLayer";
 import { EdgeLines } from "./EdgeLines";
 import { NodeLabels } from "./NodeLabels";
 import { NodeTooltip } from "./NodeTooltip";
@@ -108,6 +109,34 @@ function IdleAutoRotate({
   return null;
 }
 
+/* ── Orbit-target reporter (throttled) ───────────────────── */
+
+function ViewTargetReporter({
+  controlsRef,
+  onViewTarget,
+}: {
+  controlsRef: React.RefObject<OrbitControlsImpl | null>;
+  onViewTarget: (x: number, y: number) => void;
+}) {
+  const last = useRef({ x: NaN, y: NaN, at: 0 });
+  useFrame(() => {
+    const controls = controlsRef.current;
+    if (!controls) return;
+    const now = performance.now();
+    if (now - last.current.at < 200) return;
+    const { x, y } = controls.target;
+    if (
+      Math.abs(x - last.current.x) < 1 &&
+      Math.abs(y - last.current.y) < 1 &&
+      !Number.isNaN(last.current.x)
+    )
+      return;
+    last.current = { x, y, at: now };
+    onViewTarget(x, y);
+  });
+  return null;
+}
+
 /* ── Main scene ─────────────────────────────────────────── */
 
 interface GraphSceneProps {
@@ -128,6 +157,12 @@ interface GraphSceneProps {
   onBackgroundClick?: () => void;
   /* Custom hover card (the region scene shows region facts, not node ones). */
   renderTooltip?: (node: GraphNode) => React.ReactNode;
+  /* Landmark halos on the top hubs (off in the region scene, where every
+   * body is already a landmark). */
+  landmarks?: boolean;
+  /* Reports the orbit target (throttled) so the 2D minimap can show where
+   * the camera is looking. */
+  onViewTarget?: (x: number, y: number) => void;
 }
 
 export type { CameraTarget };
@@ -143,6 +178,8 @@ export function GraphScene({
   onNodeClick,
   onBackgroundClick,
   renderTooltip,
+  landmarks = false,
+  onViewTarget,
 }: GraphSceneProps) {
   const [hovered, setHovered] = useState<GraphNode | null>(null);
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
@@ -152,6 +189,17 @@ export function GraphScene({
    * NodeCloud applies `nodeBoost` directly (no internal density scaling),
    * whereas EdgeLines scales by edge density itself — so it receives only the
    * user edge-brightness multiplier to avoid double-applying. */
+  /* Constrained camera: orbit bounds follow the scene's actual extent so
+   * you can neither clip through the cloud nor zoom out into the void. */
+  const sceneRadius = (() => {
+    let max = 100;
+    for (const node of data.nodes) {
+      const r = Math.sqrt(node.x * node.x + node.y * node.y + node.z * node.z);
+      if (r > max) max = r;
+    }
+    return max;
+  })();
+
   const nodeBoost = nodeBoostScale(data.nodes.length) * display.nodeGlow;
   const bloomIntensity =
     BASE_BLOOM_INTENSITY * bloomIntensityScale(data.nodes.length) * display.bloom;
@@ -192,6 +240,7 @@ export function GraphScene({
         boost={nodeBoost}
       />
       {showLabels && <NodeLabels nodes={data.nodes} highlightedIds={highlightedIds} />}
+      {landmarks && <HaloLayer nodes={data.nodes} />}
 
       {/* Missed skeleton (#963): white ghost of the not-fully-indexed files.
        * Clicks route through the same handler — GraphTab re-centers the
@@ -262,6 +311,9 @@ export function GraphScene({
         (renderTooltip ? renderTooltip(hovered) : <NodeTooltip node={hovered} />)}
 
       <CameraAnimator target={cameraTarget} controlsRef={controlsRef} />
+      {onViewTarget && (
+        <ViewTargetReporter controlsRef={controlsRef} onViewTarget={onViewTarget} />
+      )}
       <IdleAutoRotate controlsRef={controlsRef} />
 
       <EffectComposer multisampling={GRAPH_COMPOSER_MULTISAMPLING}>
@@ -280,8 +332,8 @@ export function GraphScene({
         dampingFactor={0.08}
         rotateSpeed={0.5}
         zoomSpeed={1.5}
-        minDistance={10}
-        maxDistance={50000}
+        minDistance={Math.max(5, sceneRadius * 0.02)}
+        maxDistance={sceneRadius * 4}
         autoRotateSpeed={0.4}
       />
     </Canvas>

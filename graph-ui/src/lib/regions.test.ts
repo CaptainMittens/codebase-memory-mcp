@@ -6,7 +6,7 @@ import {
   REGIONS_MIN_TOTAL_NODES,
   cohesionWord,
 } from "./regions";
-import { minimapLayout } from "../components/Minimap";
+import { minimapLayout, minimapProject } from "../components/Minimap";
 import type { Region, RegionsPayload } from "./types";
 
 function region(partial: Partial<Region> & { id: number; name: string }): Region {
@@ -109,5 +109,29 @@ describe("minimapLayout", () => {
     const dots = minimapLayout([region(7, 42, 42, 10)], 200, 150);
     expect(dots).toHaveLength(1);
     expect(Number.isFinite(dots[0].cx)).toBe(true);
+  });
+});
+
+describe("minimapProject", () => {
+  const region = (id: number, x: number, y: number): Region => ({
+    id,
+    name: `r${id}`,
+    files: 1,
+    members: 10,
+    cohesion: 0.5,
+    top_nodes: [],
+    x,
+    y,
+    z: 0,
+    size: 10,
+    color: "#123456",
+  });
+  const regions = [region(0, -100, 0), region(1, 100, 50)];
+  it("maps a world point with the same bounds as the dots", () => {
+    const point = minimapProject(regions, 200, 150, { x: -100, y: 0 });
+    expect(point).toEqual({ cx: 12, cy: 12 });
+  });
+  it("returns null for points far outside the map", () => {
+    expect(minimapProject(regions, 200, 150, { x: 100000, y: 0 })).toBeNull();
   });
 });

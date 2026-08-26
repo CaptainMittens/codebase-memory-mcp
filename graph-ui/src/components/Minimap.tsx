@@ -14,6 +14,33 @@ export interface MinimapDot {
   name: string;
 }
 
+/* Project one world-space point with the same bounds the dots use. */
+export function minimapProject(
+  regions: Region[],
+  width: number,
+  height: number,
+  point: { x: number; y: number },
+  pad = 12,
+): { cx: number; cy: number } | null {
+  if (regions.length === 0) return null;
+  let minX = Infinity,
+    maxX = -Infinity,
+    minY = Infinity,
+    maxY = -Infinity;
+  for (const region of regions) {
+    minX = Math.min(minX, region.x);
+    maxX = Math.max(maxX, region.x);
+    minY = Math.min(minY, region.y);
+    maxY = Math.max(maxY, region.y);
+  }
+  const spanX = maxX - minX || 1;
+  const spanY = maxY - minY || 1;
+  const cx = pad + ((point.x - minX) / spanX) * (width - pad * 2);
+  const cy = pad + ((point.y - minY) / spanY) * (height - pad * 2);
+  if (cx < -pad || cx > width + pad || cy < -pad || cy > height + pad) return null;
+  return { cx, cy };
+}
+
 export function minimapLayout(
   regions: Region[],
   width: number,
@@ -51,12 +78,15 @@ export function Minimap({
   regions,
   openRegionId,
   scentCounts,
+  viewTarget,
   onOpen,
   onHome,
 }: {
   regions: Region[];
   openRegionId: number | null;
   scentCounts: Map<number, number> | null;
+  /* Where the camera is looking (world x/y) — drawn as a ring. */
+  viewTarget?: { x: number; y: number } | null;
   onOpen: (region: Region) => void;
   onHome: () => void;
 }) {
@@ -68,6 +98,10 @@ export function Minimap({
     }
   });
   const dots = useMemo(() => minimapLayout(regions, W, H), [regions]);
+  const marker = useMemo(
+    () => (viewTarget ? minimapProject(regions, W, H, viewTarget) : null),
+    [regions, viewTarget],
+  );
   const byId = useMemo(() => new Map(regions.map((r) => [r.id, r])), [regions]);
 
   const toggle = () => {
@@ -83,7 +117,7 @@ export function Minimap({
 
   if (regions.length === 0) return null;
   return (
-    <div className="absolute bottom-4 right-4 bg-card/85 backdrop-blur border border-border/50 rounded-md shadow-lg overflow-hidden">
+    <div className="absolute bottom-16 right-4 bg-card/85 backdrop-blur border border-border/50 rounded-md shadow-lg overflow-hidden">
       <div className="flex items-center gap-1 px-2 py-1 border-b border-border/30">
         <span className="text-[12px] uppercase tracking-widest text-foreground/40">
           map
@@ -105,6 +139,17 @@ export function Minimap({
       </div>
       {!collapsed && (
         <svg width={W} height={H} role="img" aria-label="Region minimap">
+          {marker && (
+            <circle
+              cx={marker.cx}
+              cy={marker.cy}
+              r={7}
+              fill="none"
+              stroke="#4FA8E0"
+              strokeWidth={1.5}
+              strokeOpacity={0.8}
+            />
+          )}
           {dots.map((dot) => {
             const isOpen = dot.id === openRegionId;
             const hits = scentCounts?.get(dot.id) ?? 0;
