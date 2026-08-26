@@ -45,6 +45,13 @@ function ConnectionList({
   onOpenSymbol: (ref: { id?: number; qn?: string }) => void;
 }) {
   const shown = page.offset + page.items.length;
+  /* A utility called from everywhere would carry a dot on every row — the
+   * signal inverts into noise. Past half, say it once instead. */
+  const crossCount =
+    homeRegion === undefined
+      ? 0
+      : page.items.filter((i) => i.region !== undefined && i.region !== homeRegion).length;
+  const dotsUseful = crossCount > 0 && crossCount <= page.items.length / 2;
   return (
     <div className="bg-card border border-border/40 rounded-md p-4">
       <div className="flex items-baseline gap-2 mb-2">
@@ -52,6 +59,14 @@ function ConnectionList({
         <span className="text-[13px] tabular-nums text-foreground/40">
           {page.total.toLocaleString("en-US")}
         </span>
+        {!dotsUseful && crossCount > 0 && (
+          <span
+            className="text-[12px] text-foreground/40"
+            title="most of these live in other regions — the cross-seam dot is omitted because it would mark nearly every row"
+          >
+            {crossCount} of {page.items.length} cross regions
+          </span>
+        )}
         <span className="text-[12px] text-foreground/40 ml-auto">
           {Object.entries(page.by_type)
             .map(([type, count]) => `${CONFIDENCE[type]?.label ?? type.toLowerCase()} ${count}`)
@@ -73,7 +88,8 @@ function ConnectionList({
             <span className="text-[13px] font-mono text-foreground/65 group-hover:text-primary truncate transition-colors">
               {item.name}
             </span>
-            {item.region !== undefined &&
+            {dotsUseful &&
+              item.region !== undefined &&
               homeRegion !== undefined &&
               item.region !== homeRegion && (
                 <span
@@ -297,6 +313,16 @@ export function SymbolTab({ project, symbolRef, onOpenSymbol, onOpenRegion }: Sy
           </div>
         </div>
 
+        {/* The Why view — condition→action first: the question the research
+         * says developers actually ask (Pennington 1987; Sillito Q32). */}
+        <div className="mb-4">
+          <TriggerTree
+            project={project}
+            symbolId={bundle.node.id}
+            onOpenSymbol={onOpenSymbol}
+          />
+        </div>
+
         {/* Connections */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
           <ConnectionList
@@ -311,16 +337,6 @@ export function SymbolTab({ project, symbolRef, onOpenSymbol, onOpenRegion }: Sy
             page={bundle.callees}
             homeRegion={bundle.region?.id}
             onLoadMore={() => setLimit((value) => value + 100)}
-            onOpenSymbol={onOpenSymbol}
-          />
-        </div>
-
-        {/* The Why view — condition→action, the abstraction code text
-         * serves worst (Pennington 1987). */}
-        <div className="mb-4">
-          <TriggerTree
-            project={project}
-            symbolId={bundle.node.id}
             onOpenSymbol={onOpenSymbol}
           />
         </div>
