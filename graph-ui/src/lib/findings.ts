@@ -1,24 +1,40 @@
 /* Findings machinery: knee-point cutoffs, the cost sentence, and finding
  * dismissals — the difference between a dashboard and a number museum. */
 
-/* Knee of a descending score list: the index AFTER which the largest
- * relative drop occurs — "the head that matters" (CodeScene's refusal to
- * show 5,000 items). Returns at least 1, at most values.length. */
+/* Knee of a descending score list — how many head items deserve emphasis:
+ * "the head that matters" (CodeScene's refusal to show 5,000 items).
+ * Kneedle-style: normalize ranks and values to the unit square, smooth y
+ * with a centered 3-point moving average, and put the knee at the maximum
+ * of the difference curve against the descending chord y = 1 − x (the
+ * decreasing-data form of Kneedle's transform). A largest-relative-drop
+ * rule sat here before and collapsed to the rank 1→2 gap on power-law
+ * data — the head became "top 1". Guard rails: the head stays within
+ * [3, 15], never exceeds half the list, and n < 5 falls back to min(3, n). */
 export function kneeCount(values: number[]): number {
-  if (values.length <= 1) return values.length;
-  let bestIndex = 0;
-  let bestRatio = 0;
-  for (let i = 0; i < values.length - 1; i++) {
-    const current = values[i];
-    const next = values[i + 1];
-    if (current <= 0) break;
-    const ratio = (current - next) / current;
-    if (ratio > bestRatio) {
-      bestRatio = ratio;
-      bestIndex = i;
+  const n = values.length;
+  if (n < 5) return Math.min(3, n);
+  const max = Math.max(...values);
+  if (max <= 0) return Math.min(3, n);
+  const y = values.map((value) => value / max);
+  const smoothed = y.map((_, i) => {
+    const lo = Math.max(0, i - 1);
+    const hi = Math.min(n - 1, i + 1);
+    let sum = 0;
+    for (let j = lo; j <= hi; j++) sum += y[j];
+    return sum / (hi - lo + 1);
+  });
+  /* The maximum sits where the curve has fallen furthest below the chord —
+   * the first rank of the flat tail, i.e. the size of the head. */
+  let knee = 0;
+  let best = -Infinity;
+  for (let i = 0; i < n; i++) {
+    const difference = 1 - i / (n - 1) - smoothed[i];
+    if (difference > best) {
+      best = difference;
+      knee = i;
     }
   }
-  return bestIndex + 1;
+  return Math.min(Math.max(knee, 3), Math.min(15, Math.ceil(n / 2)));
 }
 
 /* "9 files — 1.1% of the codebase, 34% of all commits this year." */

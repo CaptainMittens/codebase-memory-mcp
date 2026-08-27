@@ -106,6 +106,51 @@ function Slot({
   );
 }
 
+/* All displayed regions' cohesion values as an inline dot strip — a bare
+ * value invites misreading (0.4 can be the tightest region on the map or
+ * the loosest). This region's dot is emphasized; the tick is the median. */
+function CohesionStrip({ values, own }: { values: number[]; own: number }) {
+  if (values.length < 2) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  const median =
+    sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  const x = (value: number) => 4 + Math.max(0, Math.min(1, value)) * 112;
+  return (
+    <svg
+      width="120"
+      height="14"
+      viewBox="0 0 120 14"
+      className="shrink-0"
+      role="img"
+      aria-label={`cohesion ${own.toFixed(2)} among ${values.length} regions, median ${median.toFixed(2)}`}
+    >
+      <title>{`p50 = ${median.toFixed(2)}`}</title>
+      <line
+        x1={x(median)}
+        y1="2"
+        x2={x(median)}
+        y2="12"
+        stroke="currentColor"
+        strokeOpacity="0.35"
+        className="text-foreground"
+      />
+      {values.map((value, index) => (
+        <circle
+          key={index}
+          cx={x(value)}
+          cy="7"
+          r="1.5"
+          fill="currentColor"
+          fillOpacity="0.25"
+          className="text-foreground"
+        />
+      ))}
+      <circle cx={x(own)} cy="7" r="2.5" fill="currentColor" className="text-primary" />
+    </svg>
+  );
+}
+
 export function OverviewTab({
   project,
   onOpenRegion,
@@ -423,10 +468,16 @@ export function OverviewTab({
                     {region.name}
                   </span>
                 </div>
-                <p className="text-[12px] text-foreground/45 truncate tabular-nums">
-                  {region.members.toLocaleString("en-US")} symbols · cohesion{" "}
-                  {region.cohesion.toFixed(2)}
-                </p>
+                <div className="flex items-center gap-2">
+                  <p className="text-[12px] text-foreground/45 truncate tabular-nums flex-1 min-w-0">
+                    {region.members.toLocaleString("en-US")} symbols · cohesion{" "}
+                    {region.cohesion.toFixed(2)}
+                  </p>
+                  <CohesionStrip
+                    values={displayRegions.map((r) => r.cohesion)}
+                    own={region.cohesion}
+                  />
+                </div>
                 {region.why && (
                   <p className="text-[12px] text-foreground/35 mt-1 line-clamp-2">
                     {region.why}

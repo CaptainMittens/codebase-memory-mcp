@@ -7,6 +7,12 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { kneeCount, costSentence, findingKey, isDismissed, dismiss } from "../lib/findings";
+import {
+  CPLX_BINS,
+  CPLX_TAIL_MIN,
+  CPLX_TAIL_START,
+  complexityTakeaway,
+} from "../lib/complexity";
 import { MetricChip } from "./MetricChip";
 
 interface MetricEntry {
@@ -58,27 +64,63 @@ interface DashboardTabProps {
   onOpenWiki: (slug: string) => void;
 }
 
-const CPLX_LABELS = ["1", "2–5", "6–10", "11–20", "21–50", ">50"];
+interface TrendPoint {
+  /* Epoch ms of the snapshot; NaN when the timestamp failed to parse. */
+  t: number;
+  v: number;
+}
 
-function Sparkline({ points }: { points: number[] }) {
+/* Shape-only sparkline on a real time axis — reindex snapshots are
+ * irregular, so equal spacing would lie about the pace of change. Each
+ * snapshot is a dot; lines only join runs of ≥4 snapshots, and never span
+ * a gap wider than 3× the median gap (a segment across a dark period
+ * invents data). The printed delta beside it carries the magnitude. */
+function Sparkline({ points }: { points: TrendPoint[] }) {
   if (points.length < 2) return null;
-  const max = Math.max(...points);
-  const min = Math.min(...points);
+  const values = points.map((point) => point.v);
+  const max = Math.max(...values);
+  const min = Math.min(...values);
   const span = max - min || 1;
-  const coords = points
-    .map(
-      (point, index) =>
-        `${(index / (points.length - 1)) * 100},${28 - ((point - min) / span) * 24}`,
-    )
-    .join(" ");
+  const t0 = points[0].t;
+  const tN = points[points.length - 1].t;
+  const timed = points.every((point) => Number.isFinite(point.t)) && tN > t0;
+  const xs = points.map((point, index) =>
+    timed ? ((point.t - t0) / (tN - t0)) * 100 : (index / (points.length - 1)) * 100,
+  );
+  const ys = values.map((value) => 28 - ((value - min) / span) * 24);
+  const gaps = xs.slice(1).map((x, index) => x - xs[index]);
+  const medianGap = [...gaps].sort((a, b) => a - b)[Math.floor(gaps.length / 2)] || 1;
+  const runs: string[][] = [[`${xs[0]},${ys[0]}`]];
+  for (let i = 1; i < xs.length; i++) {
+    if (gaps[i - 1] > 3 * medianGap) runs.push([]);
+    runs[runs.length - 1].push(`${xs[i]},${ys[i]}`);
+  }
   return (
     <svg viewBox="0 0 100 30" className="w-full h-[28px] mt-1" preserveAspectRatio="none">
-      <polyline
-        points={coords}
+      {points.length >= 4 &&
+        runs
+          .filter((run) => run.length > 1)
+          .map((run, index) => (
+            <polyline
+              key={index}
+              points={run.join(" ")}
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              className="text-primary/50"
+              vectorEffect="non-scaling-stroke"
+            />
+          ))}
+      {/* Dots as zero-length round-capped strokes — with preserveAspectRatio
+       * "none", circles would stretch into ellipses; non-scaling strokes
+       * don't. */}
+      <path
+        d={xs.map((x, index) => `M${x},${ys[index]}h0.01`).join("")}
         fill="none"
         stroke="currentColor"
-        strokeWidth="1.5"
-        className="text-primary/50"
+        strokeWidth="3"
+        strokeLinecap="round"
+        className="text-primary/60"
         vectorEffect="non-scaling-stroke"
       />
     </svg>
@@ -91,13 +133,19 @@ function QualityCard({
   sub,
   tone,
   trend,
+  trendFormat,
 }: {
   label: ReactNode;
   value: string;
   sub?: string;
   tone?: "warn" | "crit";
-  trend?: number[];
+  trend?: TrendPoint[];
+  trendFormat?: (v: number) => string;
 }) {
+  const fmt = trendFormat ?? ((v: number) => v.toLocaleString("en-US"));
+  const first = trend?.[0]?.v;
+  const last = trend?.[trend.length - 1]?.v;
+  const delta = first !== undefined && last !== undefined ? last - first : 0;
   return (
     <div className="bg-card border border-border/50 rounded-md p-4 min-w-0">
       <p className="text-[12px] uppercase tracking-widest text-foreground/40">{label}</p>
@@ -109,7 +157,17 @@ function QualityCard({
         {value}
       </p>
       {sub && <p className="text-[12px] text-foreground/40 mt-0.5">{sub}</p>}
-      {trend && trend.length > 1 && <Sparkline points={trend} />}
+      {trend && trend.length > 1 && (
+        <>
+          <Sparkline points={trend} />
+          {/* The min–max band makes any wobble fill it — this pair is the
+           * honest magnitude. */}
+          <p className="text-[12px] tabular-nums text-foreground/40 mt-0.5">
+            {fmt(first!)} → {fmt(last!)} ({delta > 0 ? "+" : ""}
+            {fmt(delta)})
+          </p>
+        </>
+      )}
     </div>
   );
 }
@@ -229,17 +287,10 @@ export function DashboardTab({
 
   const takeaway = useMemo(() => {
     if (!metrics) return null;
-    const hist = metrics.complexity_hist;
-    const total = hist.reduce((a, b) => a + b, 0);
-    if (total === 0) return null;
-    const simple = hist[0] + hist[1];
-    const tail = hist[4] + hist[5];
-    const names = metrics.top_complex
-      .slice(0, 3)
-      .map((entry) => entry.name)
-      .filter(Boolean)
-      .join(", ");
-    return `${((simple / total) * 100).toFixed(0)}% of functions are simple (≤5); ${tail.toLocaleString("en-US")} exceed 20${names ? ` — led by ${names}` : ""}.`;
+    return complexityTakeaway(
+      metrics.complexity_hist,
+      metrics.top_complex.slice(0, 3).map((entry) => entry.name ?? ""),
+    );
   }, [metrics]);
 
   if (error) {
@@ -284,6 +335,8 @@ export function DashboardTab({
             {metrics.top_churn_complex.length > 0 && (
               <span className="text-[12px] uppercase tracking-widest text-foreground/35 tabular-nums">
                 top {metrics.top_churn_complex.length.toLocaleString("en-US")}
+                {metrics.churn_total_files > 0 &&
+                  ` of ${metrics.churn_total_files.toLocaleString("en-US")}`}
               </span>
             )}
             {hero.mutedCount > 0 && (
@@ -327,7 +380,15 @@ export function DashboardTab({
                 <span className="text-[12px] tabular-nums text-foreground/45 shrink-0">
                   {entry.commits?.toLocaleString("en-US") ?? "?"} commits
                 </span>
-                <span className="text-[12px] tabular-nums text-foreground/35 shrink-0 w-20 text-right">
+                {/* The score is commits × max complexity — dividing the
+                 * factor back out shows both axes, not just the ranking. */}
+                <span className="text-[12px] tabular-nums text-foreground/45 shrink-0 w-16 text-right">
+                  cplx {entry.commits ? Math.round(entry.value / entry.commits).toLocaleString("en-US") : "?"}
+                </span>
+                <span
+                  className="text-[12px] tabular-nums text-foreground/35 shrink-0 w-20 text-right"
+                  title="churn × complexity score — orders the list"
+                >
                   {entry.value.toLocaleString("en-US")}
                 </span>
                 <button
@@ -357,7 +418,11 @@ export function DashboardTab({
             value={`${(resolvedShare * 100).toFixed(0)}%`}
             sub={`${certainty.usage.toLocaleString("en-US")} USAGE edges unproven`}
             tone={resolvedShare < 0.6 ? "warn" : undefined}
-            trend={history.map((entry) => 1 - entry.usage_share)}
+            trend={history.map((entry) => ({
+              t: Date.parse(entry.indexed_at),
+              v: 1 - entry.usage_share,
+            }))}
+            trendFormat={(v) => `${(v * 100).toFixed(0)}%`}
           />
           <QualityCard
             label={
@@ -368,7 +433,10 @@ export function DashboardTab({
             value={totals.dead.toLocaleString("en-US")}
             sub="no callers; entry/test/exported excluded"
             tone={totals.dead > 0 ? "warn" : undefined}
-            trend={history.map((entry) => entry.dead)}
+            trend={history.map((entry) => ({
+              t: Date.parse(entry.indexed_at),
+              v: entry.dead,
+            }))}
           />
           <QualityCard
             label={
@@ -378,7 +446,10 @@ export function DashboardTab({
             }
             value={`${(testedShare * 100).toFixed(0)}%`}
             sub={`${totals.tested_symbols.toLocaleString("en-US")} with TESTS edges`}
-            trend={history.map((entry) => entry.tested)}
+            trend={history.map((entry) => ({
+              t: Date.parse(entry.indexed_at),
+              v: entry.tested,
+            }))}
           />
           <QualityCard
             label={
@@ -395,24 +466,40 @@ export function DashboardTab({
         {/* ── Complexity, with its takeaway ─────────────────────── */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 mb-4">
           <div className="bg-card border border-border/50 rounded-md p-4">
-            <p className="text-[12px] uppercase tracking-widest text-foreground/40">
-              Complexity distribution
+            <p className="text-[12px] uppercase tracking-widest text-foreground/40 flex items-baseline justify-between gap-2">
+              <span>Complexity mix</span>
+              <span className="text-foreground/30 tabular-nums shrink-0">
+                {totals.callables.toLocaleString("en-US")} callables
+              </span>
             </p>
             {takeaway && <p className="text-[13px] text-foreground/60 mt-1">{takeaway}</p>}
-            <div className="flex items-end gap-1.5 h-[64px] mt-3">
+            {/* TODO(W2b): real log-binned histogram behind a disclosure — needs per-bin API data */}
+            <div className="flex items-end gap-1.5 h-[84px] mt-3">
               {metrics.complexity_hist.map((value, index) => {
                 const max = Math.max(1, ...metrics.complexity_hist);
                 return (
-                  <div key={index} className="flex-1 flex flex-col items-center gap-1 min-w-0">
+                  <div
+                    key={index}
+                    className="flex-1 flex flex-col items-center justify-end gap-1 min-w-0"
+                  >
+                    <span className="text-[12px] tabular-nums text-foreground/45">
+                      {value.toLocaleString("en-US")}
+                    </span>
                     <div
-                      className={`w-full rounded-sm ${index >= 4 ? "bg-warn/60" : "bg-primary/35"}`}
+                      className={`w-full rounded-sm ${index >= CPLX_TAIL_START ? "bg-warn/60" : "bg-primary/35"}`}
                       style={{ height: `${Math.max(2, (value / max) * 40)}px` }}
                     />
-                    <span className="text-[12px] text-foreground/35">{CPLX_LABELS[index]}</span>
+                    <span className="text-[12px] text-foreground/35">
+                      {CPLX_BINS[index]?.label}
+                    </span>
                   </div>
                 );
               })}
             </div>
+            <p className="text-[12px] text-foreground/35 mt-1.5">
+              <span className="inline-block w-2 h-2 rounded-sm bg-warn/60 mr-1" />
+              &gt;{CPLX_TAIL_MIN} flagged
+            </p>
           </div>
           <TopList
             title="Most churned files (1y)"

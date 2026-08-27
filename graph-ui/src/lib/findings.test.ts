@@ -4,14 +4,34 @@ import { isTestRegion, lensRegionsPayload, isBuiltinQn } from "./regions";
 import type { RegionsPayload } from "./types";
 
 describe("kneeCount", () => {
-  it("finds the largest relative drop", () => {
+  it("separates a clear head from a flat tail", () => {
     /* 100, 90, 85 | 20, 18 — the knee is after the third item. */
     expect(kneeCount([100, 90, 85, 20, 18])).toBe(3);
+  });
+  it("does not collapse to rank 1 on power-law data", () => {
+    /* ~1000/rank — the old largest-relative-drop rule returned 1 here. */
+    const powerLaw = [1000, 500, 333, 250, 200, 167, 143, 125, 111, 100];
+    expect(kneeCount(powerLaw)).toBeGreaterThanOrEqual(3);
+    expect(kneeCount(powerLaw)).toBeLessThanOrEqual(5);
+  });
+  it("finds an obvious elbow", () => {
+    /* Four high values, then a cliff — the head is those four. */
+    expect(kneeCount([100, 98, 96, 94, 15, 14, 13, 12])).toBe(4);
+  });
+  it("returns the clamp floor on a monotone gentle series", () => {
+    expect(kneeCount([100, 97, 94, 91, 88, 85, 82, 79, 76, 73])).toBe(3);
+  });
+  it("never exceeds half the list nor 15", () => {
+    const flat = Array.from({ length: 100 }, (_, i) => 1000 - i);
+    expect(kneeCount(flat)).toBeLessThanOrEqual(15);
+    expect(kneeCount([9, 8, 7, 2, 1, 1])).toBeLessThanOrEqual(3);
   });
   it("degenerates safely", () => {
     expect(kneeCount([])).toBe(0);
     expect(kneeCount([5])).toBe(1);
-    expect(kneeCount([5, 5, 5])).toBe(1);
+    expect(kneeCount([5, 5])).toBe(2);
+    expect(kneeCount([5, 5, 5])).toBe(3);
+    expect(kneeCount([0, 0, 0, 0, 0])).toBe(3);
   });
 });
 

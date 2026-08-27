@@ -203,6 +203,11 @@ export function ModulesTab({
             </div>
           ) : viewMode === "bars" ? (
             <div className="h-full overflow-y-auto pr-2">
+              {/* Bars are scaled to the largest sibling, not the whole —
+               * without saying so, they read as share-of-total. */}
+              <p className="text-[12px] text-foreground/35 px-2 pb-1">
+                bar length: relative to largest module
+              </p>
               {[...tree.children]
                 .sort((a, b) => b.symbols - a.symbols)
                 .map((child) => {

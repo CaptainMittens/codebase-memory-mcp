@@ -9,18 +9,34 @@ function Gauge({ label, value, max, unit, color }: {
   label: string; value: number; max: number; unit: string; color: string;
 }) {
   const pct = Math.min(100, (value / max) * 100);
+  /* The bands are stated in the legend and glyphed beside the value, so the
+   * bar's color is redundant, not the only carrier (WCAG 1.4.1). */
+  const band = pct > 80 ? "crit" : pct > 50 ? "warn" : null;
+  const bandColor = band === "crit" ? "#e05252" : "#eab308";
   return (
     <div className="flex-1 rounded-md border border-border/30 bg-card p-4">
       <p className="text-[12px] text-foreground/40 uppercase tracking-widest mb-2">{label}</p>
       <p className={`text-[20px] font-semibold tabular-nums ${color}`}>
         {value.toFixed(1)}<span className="text-[13px] text-foreground/45 ml-1">{unit}</span>
+        {band && (
+          <span
+            className="text-[12px] ml-1.5 align-middle"
+            style={{ color: bandColor }}
+            title={`above ${(max * (band === "crit" ? 0.8 : 0.5)).toFixed(0)}${unit}`}
+          >
+            {band === "crit" ? "▲▲" : "▲"}
+          </span>
+        )}
       </p>
       <div className="mt-2 h-1.5 rounded-full bg-surface-3 overflow-hidden">
         <div
           className="h-full rounded-full transition-all duration-500"
-          style={{ width: `${pct}%`, backgroundColor: pct > 80 ? "#e05252" : pct > 50 ? "#eab308" : "#1DA27E" }}
+          style={{ width: `${pct}%`, backgroundColor: band === "crit" ? "#e05252" : band === "warn" ? "#eab308" : "#1DA27E" }}
         />
       </div>
+      <p className="mt-1.5 text-[12px] text-foreground/30 tabular-nums">
+        ▲ &gt;{(max * 0.5).toFixed(0)}{unit} · ▲▲ &gt;{(max * 0.8).toFixed(0)}{unit}
+      </p>
     </div>
   );
 }
