@@ -1872,7 +1872,10 @@ TEST(atlas_symbol_history_log_l_and_remote) {
 #endif
         PASS(); /* no git in this environment; the guarded paths above ran */
 
-    char tmpl[] = "/tmp/cbm_hist_XXXXXX";
+    /* cbm_mkdtemp rewrites /tmp/… to %TEMP%\… on Windows and copies the
+     * expanded path back — the template buffer must hold it (CBM_SZ_256
+     * convention; a literal-sized array is a stack overflow there). */
+    char tmpl[256] = "/tmp/cbm_hist_XXXXXX";
     char *root = cbm_mkdtemp(tmpl);
     ASSERT_NOT_NULL(root);
     char dir[1024];
@@ -1920,7 +1923,8 @@ TEST(atlas_symbol_history_log_l_and_remote) {
 }
 
 TEST(atlas_why_extracts_guard_chains) {
-    char tmpl[] = "/tmp/cbm_why_XXXXXX";
+    /* Same CBM_SZ_256 convention: the Windows expansion must fit. */
+    char tmpl[256] = "/tmp/cbm_why_XXXXXX";
     char *root = cbm_mkdtemp(tmpl);
     ASSERT_NOT_NULL(root);
     char dir[1024];
