@@ -89,6 +89,39 @@ export const messages = {
       summary: (answers: number, partial: number, lacks: number) =>
         `${answers} answered · ${partial} partial · ${lacks} not yet`,
     },
+    impact: {
+      heading: "If you change this",
+      nothingCalls:
+        "Nothing recorded calls this — changes here surface only where it is referenced dynamically.",
+      sentence: (reachable: number, callableTotal: number, regionTotal: number) =>
+        `${reachable.toLocaleString("en-US")} of ${callableTotal.toLocaleString("en-US")} callables can reach this — ${regionTotal.toLocaleString("en-US")} region${regionTotal === 1 ? "" : "s"} could notice.`,
+      cappedSuffix: " (walk capped — the true count is higher)",
+      runTheseFirst: "Run these first",
+      noTestReaches:
+        "⚠ No test reaches this symbol — nothing will catch a regression here automatically.",
+      basisFootnote:
+        "Static CALLS edges only — dynamic dispatch and reflection are not counted; treat the count as a floor.",
+    },
+    history: {
+      whyHere: "Why is this here?",
+      docstringIntro:
+        "The docstring above is the stated intent; below is the recorded history.",
+      trace: "Trace this symbol's history",
+      reading: "Reading git history…",
+      unavailable: (reason: string) => `History unavailable: ${reason}`,
+      noneReadable: "No git history is readable for this symbol's file.",
+      noneForRange: "No commits recorded for this line range.",
+      capped: (max: number) => `showing ${max} (capped)`,
+      footnote:
+        "History follows this symbol's line range through renames (git log -L). PR and issue links open the forge — titles are not fetched.",
+    },
+    observed: {
+      word: "observed",
+      allObserved: "This whole path was observed in recorded runs.",
+      freshness: (label: string) =>
+        `Runtime markers from recorded runs (${label}). Unmarked hops are possible, not dead — runs only cover what they exercised.`,
+      title: (label: string, date: string) => `ran in ${label} · last ${date}`,
+    },
     control: {
       panel: "Control Panel",
       totalCpu: "Total CPU",
@@ -189,6 +222,38 @@ export const messages = {
       summary: (answers: number, partial: number, lacks: number) =>
         `${answers} 已回答 · ${partial} 部分 · ${lacks} 暂缺`,
     },
+    impact: {
+      heading: "如果你改动这里",
+      nothingCalls:
+        "没有任何已记录的调用指向这里——改动只会在动态引用它的地方显现。",
+      sentence: (reachable: number, callableTotal: number, regionTotal: number) =>
+        `全仓库 ${callableTotal.toLocaleString("en-US")} 个可调用符号中，有 ${reachable.toLocaleString("en-US")} 个能到达这里——${regionTotal.toLocaleString("en-US")} 个区域可能察觉。`,
+      cappedSuffix: "（遍历已达上限——真实数量更高）",
+      runTheseFirst: "先跑这些测试",
+      noTestReaches:
+        "⚠ 没有任何测试到达这个符号——出了回归不会被自动发现。",
+      basisFootnote:
+        "仅统计静态 CALLS 边——动态分发与反射不计入；请把数字当作下限。",
+    },
+    history: {
+      whyHere: "为什么会有这段代码？",
+      docstringIntro: "上方的文档注释是声明的意图；下面是实际记录的历史。",
+      trace: "追溯这个符号的历史",
+      reading: "正在读取 git 历史…",
+      unavailable: (reason: string) => `历史不可用：${reason}`,
+      noneReadable: "这个符号所在的文件没有可读的 git 历史。",
+      noneForRange: "这段行范围没有记录到任何提交。",
+      capped: (max: number) => `仅显示 ${max} 条（已达上限）`,
+      footnote:
+        "历史沿这个符号自身的行范围追踪，可跨重命名（git log -L）。PR 与 issue 链接指向代码托管平台——标题不会被抓取。",
+    },
+    observed: {
+      word: "已观测",
+      allObserved: "这条路径整体都在录制的运行中被观测到。",
+      freshness: (label: string) =>
+        `运行时标记来自录制的运行（${label}）。未标记的跳步只是可能执行，不代表死代码——一次运行只覆盖它实际执行到的部分。`,
+      title: (label: string, date: string) => `曾在 ${label} 中执行 · 最近 ${date}`,
+    },
     control: {
       panel: "控制面板",
       totalCpu: "总 CPU",
@@ -254,7 +319,10 @@ function loadUiLanguage(): Promise<UiLanguage> {
   return languageRequest;
 }
 
-export function useUiMessages(): UiMessages {
+/* The active language itself — for content that localizes outside the
+ * message catalog (wiki entries, question families carry co-located zh
+ * fields with per-field English fallback). */
+export function useUiLanguage(): UiLanguage {
   const [lang, setLang] = useState<UiLanguage>(cachedLanguage);
 
   useEffect(() => {
@@ -269,5 +337,9 @@ export function useUiMessages(): UiMessages {
     };
   }, []);
 
-  return messages[lang];
+  return lang;
+}
+
+export function useUiMessages(): UiMessages {
+  return messages[useUiLanguage()];
 }

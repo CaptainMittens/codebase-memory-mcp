@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { WIKI_ENTRIES, wikiEntry, wikiEntryById } from "./entries";
+import { WIKI_ENTRIES, localizeEntry, wikiEntry, wikiEntryById } from "./entries";
 
 describe("wiki entries", () => {
   it("every sentence is present and tooltip-sized (≤30 words)", () => {
@@ -48,5 +48,39 @@ describe("wiki entries", () => {
     expect(wikiEntryById("M-HOTSPOT")?.slug).toBe("hotspot");
     expect(wikiEntry("no-such-metric")).toBeUndefined();
     expect(wikiEntryById("M-NO-SUCH")).toBeUndefined();
+  });
+
+  it("every entry carries zh content — sentence + notCovered, or + why when refused", () => {
+    for (const entry of WIKI_ENTRIES) {
+      expect(entry.zh?.sentence?.trim(), entry.slug).toBeTruthy();
+      if (entry.tier === "refused") {
+        expect(entry.zh?.why?.trim(), entry.slug).toBeTruthy();
+      } else {
+        expect(entry.zh?.notCovered?.trim(), entry.slug).toBeTruthy();
+      }
+    }
+  });
+
+  it("every zh sentence stays tooltip-sized (≤45 characters — zh is denser)", () => {
+    for (const entry of WIKI_ENTRIES) {
+      if (!entry.zh?.sentence) continue;
+      expect(
+        [...entry.zh.sentence.trim()].length,
+        `${entry.slug} zh sentence exceeds 45 characters`,
+      ).toBeLessThanOrEqual(45);
+    }
+  });
+
+  it("localizeEntry swaps content per field and keeps the term English", () => {
+    const entry = wikiEntry("hotspot")!;
+    const zh = localizeEntry(entry, "zh");
+    expect(zh.term).toBe("hotspot");
+    expect(zh.sentence).toBe(entry.zh!.sentence);
+    expect(zh.gloss).toBe(entry.zh!.gloss);
+    /* computedParts has no zh variant — the English falls through. */
+    expect(zh.computedParts).toEqual(entry.computedParts);
+    const en = localizeEntry(entry, "en");
+    expect(en.sentence).toBe(entry.sentence);
+    expect(en.gloss).toBeUndefined();
   });
 });

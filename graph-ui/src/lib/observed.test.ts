@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { messages } from "./i18n";
 import { allHopsObserved, newestObserved, observedTitle } from "./observed";
 
 const obs = (label: string, last_seen: string, count = 1) => ({
@@ -57,5 +58,11 @@ describe("observedTitle", () => {
     expect(observedTitle(obs("pytest 2026-08-27", "2026-08-27T14:12:00Z", 4))).toBe(
       "ran in pytest 2026-08-27 · last 2026-08-27",
     );
+  });
+
+  it("speaks the zh catalog when its messages are passed", () => {
+    expect(
+      observedTitle(obs("pytest 2026-08-27", "2026-08-27T14:12:00Z", 4), messages.zh.observed),
+    ).toBe("曾在 pytest 2026-08-27 中执行 · 最近 2026-08-27");
   });
 });

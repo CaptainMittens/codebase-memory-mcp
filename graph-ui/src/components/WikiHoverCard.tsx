@@ -18,8 +18,8 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { loadTooltipDelayMs } from "../lib/density";
-import { useUiMessages } from "../lib/i18n";
-import { wikiEntry } from "../wiki/entries";
+import { messages, useUiLanguage } from "../lib/i18n";
+import { localizeEntry, wikiEntry } from "../wiki/entries";
 import { TIER_TONE } from "./wikiTier";
 
 /* Leaving the chip closes after this grace — long enough to reach the card,
@@ -43,7 +43,8 @@ export function WikiHoverCard({ slug, anchorRef, delayMs }: WikiHoverCardProps) 
   const showTimer = useRef<number | null>(null);
   const hideTimer = useRef<number | null>(null);
   const cardId = useId();
-  const t = useUiMessages();
+  const lang = useUiLanguage();
+  const t = messages[lang];
   const entry = wikiEntry(slug);
   const open = pos !== null;
 
@@ -178,7 +179,9 @@ export function WikiHoverCard({ slug, anchorRef, delayMs }: WikiHoverCardProps) 
           {entry.tier}
         </span>
       </div>
-      <p className="text-foreground/70 leading-relaxed">{entry.sentence}</p>
+      <p className="text-foreground/70 leading-relaxed">
+        {localizeEntry(entry, lang).sentence}
+      </p>
       <p className="text-foreground/35 mt-1 text-[12px]">{t.wiki.clickForMore}</p>
     </div>,
     document.body,

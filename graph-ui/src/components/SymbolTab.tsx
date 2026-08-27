@@ -12,6 +12,7 @@ import {
   type SymbolBundle,
   type SymbolRef,
 } from "../lib/atlas";
+import { useUiMessages } from "../lib/i18n";
 import { fetchImpact, impactSentence, type ImpactPayload } from "../lib/impact";
 import {
   commitUrl,
@@ -202,6 +203,7 @@ export function SymbolTab({
   onOpenRegion,
   onOpenWiki,
 }: SymbolTabProps) {
+  const t = useUiMessages();
   const [bundle, setBundle] = useState<SymbolBundle | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [limit, setLimit] = useState(50);
@@ -484,13 +486,15 @@ export function SymbolTab({
           <div className="bg-card border border-border/40 rounded-md p-4 mb-4">
             <div className="flex items-baseline gap-2 mb-2">
               <p className="text-[12px] uppercase tracking-widest text-foreground/45">
-                If you change this
+                {t.impact.heading}
               </p>
               <span className="text-[12px] text-foreground/40">
                 <MetricChip slug="blast-radius" onOpen={onOpenWiki} />
               </span>
             </div>
-            <p className="text-[14px] text-foreground/85">{impactSentence(impact)}</p>
+            <p className="text-[14px] text-foreground/85">
+              {impactSentence(impact, t.impact)}
+            </p>
             {impactTiers && (
               <p className="text-[12px] text-foreground/40 mt-1">{impactTiers}</p>
             )}
@@ -519,7 +523,7 @@ export function SymbolTab({
             {impact.tests.count > 0 ? (
               <div className="mt-3">
                 <p className="text-[12px] uppercase tracking-widest text-foreground/45 mb-1">
-                  Run these first
+                  {t.impact.runTheseFirst}
                 </p>
                 <div className="space-y-px">
                   {impact.tests.nearest.map((test) => (
@@ -549,13 +553,11 @@ export function SymbolTab({
               </div>
             ) : (
               <p className="text-[13px] text-amber-300/80 mt-3">
-                ⚠ No test reaches this symbol — nothing will catch a regression
-                here automatically.
+                {t.impact.noTestReaches}
               </p>
             )}
             <p className="text-[12px] text-foreground/35 mt-3">
-              Static CALLS edges only — dynamic dispatch and reflection are not
-              counted; treat the count as a floor.
+              {t.impact.basisFootnote}
             </p>
           </div>
         )}
@@ -644,12 +646,11 @@ export function SymbolTab({
         {canTrace && (
           <div className="bg-card border border-border/50 rounded-md p-4 mb-4">
             <p className="text-[12px] uppercase tracking-widest text-foreground/40 mb-2">
-              Why is this here?
+              {t.history.whyHere}
             </p>
             {node.docstring && (
               <p className="text-[12px] text-foreground/40 mb-2">
-                The docstring above is the stated intent; below is the recorded
-                history.
+                {t.history.docstringIntro}
               </p>
             )}
             {!history && (
@@ -658,22 +659,22 @@ export function SymbolTab({
                 disabled={historyLoading}
                 className="px-2.5 py-1 rounded-md bg-primary/15 text-primary text-[13px] font-medium hover:bg-primary/25 transition-colors disabled:opacity-40"
               >
-                Trace this symbol's history
+                {t.history.trace}
               </button>
             )}
             {historyLoading && (
               <p className="text-[13px] text-foreground/40 mt-2">
-                Reading git history…
+                {t.history.reading}
               </p>
             )}
             {historyError && (
               <p className="text-[13px] text-foreground/40 mt-2">
-                History unavailable: {historyError}
+                {t.history.unavailable(historyError)}
               </p>
             )}
             {history && !history.available && (
               <p className="text-[13px] text-foreground/40">
-                No git history is readable for this symbol's file.
+                {t.history.noneReadable}
               </p>
             )}
             {history?.available && (
@@ -689,19 +690,18 @@ export function SymbolTab({
                 </div>
                 {(history.commits ?? []).length === 0 && (
                   <p className="text-[13px] text-foreground/40">
-                    No commits recorded for this line range.
+                    {t.history.noneForRange}
                   </p>
                 )}
                 {history.truncated && (
                   <p className="text-[12px] text-foreground/40 mt-1">
-                    showing {history.max_commits} (capped)
+                    {t.history.capped(history.max_commits)}
                   </p>
                 )}
               </>
             )}
             <p className="text-[12px] text-foreground/35 mt-3">
-              History follows this symbol's line range through renames (git log
-              -L). PR and issue links open the forge — titles are not fetched.
+              {t.history.footnote}
             </p>
           </div>
         )}

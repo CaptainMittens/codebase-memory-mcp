@@ -14,6 +14,7 @@ import {
   type TracePayload,
 } from "../lib/atlas";
 import { groupFlowsByEntry } from "../lib/flowgroup";
+import { useUiMessages } from "../lib/i18n";
 import { allHopsObserved, newestObserved, observedTitle } from "../lib/observed";
 import { formatGuard } from "../lib/why";
 import { MetricChip } from "./MetricChip";
@@ -50,18 +51,19 @@ export function ObservedChip({
   observed: ObservedCall;
   onOpenWiki?: (slug: string) => void;
 }) {
+  const t = useUiMessages();
   return (
     <span
       className="text-[10px] px-1 rounded-full border border-good/50 text-good/80 font-mono shrink-0"
-      title={observedTitle(observed)}
+      title={observedTitle(observed, t.observed)}
     >
       ▶{" "}
       {onOpenWiki ? (
         <MetricChip slug="observed" onOpen={onOpenWiki}>
-          observed
+          {t.observed.word}
         </MetricChip>
       ) : (
-        "observed"
+        t.observed.word
       )}{" "}
       ×{observed.count}
     </span>
@@ -158,6 +160,7 @@ export function FlowsTab({
   onOpenSymbol,
   onOpenWiki,
 }: FlowsTabProps) {
+  const t = useUiMessages();
   const [payload, setPayload] = useState<FlowsPayload | null>(null);
   const [detail, setDetail] = useState<FlowDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -302,7 +305,7 @@ export function FlowsTab({
                   </p>
                   {allHopsObserved(trace.path ?? []) && (
                     <p className="text-[11px] text-good/70 mb-1">
-                      This whole path was observed in recorded runs.
+                      {t.observed.allObserved}
                     </p>
                   )}
                   <div className="flex items-center gap-1 flex-wrap">
@@ -339,9 +342,7 @@ export function FlowsTab({
                   </div>
                   {traceNewest && (
                     <p className="text-[11px] text-foreground/40 mt-1.5">
-                      Runtime markers from recorded runs ({traceNewest.label}).
-                      Unmarked hops are possible, not dead — runs only cover
-                      what they exercised.
+                      {t.observed.freshness(traceNewest.label)}
                     </p>
                   )}
                 </div>
@@ -522,9 +523,7 @@ export function FlowsTab({
               </div>
               {detailNewest && (
                 <p className="text-[11px] text-foreground/40 mt-3">
-                  Runtime markers from recorded runs ({detailNewest.label}).
-                  Unmarked hops are possible, not dead — runs only cover what
-                  they exercised.
+                  {t.observed.freshness(detailNewest.label)}
                 </p>
               )}
             </div>

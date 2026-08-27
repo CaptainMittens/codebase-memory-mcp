@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { messages } from "./i18n";
 import { impactSentence, type ImpactPayload } from "./impact";
 
 const payload = (overrides: Partial<ImpactPayload> = {}): ImpactPayload => ({
@@ -45,6 +46,15 @@ describe("impactSentence", () => {
       ),
     ).toBe(
       "Nothing recorded calls this — changes here surface only where it is referenced dynamically.",
+    );
+  });
+
+  it("speaks the zh catalog with the same numbers when its messages are passed", () => {
+    expect(impactSentence(payload(), messages.zh.impact)).toBe(
+      "全仓库 4,200 个可调用符号中，有 210 个能到达这里——3 个区域可能察觉。",
+    );
+    expect(impactSentence(payload({ truncated: true }), messages.zh.impact)).toContain(
+      "（遍历已达上限——真实数量更高）",
     );
   });
 });

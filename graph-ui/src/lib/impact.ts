@@ -2,6 +2,7 @@
  * notice a change to one symbol, at what distance, in which regions, and
  * which tests reach it. Counts are floors: static CALLS edges only, and
  * the walk is capped in depth and volume. */
+import { messages, type UiMessages } from "./i18n";
 import { fetchJsonFrom } from "./whyfetch";
 
 export interface ImpactNode {
@@ -50,13 +51,14 @@ export async function fetchImpact(
 
 /* The headline sentence. Region count includes the rows the payload capped
  * away (regions_more); a capped walk says so — the count is then a floor
- * of a floor. */
-export function impactSentence(payload: ImpactPayload): string {
-  if (payload.reachable === 0)
-    return "Nothing recorded calls this — changes here surface only where it is referenced dynamically.";
+ * of a floor. Pass the active locale's impact messages to localize. */
+export function impactSentence(
+  payload: ImpactPayload,
+  m: UiMessages["impact"] = messages.en.impact,
+): string {
+  if (payload.reachable === 0) return m.nothingCalls;
   const regionTotal = payload.regions.length + payload.regions_more;
-  const sentence = `${payload.reachable.toLocaleString("en-US")} of ${payload.callable_total.toLocaleString("en-US")} callables can reach this — ${regionTotal.toLocaleString("en-US")} region${regionTotal === 1 ? "" : "s"} could notice.`;
-  if (payload.truncated || payload.depth_capped)
-    return `${sentence} (walk capped — the true count is higher)`;
+  const sentence = m.sentence(payload.reachable, payload.callable_total, regionTotal);
+  if (payload.truncated || payload.depth_capped) return `${sentence}${m.cappedSuffix}`;
   return sentence;
 }

@@ -6,8 +6,8 @@
  * "Refused" entries render muted — they document what Atlas won't show. */
 import { useEffect, useState } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { useUiMessages } from "../lib/i18n";
-import { wikiEntry } from "../wiki/entries";
+import { messages, useUiLanguage } from "../lib/i18n";
+import { localizeEntry, wikiEntry } from "../wiki/entries";
 import { MetricChip } from "./MetricChip";
 import { TIER_TONE } from "./wikiTier";
 
@@ -26,7 +26,8 @@ function SectionHeading({ children }: { children: string }) {
 }
 
 export function WikiPanel({ slug, onClose, onNavigate }: WikiPanelProps) {
-  const t = useUiMessages();
+  const lang = useUiLanguage();
+  const t = messages[lang];
   /* The navigation stack. The host owns the current slug; every push goes
    * through onNavigate and lands here via the prop effect, so chips outside
    * and inside the panel behave identically. */
@@ -56,6 +57,8 @@ export function WikiPanel({ slug, onClose, onNavigate }: WikiPanelProps) {
   };
 
   const entry = wikiEntry(slug);
+  /* zh content with per-field English fallback; the term stays English. */
+  const view = entry ? localizeEntry(entry, lang) : undefined;
   const refused = entry?.tier === "refused";
 
   return (
@@ -97,14 +100,15 @@ export function WikiPanel({ slug, onClose, onNavigate }: WikiPanelProps) {
         </button>
       </div>
 
-      {!entry ? (
+      {!entry || !view ? (
         <p className="text-[13px] text-foreground/40 px-4 py-6">
           No wiki entry for “{slug}”.
         </p>
       ) : (
         <ScrollArea className="flex-1 min-h-0">
           <div className="px-4 py-4">
-            {/* Term + tier */}
+            {/* Term + gloss + tier — the term is English-canonical; the zh
+             * locale glosses it rather than replacing it. */}
             <div className="flex items-center gap-2.5 flex-wrap mb-2">
               <h3
                 className={`text-[17px] font-semibold ${
@@ -113,6 +117,9 @@ export function WikiPanel({ slug, onClose, onNavigate }: WikiPanelProps) {
               >
                 {entry.term}
               </h3>
+              {view.gloss && (
+                <span className="text-[13px] text-foreground/55">{view.gloss}</span>
+              )}
               <span
                 className={`px-2 py-0.5 rounded-md text-[12px] font-medium ${TIER_TONE[entry.tier]}`}
               >
@@ -126,27 +133,27 @@ export function WikiPanel({ slug, onClose, onNavigate }: WikiPanelProps) {
                 refused ? "text-foreground/50" : "text-foreground/75"
               }`}
             >
-              {entry.sentence}
+              {view.sentence}
             </p>
 
-            {entry.why && (
+            {view.why && (
               <div className="mt-4">
                 <SectionHeading>{t.wiki.whyMatters}</SectionHeading>
                 <p className="text-[13px] text-foreground/60 leading-relaxed max-w-[60ch]">
-                  {entry.why}
+                  {view.why}
                 </p>
               </div>
             )}
 
-            {(entry.computedParts || entry.caps) && (
+            {(view.computedParts || view.caps) && (
               <div className="mt-4">
                 <SectionHeading>{t.wiki.howComputed}</SectionHeading>
-                {(entry.computedParts ?? []).map((part) => (
+                {(view.computedParts ?? []).map((part) => (
                   <p key={part} className="text-[13px] text-foreground/60 py-[2px]">
                     · {part}
                   </p>
                 ))}
-                {(entry.caps ?? []).map((cap) => (
+                {(view.caps ?? []).map((cap) => (
                   <p key={cap} className="text-[13px] text-amber-300/70 py-[2px]">
                     ⚠ {cap}
                   </p>
@@ -154,19 +161,19 @@ export function WikiPanel({ slug, onClose, onNavigate }: WikiPanelProps) {
               </div>
             )}
 
-            {entry.notCovered && (
+            {view.notCovered && (
               <div className="mt-4">
                 <SectionHeading>{t.wiki.notCovered}</SectionHeading>
                 <p className="text-[13px] text-foreground/60 leading-relaxed max-w-[60ch]">
-                  {entry.notCovered}
+                  {view.notCovered}
                 </p>
               </div>
             )}
 
-            {entry.appearsIn.length > 0 && (
+            {view.appearsIn.length > 0 && (
               <div className="mt-4">
                 <SectionHeading>{t.wiki.whereAppears}</SectionHeading>
-                {entry.appearsIn.map((place) => (
+                {view.appearsIn.map((place) => (
                   <p key={place} className="text-[13px] text-foreground/60 py-[2px]">
                     {place}
                   </p>

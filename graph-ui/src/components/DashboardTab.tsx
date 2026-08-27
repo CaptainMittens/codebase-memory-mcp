@@ -285,6 +285,9 @@ export function DashboardTab({
     };
   }, [metrics, showMuted, mutedTick]);
 
+  /* TODO(content-i18n): the computed takeaway and cost sentences interpolate
+   * many numbers and stay English this pass; route them through the i18n
+   * messages mechanism in a follow-up. */
   const takeaway = useMemo(() => {
     if (!metrics) return null;
     return complexityTakeaway(

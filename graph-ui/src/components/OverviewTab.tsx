@@ -22,11 +22,12 @@ import { surprisingCouplings, suggestedQuestions } from "../lib/firstread";
 import { kneeCount, findingKey, isDismissed, dismiss } from "../lib/findings";
 import {
   QUESTION_FAMILIES,
+  localizeQuestion,
   questionStatusCounts,
   type QuestionStatus,
   type QuestionTab,
 } from "../lib/questions";
-import { useUiMessages } from "../lib/i18n";
+import { messages, useUiLanguage } from "../lib/i18n";
 import { AddToPromptButton } from "./PromptBasket";
 import type { RegionsPayload } from "../lib/types";
 
@@ -150,7 +151,8 @@ function StatusGlyph({ status }: { status: QuestionStatus }) {
  * honest scorecard: answered, partially answered, or not answered yet.
  * Collapsed by default; the header summary is derived from the data. */
 function QuestionIndex({ onOpenTab }: { onOpenTab: (tab: QuestionTab) => void }) {
-  const t = useUiMessages();
+  const lang = useUiLanguage();
+  const t = messages[lang];
   const [open, setOpen] = useState(() => {
     try {
       return localStorage.getItem("cbm-questions-open") === "1";
@@ -200,6 +202,7 @@ function QuestionIndex({ onOpenTab }: { onOpenTab: (tab: QuestionTab) => void })
         <div className="border-t border-border/30 py-1">
           {QUESTION_FAMILIES.map((family) => {
             const tab = family.tab;
+            const loc = localizeQuestion(family, lang);
             const inner = (clickable: boolean) => (
               <>
                 <span className="flex items-center gap-1.5 w-[76px] shrink-0 pt-[2px]">
@@ -216,13 +219,13 @@ function QuestionIndex({ onOpenTab }: { onOpenTab: (tab: QuestionTab) => void })
                         : ""
                     }`}
                   >
-                    {family.question}
+                    {loc.question}
                   </span>
-                  {(family.hint || family.gap) && (
+                  {(loc.hint || loc.gap) && (
                     <span className="block text-[12px] text-foreground/40 mt-0.5">
-                      {family.hint}
-                      {family.hint && family.gap && " · "}
-                      {family.gap && `${t.questions.missingPrefix} ${family.gap}`}
+                      {loc.hint}
+                      {loc.hint && loc.gap && " · "}
+                      {loc.gap && `${t.questions.missingPrefix} ${loc.gap}`}
                     </span>
                   )}
                 </span>
