@@ -17,23 +17,35 @@ interface SliderRowProps {
   value: number;
   min: number;
   max: number;
+  /* Multiplier rows use the defaults; the ms row overrides both. */
+  step?: number;
+  format?: (value: number) => string;
   onChange: (value: number) => void;
 }
 
-function SliderRow({ label, hint, value, min, max, onChange }: SliderRowProps) {
+function SliderRow({
+  label,
+  hint,
+  value,
+  min,
+  max,
+  step = 0.05,
+  format = (v) => `${v.toFixed(2)}×`,
+  onChange,
+}: SliderRowProps) {
   return (
     <label className="block">
       <div className="flex items-center justify-between mb-1">
         <span className="text-[13px] text-foreground/70">{label}</span>
         <span className="text-[12px] font-mono text-cyan-300/70 tabular-nums">
-          {value.toFixed(2)}×
+          {format(value)}
         </span>
       </div>
       <input
         type="range"
         min={min}
         max={max}
-        step={0.05}
+        step={step}
         value={value}
         onChange={(e) => onChange(parseFloat(e.target.value))}
         className="w-full accent-cyan-400 cursor-pointer"
@@ -79,7 +91,8 @@ export function DisplaySettingsMenu({
   const isDefault =
     settings.edgeBrightness === DEFAULT_DISPLAY_SETTINGS.edgeBrightness &&
     settings.nodeGlow === DEFAULT_DISPLAY_SETTINGS.nodeGlow &&
-    settings.bloom === DEFAULT_DISPLAY_SETTINGS.bloom;
+    settings.bloom === DEFAULT_DISPLAY_SETTINGS.bloom &&
+    settings.tooltipDelayMs === DEFAULT_DISPLAY_SETTINGS.tooltipDelayMs;
 
   return (
     <div ref={rootRef} className="relative">
@@ -136,6 +149,16 @@ export function DisplaySettingsMenu({
             min={DISPLAY_LIMITS.bloom.min}
             max={DISPLAY_LIMITS.bloom.max}
             onChange={(bloom) => set({ bloom })}
+          />
+          <SliderRow
+            label="Tooltip delay"
+            hint="Hover dwell before help cards appear"
+            value={settings.tooltipDelayMs}
+            min={DISPLAY_LIMITS.tooltipDelayMs.min}
+            max={DISPLAY_LIMITS.tooltipDelayMs.max}
+            step={50}
+            format={(v) => `${Math.round(v)} ms`}
+            onChange={(tooltipDelayMs) => set({ tooltipDelayMs })}
           />
 
           <p className="text-[12px] text-foreground/45 pt-1 border-t border-border/30">

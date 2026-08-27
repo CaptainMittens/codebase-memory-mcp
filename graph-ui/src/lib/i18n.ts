@@ -78,6 +78,7 @@ export const messages = {
       pairedWith: "Paired with",
       back: "Back",
       close: "Close",
+      clickForMore: "click for more →",
     },
     control: {
       panel: "Control Panel",
@@ -168,6 +169,7 @@ export const messages = {
       pairedWith: "配对指标",
       back: "返回",
       close: "关闭",
+      clickForMore: "点击查看更多 →",
     },
     control: {
       panel: "控制面板",

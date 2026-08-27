@@ -7,20 +7,15 @@
 import { useEffect, useState } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useUiMessages } from "../lib/i18n";
-import { wikiEntry, type WikiTier } from "../wiki/entries";
+import { wikiEntry } from "../wiki/entries";
 import { MetricChip } from "./MetricChip";
+import { TIER_TONE } from "./wikiTier";
 
 interface WikiPanelProps {
   slug: string;
   onClose: () => void;
   onNavigate: (slug: string) => void;
 }
-
-const TIER_TONE: Record<WikiTier, string> = {
-  "first-class": "bg-emerald-400/10 text-emerald-300/80",
-  caveated: "bg-amber-400/10 text-amber-300/80",
-  refused: "bg-surface-3 text-foreground/40 border border-border/40",
-};
 
 function SectionHeading({ children }: { children: string }) {
   return (

@@ -13,7 +13,27 @@ function lineRange(node: GraphNode): string | null {
   return `L${node.start_line}`;
 }
 
+/* The arithmetic behind the node, from the facts the scene payload already
+ * carries — no fetch on hover, ever (jitter). "fan" is a wiki term, but this
+ * tooltip follows the cursor with pointer-events off, so a MetricChip here
+ * would be an unclickable target — labels stay plain text; the wiki remains
+ * reachable from the panels. */
+function breakdownRows(node: GraphNode): [string, string][] {
+  const rows: [string, string][] = [];
+  if (node.in_calls !== undefined)
+    rows.push(["fan-in", node.in_calls.toLocaleString("en-US")]);
+  if (node.out_calls !== undefined)
+    rows.push(["fan-out", node.out_calls.toLocaleString("en-US")]);
+  if (node.start_line && node.end_line && node.end_line >= node.start_line)
+    rows.push([
+      "lines",
+      (node.end_line - node.start_line + 1).toLocaleString("en-US"),
+    ]);
+  return rows;
+}
+
 export function NodeTooltip({ node }: NodeTooltipProps) {
+  const rows = breakdownRows(node);
   return (
     <Html
       position={[node.x, node.y + node.size * 0.7, node.z]}
@@ -35,6 +55,20 @@ export function NodeTooltip({ node }: NodeTooltipProps) {
             {lineRange(node) && <span className="text-foreground/40"> · {lineRange(node)}</span>}
           </p>
         )}
+        {rows.length > 0 && (
+          <table className="mt-1">
+            <tbody>
+              {rows.map(([label, value]) => (
+                <tr key={label}>
+                  <td className="pr-4 text-foreground/45">{label}</td>
+                  <td className="text-right tabular-nums text-foreground/70">
+                    {value}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
         {node.status && node.status !== "structural" && (
           <div className="flex items-center gap-1.5 mt-1">
             <span
@@ -42,12 +76,6 @@ export function NodeTooltip({ node }: NodeTooltipProps) {
               style={{ backgroundColor: colorForStatus(node.status) }}
             />
             <span className="text-foreground/45">{node.status}</span>
-            {node.in_calls !== undefined && (
-              <span className="text-foreground/40 tabular-nums">
-                · in {node.in_calls}
-                {node.out_calls !== undefined && ` · out ${node.out_calls}`}
-              </span>
-            )}
           </div>
         )}
         <p className="text-foreground/35 mt-1 text-[12px]">click for code →</p>
