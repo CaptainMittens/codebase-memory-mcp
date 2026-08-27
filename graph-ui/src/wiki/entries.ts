@@ -406,7 +406,7 @@ export const WIKI_ENTRIES: WikiEntry[] = [
     why: "The most-sought information in twenty years of developer studies is what coworkers know. When the graph runs out of answers, the right person is the fastest path — this shows who, with the evidence.",
     notCovered:
       "Atlas never ranks people against each other and never shows per-person productivity. Names appear only with their evidence: commits, recency, breadth.",
-    appearsIn: ["Symbol file history"],
+    appearsIn: ["Symbol — Who can help", "Symbol file history"],
     zh: {
       gloss: "可求助的人",
       sentence:
@@ -414,7 +414,7 @@ export const WIKI_ENTRIES: WikiEntry[] = [
       why: "二十年的开发者研究里，被寻求最多的信息是同事知道什么。当图谱给不出答案时，找对人是最快的路——这里展示是谁，并附上证据。",
       notCovered:
         "Atlas 从不把人相互排名，也从不展示个人生产力。名字只与证据一同出现：提交、新近度、广度。",
-      appearsIn: ["符号页文件历史"],
+      appearsIn: ["符号页“可求助的人”", "符号页文件历史"],
     },
   },
   {

@@ -115,6 +115,22 @@ export const messages = {
       footnote:
         "History follows this symbol's line range through renames (git log -L). PR and issue links open the forge — titles are not fetched.",
     },
+    who: {
+      heading: "Who can help",
+      loading: "Reading authorship…",
+      unavailable: (reason: string) => `Authorship unavailable: ${reason}`,
+      noHistory: "No git history is readable for this project.",
+      noCommits: "No recorded commits touch this file in the window (1y).",
+      commitsHere: (n: number) =>
+        `${n.toLocaleString("en-US")} commit${n === 1 ? "" : "s"} to this file this year`,
+      breadth: (n: number) =>
+        `active in ${n.toLocaleString("en-US")} file${n === 1 ? "" : "s"} repo-wide`,
+      lastTouched: (date: string) => `last touched ${date}`,
+      footer: (total: number, shown: number) =>
+        total > shown
+          ? `${total.toLocaleString("en-US")} people have recorded history here — showing ${shown} of ${total.toLocaleString("en-US")}`
+          : `${total.toLocaleString("en-US")} ${total === 1 ? "person has" : "people have"} recorded history here`,
+    },
     observed: {
       word: "observed",
       allObserved: "This whole path was observed in recorded runs.",
@@ -246,6 +262,20 @@ export const messages = {
       capped: (max: number) => `仅显示 ${max} 条（已达上限）`,
       footnote:
         "历史沿这个符号自身的行范围追踪，可跨重命名（git log -L）。PR 与 issue 链接指向代码托管平台——标题不会被抓取。",
+    },
+    who: {
+      heading: "可求助的人",
+      loading: "正在读取作者记录…",
+      unavailable: (reason: string) => `作者记录不可用：${reason}`,
+      noHistory: "这个项目没有可读的 git 历史。",
+      noCommits: "窗口期（1 年）内没有提交记录触及这个文件。",
+      commitsHere: (n: number) => `今年对此文件提交 ${n.toLocaleString("en-US")} 次`,
+      breadth: (n: number) => `活跃于全仓 ${n.toLocaleString("en-US")} 个文件`,
+      lastTouched: (date: string) => `最近改动 ${date}`,
+      footer: (total: number, shown: number) =>
+        total > shown
+          ? `共 ${total.toLocaleString("en-US")} 人在这里留有提交记录——显示其中 ${shown} 位`
+          : `共 ${total.toLocaleString("en-US")} 人在这里留有提交记录`,
     },
     observed: {
       word: "已观测",

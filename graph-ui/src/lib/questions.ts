@@ -169,12 +169,12 @@ export const QUESTION_FAMILIES: QuestionFamily[] = [
     id: "F13",
     question: "Who knows this code — who should I ask?",
     status: "partial",
-    hint: "Symbol view: file history authors",
-    gap: "Top authors with evidence per file; a dedicated who-can-help view is planned — never a leaderboard",
+    hint: "Every symbol page: 'Who can help' — people with their evidence (commits here, breadth, last touched)",
+    gap: "File-level only; a region-level rollup is not built — and never a leaderboard",
     zh: {
       question: "谁了解这段代码——我该问谁？",
-      hint: "符号页：文件历史作者",
-      gap: "按文件给出带证据的主要作者；专门的“可求助的人”视图在计划中——绝不做排行榜",
+      hint: "每个符号页的“可求助的人”——带证据的人（此文件提交数、广度、最近改动）",
+      gap: "仅到文件粒度；区域级汇总未构建——且绝不做排行榜",
     },
   },
   {

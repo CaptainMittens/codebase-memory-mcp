@@ -22,6 +22,7 @@ import {
   type SymbolCommit,
   type SymbolHistoryPayload,
 } from "../lib/rationale";
+import { fetchWho, personEvidence, type WhoPayload } from "../lib/who";
 import { AddToPromptButton } from "./PromptBasket";
 import { MetricChip } from "./MetricChip";
 import { TriggerTree } from "./TriggerTree";
@@ -215,6 +216,8 @@ export function SymbolTab({
   const [history, setHistory] = useState<SymbolHistoryPayload | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const [who, setWho] = useState<WhoPayload | null>(null);
+  const [whoError, setWhoError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -263,6 +266,25 @@ export function SymbolTab({
       cancelled = true;
     };
   }, [project, symbolRef.id, symbolRef.qn]);
+
+  /* Who can help needs the file path, so it waits for the bundle. */
+  const filePath = bundle?.node.file_path;
+  useEffect(() => {
+    let cancelled = false;
+    setWho(null);
+    setWhoError(null);
+    if (!filePath) return;
+    fetchWho(project, filePath)
+      .then((payload) => {
+        if (!cancelled) setWho(payload);
+      })
+      .catch((err) => {
+        if (!cancelled) setWhoError(err instanceof Error ? err.message : "failed");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [project, filePath]);
 
   if (error) {
     return (
@@ -703,6 +725,58 @@ export function SymbolTab({
             <p className="text-[12px] text-foreground/35 mt-3">
               {t.history.footnote}
             </p>
+          </div>
+        )}
+
+        {/* Who can help — contacts with evidence, never a ranking: names are
+         * plain text (no links, no shares, no bars), each carrying only its
+         * evidence line. Absent last_seen is honest, so the part is dropped. */}
+        {node.file_path && (
+          <div className="bg-card border border-border/50 rounded-md p-4 mb-4">
+            <p className="text-[12px] uppercase tracking-widest text-foreground/40 mb-2">
+              <MetricChip slug="who-can-help" onOpen={onOpenWiki}>
+                {t.who.heading}
+              </MetricChip>
+            </p>
+            {!who && !whoError && (
+              <p className="text-[13px] text-foreground/40">{t.who.loading}</p>
+            )}
+            {whoError && (
+              <p className="text-[13px] text-foreground/40">
+                {t.who.unavailable(whoError)}
+              </p>
+            )}
+            {who && !who.available && (
+              <p className="text-[13px] text-foreground/40">{t.who.noHistory}</p>
+            )}
+            {who?.available && (who.people ?? []).length === 0 && (
+              <p className="text-[13px] text-foreground/40">{t.who.noCommits}</p>
+            )}
+            {who?.available && (who.people ?? []).length > 0 && (
+              <>
+                <div className="space-y-px">
+                  {(who.people ?? []).map((person) => (
+                    <div
+                      key={person.name}
+                      className="flex items-baseline gap-2 px-2 py-[3px]"
+                    >
+                      <span className="text-[13px] text-foreground/70 shrink-0">
+                        {person.name}
+                      </span>
+                      <span className="text-[12px] text-foreground/40 truncate">
+                        {personEvidence(person, t.who)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-[12px] text-foreground/40 mt-2">
+                  {t.who.footer(
+                    who.people_total ?? (who.people ?? []).length,
+                    (who.people ?? []).length,
+                  )}
+                </p>
+              </>
+            )}
           </div>
         )}
 
