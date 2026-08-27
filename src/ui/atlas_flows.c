@@ -933,8 +933,7 @@ char *cbm_atlas_impact_json(cbm_store_t *store, const char *project, int64_t nod
     const flow_node_t *nodes = g_flow_cache.nodes;
     yyjson_mut_val *node_obj = yyjson_mut_obj(doc);
     yyjson_mut_obj_add_int(doc, node_obj, "id", nodes[origin].id);
-    yyjson_mut_obj_add_strcpy(doc, node_obj, "name",
-                              nodes[origin].name ? nodes[origin].name : "?");
+    yyjson_mut_obj_add_strcpy(doc, node_obj, "name", nodes[origin].name ? nodes[origin].name : "?");
     if (nodes[origin].file_path)
         yyjson_mut_obj_add_strcpy(doc, node_obj, "file_path", nodes[origin].file_path);
     yyjson_mut_obj_add_val(doc, root, "node", node_obj);

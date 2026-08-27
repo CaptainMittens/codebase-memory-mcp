@@ -820,9 +820,8 @@ static void mx_remote_url(const char *root_path, char *out, size_t cap) {
     snprintf(out, cap, "%s", https);
 }
 
-char *cbm_atlas_symbol_history_json(cbm_store_t *store, const char *project,
-                                    const char *file_path, long long start_line,
-                                    long long end_line) {
+char *cbm_atlas_symbol_history_json(cbm_store_t *store, const char *project, const char *file_path,
+                                    long long start_line, long long end_line) {
     if (!store || !project || !file_path || !file_path[0])
         return NULL;
     if (start_line < 1 || end_line < start_line || end_line > 10000000)

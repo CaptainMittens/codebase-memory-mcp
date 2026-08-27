@@ -1970,8 +1970,7 @@ static void handle_atlas_impact(cbm_http_conn_t *c, const cbm_http_req_t *req) {
         return;
     }
     int64_t node_id = node_str[0] == '#' ? strtoll(node_str + 1, NULL, 10) : -1;
-    char *json =
-        cbm_atlas_impact_json(store, project, node_id, node_id < 0 ? node_str : NULL);
+    char *json = cbm_atlas_impact_json(store, project, node_id, node_id < 0 ? node_str : NULL);
     cbm_store_close(store);
     atlas_reply_json(c, json, 500, "{\"error\":\"impact failed\"}");
 }
