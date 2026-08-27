@@ -1845,6 +1845,80 @@ static const char *WHY_SAMPLE_C = "void beta(void);\n"
                                   "    }\n"
                                   "}\n";
 
+/* Per-symbol history: `git log -L` over the symbol's line range, with the
+ * forge base URL normalized for the UI's commit/#ref links. Runs against a
+ * real throwaway git repo; environments without git pass through (the
+ * feature itself degrades to available:false the same way). */
+TEST(atlas_symbol_history_log_l_and_remote) {
+    /* Invalid input never spawns a subprocess. */
+    cbm_store_t *probe = cbm_store_open_memory();
+    ASSERT_NOT_NULL(probe);
+    cbm_store_upsert_project(probe, "hist-test", "/tmp/nonexistent-hist");
+    ASSERT_NULL(cbm_atlas_symbol_history_json(probe, "hist-test", "src/w1.c", 0, 3));
+    ASSERT_NULL(cbm_atlas_symbol_history_json(probe, "hist-test", "src/w1.c", 5, 3));
+    /* Traversal in the file path is refused, honestly. */
+    char *json = cbm_atlas_symbol_history_json(probe, "hist-test", "../etc/passwd", 1, 3);
+    ASSERT_NOT_NULL(json);
+    yyjson_doc *doc = yyjson_read(json, strlen(json), 0);
+    ASSERT_FALSE(yyjson_get_bool(yyjson_obj_get(yyjson_doc_get_root(doc), "available")));
+    yyjson_doc_free(doc);
+    free(json);
+    cbm_store_close(probe);
+
+#ifdef _WIN32
+    if (system("git --version >NUL 2>&1") != 0)
+#else
+    if (system("git --version >/dev/null 2>&1") != 0)
+#endif
+        PASS(); /* no git in this environment; the guarded paths above ran */
+
+    char tmpl[] = "/tmp/cbm_hist_XXXXXX";
+    char *root = cbm_mkdtemp(tmpl);
+    ASSERT_NOT_NULL(root);
+    char dir[1024];
+    snprintf(dir, sizeof(dir), "%s/src", root);
+    cbm_mkdir_p(dir, 0755);
+    char file[1024];
+    snprintf(file, sizeof(file), "%s/src/w1.c", root);
+    FILE *fp = cbm_fopen(file, "wb");
+    ASSERT_NOT_NULL(fp);
+    fputs("int a(void) {\n    return 1;\n}\n\nint b(void) {\n    return 2;\n}\n", fp);
+    fclose(fp);
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd),
+             "git -C \"%s\" init -q && git -C \"%s\" add . && "
+             "git -C \"%s\" -c user.name=Test -c user.email=t@t.io commit -qm \"seed a for #42\" "
+             "&& git -C \"%s\" remote add origin git@github.com:foo/bar.git",
+             root, root, root, root);
+    if (system(cmd) != 0) {
+        (void)th_rmtree(root);
+        PASS(); /* git present but unusable here (sandboxed config, etc.) */
+    }
+
+    cbm_store_t *store = cbm_store_open_memory();
+    ASSERT_NOT_NULL(store);
+    cbm_store_upsert_project(store, "hist-test", root);
+    json = cbm_atlas_symbol_history_json(store, "hist-test", "src/w1.c", 1, 3);
+    ASSERT_NOT_NULL(json);
+    doc = yyjson_read(json, strlen(json), 0);
+    ASSERT_NOT_NULL(doc);
+    yyjson_val *hroot = yyjson_doc_get_root(doc);
+    ASSERT_TRUE(yyjson_get_bool(yyjson_obj_get(hroot, "available")));
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(hroot, "remote_url")),
+                  "https://github.com/foo/bar");
+    yyjson_val *commits = yyjson_obj_get(hroot, "commits");
+    ASSERT_EQ((int)yyjson_arr_size(commits), 1);
+    yyjson_val *commit = yyjson_arr_get(commits, 0);
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(commit, "subject")), "seed a for #42");
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(commit, "author")), "Test");
+    ASSERT_FALSE(yyjson_get_bool(yyjson_obj_get(hroot, "truncated")));
+    yyjson_doc_free(doc);
+    free(json);
+    cbm_store_close(store);
+    (void)th_rmtree(root);
+    PASS();
+}
+
 TEST(atlas_why_extracts_guard_chains) {
     char tmpl[] = "/tmp/cbm_why_XXXXXX";
     char *root = cbm_mkdtemp(tmpl);
@@ -2004,5 +2078,6 @@ SUITE(ui) {
     RUN_TEST(atlas_symbol_overflow_tail_and_dataflow_presence);
     RUN_TEST(atlas_blast_buckets_files_by_region);
     RUN_TEST(atlas_handout_is_selfcontained_and_escaped);
+    RUN_TEST(atlas_symbol_history_log_l_and_remote);
     RUN_TEST(atlas_why_extracts_guard_chains);
 }

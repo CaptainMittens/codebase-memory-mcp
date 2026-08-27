@@ -69,6 +69,9 @@ export interface DataFlowRef {
 
 export interface FileHistory {
   available: boolean;
+  /* Normalized https forge base for commit/#ref links; absent when the
+   * repo has no usable remote. */
+  remote_url?: string;
   commits_1y?: number;
   recent?: { hash: string; time: number; author: string; subject: string }[];
   top_author?: string;

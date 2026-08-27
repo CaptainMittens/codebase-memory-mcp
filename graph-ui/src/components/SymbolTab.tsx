@@ -13,6 +13,14 @@ import {
   type SymbolRef,
 } from "../lib/atlas";
 import { fetchImpact, impactSentence, type ImpactPayload } from "../lib/impact";
+import {
+  commitUrl,
+  fetchSymbolHistory,
+  linkifyRefs,
+  refUrl,
+  type SymbolCommit,
+  type SymbolHistoryPayload,
+} from "../lib/rationale";
 import { AddToPromptButton } from "./PromptBasket";
 import { MetricChip } from "./MetricChip";
 import { TriggerTree } from "./TriggerTree";
@@ -140,6 +148,53 @@ function ConnectionList({
   );
 }
 
+/* One commit line: hash · subject · author · date. With a forge base the
+ * hash links to the commit and "#123" subject refs link to /issues/123
+ * (forges route that to PRs too); without one everything stays plain. */
+function CommitRow({ commit, remote }: { commit: SymbolCommit; remote?: string }) {
+  return (
+    <div className="flex items-baseline gap-2 py-[3px]">
+      {remote ? (
+        <a
+          href={commitUrl(remote, commit.hash)}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-[12px] font-mono text-foreground/35 hover:text-foreground/70 shrink-0 transition-colors"
+        >
+          {commit.hash}
+        </a>
+      ) : (
+        <span className="text-[12px] font-mono text-foreground/35 shrink-0">
+          {commit.hash}
+        </span>
+      )}
+      <span className="text-[13px] text-foreground/70 truncate flex-1">
+        {remote
+          ? linkifyRefs(commit.subject).map((segment, index) =>
+              segment.ref !== undefined ? (
+                <a
+                  key={index}
+                  href={refUrl(remote, segment.ref)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary/70 hover:text-primary transition-colors"
+                >
+                  {segment.text}
+                </a>
+              ) : (
+                <span key={index}>{segment.text}</span>
+              ),
+            )
+          : commit.subject}
+      </span>
+      <span className="text-[12px] text-foreground/35 shrink-0">
+        {commit.author} ·{" "}
+        {new Date(commit.time * 1000).toISOString().slice(0, 10)}
+      </span>
+    </div>
+  );
+}
+
 export function SymbolTab({
   project,
   symbolRef,
@@ -155,12 +210,17 @@ export function SymbolTab({
   const [repoInfo, setRepoInfo] = useState<RepoInfo | null>(null);
   const [impact, setImpact] = useState<ImpactPayload | null>(null);
   const [impactError, setImpactError] = useState<string | null>(null);
+  const [history, setHistory] = useState<SymbolHistoryPayload | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setBundle(null);
     setError(null);
     setCode(null);
+    setHistory(null);
+    setHistoryError(null);
     fetchSymbol(project, symbolRef, limit, 0)
       .then((payload) => {
         if (!cancelled) setBundle(payload);
@@ -249,6 +309,24 @@ export function SymbolTab({
             : []),
         ].join(" · ")
       : null;
+
+  /* The trace is a deliberate click: each call runs one git subprocess
+   * (git log -L) on the server, so it is never fetched automatically. */
+  const canTrace = Boolean(node.file_path && node.start_line && node.end_line);
+  const loadHistory = async () => {
+    if (!node.file_path || !node.start_line || !node.end_line) return;
+    setHistoryLoading(true);
+    setHistoryError(null);
+    try {
+      setHistory(
+        await fetchSymbolHistory(project, node.file_path, node.start_line, node.end_line),
+      );
+    } catch (err) {
+      setHistoryError(err instanceof Error ? err.message : "failed");
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
 
   const loadCode = async () => {
     if (!node.qualified_name) return;
@@ -500,18 +578,11 @@ export function SymbolTab({
                 </p>
               )}
             {(bundle.file_history?.recent ?? []).map((commit) => (
-              <div key={commit.hash} className="flex items-baseline gap-2 py-[3px]">
-                <span className="text-[12px] font-mono text-foreground/35 shrink-0">
-                  {commit.hash}
-                </span>
-                <span className="text-[13px] text-foreground/70 truncate flex-1">
-                  {commit.subject}
-                </span>
-                <span className="text-[12px] text-foreground/35 shrink-0">
-                  {commit.author} ·{" "}
-                  {new Date(commit.time * 1000).toISOString().slice(0, 10)}
-                </span>
-              </div>
+              <CommitRow
+                key={commit.hash}
+                commit={commit}
+                remote={bundle.file_history?.remote_url}
+              />
             ))}
             {bundle.file_history?.available &&
               (bundle.file_history.commits_1y ?? 0) > 0 && (
@@ -567,6 +638,73 @@ export function SymbolTab({
           </div>
           )}
         </div>
+
+        {/* Why is this here? — the recorded rationale: on-demand git log -L
+         * over this symbol's own line range, not the whole file's. */}
+        {canTrace && (
+          <div className="bg-card border border-border/50 rounded-md p-4 mb-4">
+            <p className="text-[12px] uppercase tracking-widest text-foreground/40 mb-2">
+              Why is this here?
+            </p>
+            {node.docstring && (
+              <p className="text-[12px] text-foreground/40 mb-2">
+                The docstring above is the stated intent; below is the recorded
+                history.
+              </p>
+            )}
+            {!history && (
+              <button
+                onClick={loadHistory}
+                disabled={historyLoading}
+                className="px-2.5 py-1 rounded-md bg-primary/15 text-primary text-[13px] font-medium hover:bg-primary/25 transition-colors disabled:opacity-40"
+              >
+                Trace this symbol's history
+              </button>
+            )}
+            {historyLoading && (
+              <p className="text-[13px] text-foreground/40 mt-2">
+                Reading git history…
+              </p>
+            )}
+            {historyError && (
+              <p className="text-[13px] text-foreground/40 mt-2">
+                History unavailable: {historyError}
+              </p>
+            )}
+            {history && !history.available && (
+              <p className="text-[13px] text-foreground/40">
+                No git history is readable for this symbol's file.
+              </p>
+            )}
+            {history?.available && (
+              <>
+                <div className="space-y-px">
+                  {(history.commits ?? []).map((commit) => (
+                    <CommitRow
+                      key={commit.hash}
+                      commit={commit}
+                      remote={history.remote_url}
+                    />
+                  ))}
+                </div>
+                {(history.commits ?? []).length === 0 && (
+                  <p className="text-[13px] text-foreground/40">
+                    No commits recorded for this line range.
+                  </p>
+                )}
+                {history.truncated && (
+                  <p className="text-[12px] text-foreground/40 mt-1">
+                    showing {history.max_commits} (capped)
+                  </p>
+                )}
+              </>
+            )}
+            <p className="text-[12px] text-foreground/35 mt-3">
+              History follows this symbol's line range through renames (git log
+              -L). PR and issue links open the forge — titles are not fetched.
+            </p>
+          </div>
+        )}
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <div className="bg-card border border-border/40 rounded-md p-4">

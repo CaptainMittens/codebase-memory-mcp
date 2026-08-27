@@ -181,6 +181,7 @@ typedef struct {
 } mx_churn_t;
 
 static void mx_history_cache_store(const char *project, const char *stamp, mx_churn_t *churn);
+static void mx_remote_url(const char *root_path, char *out, size_t cap);
 
 static void mx_churn_scan(const char *root_path, mx_churn_t *churn) {
     if (!root_path || !root_path[0] || !cbm_validate_shell_path_arg(root_path))
@@ -684,6 +685,12 @@ char *cbm_atlas_file_history_json(cbm_store_t *store, const char *project, const
     yyjson_mut_val *root = yyjson_mut_obj(doc);
     yyjson_mut_doc_set_root(doc, root);
 
+    /* Forge base for the UI's commit/#ref links (absent when no remote). */
+    char remote[CBM_SZ_1K];
+    mx_remote_url(root_path, remote, sizeof(remote));
+    if (remote[0])
+        yyjson_mut_obj_add_strcpy(doc, root, "remote_url", remote);
+
     pthread_mutex_lock(&g_hist_mu);
     fresh = g_hist_cache.valid && strcmp(g_hist_cache.key, key) == 0;
     const mx_file_stat_t *stat = fresh && g_hist_cache.churn.counts
@@ -751,5 +758,159 @@ char *cbm_atlas_metrics_json(cbm_store_t *store, const char *project) {
     g_mx_cache.json = strdup(json);
     snprintf(g_mx_cache.key, sizeof(g_mx_cache.key), "%s", key);
     pthread_mutex_unlock(&g_mx_mu);
+    return json;
+}
+
+/* ── Rationale evidence: forge base URL + per-symbol history ────── */
+
+/* Normalize the origin remote to a browsable https base ("" if none):
+ * git@host:owner/repo(.git) and ssh://git@host/owner/repo(.git) become
+ * https://host/owner/repo; https URLs just lose the .git suffix. The
+ * UI turns commit hashes and #123 refs in subjects into links with it. */
+static void mx_remote_url(const char *root_path, char *out, size_t cap) {
+    out[0] = '\0';
+    if (!root_path || !root_path[0] || !cbm_validate_shell_path_arg(root_path))
+        return;
+#ifdef _WIN32
+    const char *null_dev = "NUL";
+#else
+    const char *null_dev = "/dev/null";
+#endif
+    char cmd[CBM_SZ_2K];
+    snprintf(cmd, sizeof(cmd), "git -C \"%s\" config --get remote.origin.url 2>%s", root_path,
+             null_dev);
+    FILE *fp = cbm_popen(cmd, "r");
+    if (!fp)
+        return;
+    char line[CBM_SZ_1K] = {0};
+    if (!fgets(line, sizeof(line), fp)) {
+        cbm_pclose(fp);
+        return;
+    }
+    cbm_pclose(fp);
+    size_t len = strlen(line);
+    while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r' || line[len - 1] == ' '))
+        line[--len] = '\0';
+    if (len == 0)
+        return;
+    char https[CBM_SZ_1K] = {0};
+    if (strncmp(line, "git@", 4) == 0) {
+        /* git@host:owner/repo -> https://host/owner/repo */
+        char *colon = strchr(line + 4, ':');
+        if (!colon)
+            return;
+        *colon = '\0';
+        snprintf(https, sizeof(https), "https://%s/%s", line + 4, colon + 1);
+    } else if (strncmp(line, "ssh://", 6) == 0) {
+        const char *rest = line + 6;
+        const char *at = strchr(rest, '@');
+        if (at)
+            rest = at + 1;
+        snprintf(https, sizeof(https), "https://%s", rest);
+    } else if (strncmp(line, "https://", 8) == 0 || strncmp(line, "http://", 7) == 0) {
+        snprintf(https, sizeof(https), "%s", line);
+    } else {
+        return; /* local paths and exotic transports: no link base */
+    }
+    size_t hlen = strlen(https);
+    if (hlen > 4 && strcmp(https + hlen - 4, ".git") == 0)
+        https[hlen - 4] = '\0';
+    while ((hlen = strlen(https)) > 0 && https[hlen - 1] == '/')
+        https[hlen - 1] = '\0';
+    snprintf(out, cap, "%s", https);
+}
+
+char *cbm_atlas_symbol_history_json(cbm_store_t *store, const char *project,
+                                    const char *file_path, long long start_line,
+                                    long long end_line) {
+    if (!store || !project || !file_path || !file_path[0])
+        return NULL;
+    if (start_line < 1 || end_line < start_line || end_line > 10000000)
+        return NULL;
+    char stamp[128];
+    char root_path[CBM_SZ_1K];
+    mx_project_stamp(store, project, stamp, sizeof(stamp), root_path, sizeof(root_path));
+
+    yyjson_mut_doc *doc = yyjson_mut_doc_new(NULL);
+    yyjson_mut_val *root = yyjson_mut_obj(doc);
+    yyjson_mut_doc_set_root(doc, root);
+    yyjson_mut_obj_add_int(doc, root, "max_commits", 12);
+
+    /* The file path lands inside a quoted shell argument; the same guard
+     * the churn scan applies to the root covers metacharacters here. */
+    if (!root_path[0] || !cbm_validate_shell_path_arg(root_path) ||
+        !cbm_validate_shell_path_arg(file_path) || strstr(file_path, "..")) {
+        yyjson_mut_obj_add_bool(doc, root, "available", false);
+        char *json = yyjson_mut_write(doc, 0, NULL);
+        yyjson_mut_doc_free(doc);
+        return json;
+    }
+    char remote[CBM_SZ_1K];
+    mx_remote_url(root_path, remote, sizeof(remote));
+    if (remote[0])
+        yyjson_mut_obj_add_strcpy(doc, root, "remote_url", remote);
+
+#ifdef _WIN32
+    const char *null_dev = "NUL";
+#else
+    const char *null_dev = "/dev/null";
+#endif
+    /* -L follows the symbol's line range through renames and rewrites —
+     * per-symbol "why", not per-file. --no-patch keeps output to the
+     * COMMIT: lines; anything else is skipped by the parser anyway. */
+    char cmd[CBM_SZ_2K];
+    snprintf(cmd, sizeof(cmd),
+             "git -C \"%s\" log --no-patch --max-count=12 "
+             "--pretty=format:COMMIT:%%h:%%ct:%%an:%%s -L %lld,%lld:\"%s\" 2>%s",
+             root_path, start_line, end_line, file_path, null_dev);
+    FILE *fp = cbm_popen(cmd, "r");
+    if (!fp) {
+        yyjson_mut_obj_add_bool(doc, root, "available", false);
+        char *json = yyjson_mut_write(doc, 0, NULL);
+        yyjson_mut_doc_free(doc);
+        return json;
+    }
+    yyjson_mut_val *commits = yyjson_mut_arr(doc);
+    int count = 0;
+    char line[CBM_SZ_1K];
+    while (fgets(line, sizeof(line), fp)) {
+        size_t len = strlen(line);
+        while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
+            line[--len] = '\0';
+        if (strncmp(line, "COMMIT:", 7) != 0)
+            continue;
+        char *cursor = line + 7;
+        char *hash = cursor;
+        char *colon = strchr(cursor, ':');
+        if (!colon)
+            continue;
+        *colon = '\0';
+        cursor = colon + 1;
+        char *epoch = cursor;
+        colon = strchr(cursor, ':');
+        if (!colon)
+            continue;
+        *colon = '\0';
+        cursor = colon + 1;
+        char *author = cursor;
+        colon = strchr(cursor, ':');
+        if (!colon)
+            continue;
+        *colon = '\0';
+        const char *subject = colon + 1;
+        yyjson_mut_val *obj = yyjson_mut_obj(doc);
+        yyjson_mut_obj_add_strcpy(doc, obj, "hash", hash);
+        yyjson_mut_obj_add_int(doc, obj, "time", strtoll(epoch, NULL, 10));
+        yyjson_mut_obj_add_strcpy(doc, obj, "author", author);
+        yyjson_mut_obj_add_strcpy(doc, obj, "subject", subject);
+        yyjson_mut_arr_append(commits, obj);
+        count++;
+    }
+    int status = cbm_pclose(fp);
+    yyjson_mut_obj_add_bool(doc, root, "available", status == 0 || count > 0);
+    yyjson_mut_obj_add_val(doc, root, "commits", commits);
+    yyjson_mut_obj_add_bool(doc, root, "truncated", count >= 12);
+    char *json = yyjson_mut_write(doc, 0, NULL);
+    yyjson_mut_doc_free(doc);
     return json;
 }

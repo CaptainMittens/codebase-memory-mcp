@@ -1929,6 +1929,31 @@ static void handle_atlas_trace(cbm_http_conn_t *c, const cbm_http_req_t *req) {
     atlas_reply_json(c, json, 500, "{\"error\":\"trace failed\"}");
 }
 
+/* GET /api/symbol-history?project=X&file=PATH&start=N&end=N — per-symbol
+ * git history (log -L over the symbol's line range), on demand. */
+static void handle_atlas_symbol_history(cbm_http_conn_t *c, const cbm_http_req_t *req) {
+    char project[256] = {0};
+    cbm_store_t *store = atlas_open_project(c, req, project, sizeof(project));
+    if (!store)
+        return;
+    char file[1024] = {0};
+    char start_str[32] = {0};
+    char end_str[32] = {0};
+    cbm_http_query_param(req->query, "file", file, (int)sizeof(file));
+    cbm_http_query_param(req->query, "start", start_str, (int)sizeof(start_str));
+    cbm_http_query_param(req->query, "end", end_str, (int)sizeof(end_str));
+    long long start_line = strtoll(start_str, NULL, 10);
+    long long end_line = strtoll(end_str, NULL, 10);
+    if (!file[0] || start_line < 1 || end_line < start_line) {
+        cbm_store_close(store);
+        cbm_http_replyf(c, 400, g_cors_json, "{\"error\":\"missing or invalid file/start/end\"}");
+        return;
+    }
+    char *json = cbm_atlas_symbol_history_json(store, project, file, start_line, end_line);
+    cbm_store_close(store);
+    atlas_reply_json(c, json, 500, "{\"error\":\"symbol history failed\"}");
+}
+
 /* GET /api/impact?project=X&node=QN|#id — reverse reachability: who could
  * notice a change to this symbol, at what distance, in which regions, and
  * which test functions reach it. */
@@ -2476,6 +2501,12 @@ static void dispatch_request(cbm_http_server_t *srv, cbm_http_conn_t *c,
     /* GET /api/impact → CBM Atlas reverse reachability from one symbol */
     if (is_get && cbm_http_path_match(req->path, "/api/impact*")) {
         handle_atlas_impact(c, req);
+        return;
+    }
+
+    /* GET /api/symbol-history → per-symbol git log -L evidence */
+    if (is_get && cbm_http_path_match(req->path, "/api/symbol-history*")) {
+        handle_atlas_symbol_history(c, req);
         return;
     }
 

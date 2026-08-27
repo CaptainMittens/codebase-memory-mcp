@@ -51,6 +51,12 @@ void cbm_atlas_metrics_cache_clear(void);
  * Returns {"available":false} JSON when the project has no git history. */
 char *cbm_atlas_file_history_json(cbm_store_t *store, const char *project, const char *file_path);
 
+/* Per-symbol rationale evidence: `git log -L start,end:file` (bounded,
+ * on-demand) with the forge base URL for commit/#ref links. */
+char *cbm_atlas_symbol_history_json(cbm_store_t *store, const char *project,
+                                    const char *file_path, long long start_line,
+                                    long long end_line);
+
 /* ── A→B trace (atlas_flows.c) ────────────────────────────────────
  * Reachability between two callables over CALLS ("calls") or DATA_FLOWS
  * ("data"): shortest path within a bounded depth, honest about the bound.

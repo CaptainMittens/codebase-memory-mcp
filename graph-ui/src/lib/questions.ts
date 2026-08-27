@@ -71,8 +71,8 @@ export const QUESTION_FAMILIES: QuestionFamily[] = [
     id: "F7",
     question: "Why was it built this way?",
     status: "partial",
-    hint: "Symbol view: docs, ADR panel, file history",
-    gap: "Docstrings, ADRs and commit subjects are linked; the symbol→PR/issue→decision chain is not built yet",
+    hint: "Symbol view: docs, ADR panel, file history, and 'Why is this here?' traces a symbol's own git history",
+    gap: "Symbol-level history with linked commits and PR/issue refs is here; PR/issue titles and ADR-to-symbol links are not fetched or joined yet",
   },
   {
     id: "F8",
