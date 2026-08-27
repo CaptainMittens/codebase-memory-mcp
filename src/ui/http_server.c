@@ -2025,6 +2025,25 @@ char *cbm_atlas_attach_observed(cbm_store_t *store, const char *project, char *j
     return out;
 }
 
+/* GET /api/who?project=X&file=PATH — who can help with this file:
+ * authorship as evidence from the cached churn scan. */
+static void handle_atlas_who(cbm_http_conn_t *c, const cbm_http_req_t *req) {
+    char project[256] = {0};
+    cbm_store_t *store = atlas_open_project(c, req, project, sizeof(project));
+    if (!store)
+        return;
+    char file[1024] = {0};
+    cbm_http_query_param(req->query, "file", file, (int)sizeof(file));
+    if (!file[0]) {
+        cbm_store_close(store);
+        cbm_http_replyf(c, 400, g_cors_json, "{\"error\":\"missing file parameter\"}");
+        return;
+    }
+    char *json = cbm_atlas_who_json(store, project, file);
+    cbm_store_close(store);
+    atlas_reply_json(c, json, 500, "{\"error\":\"who failed\"}");
+}
+
 /* GET /api/symbol-history?project=X&file=PATH&start=N&end=N — per-symbol
  * git history (log -L over the symbol's line range), on demand. */
 static void handle_atlas_symbol_history(cbm_http_conn_t *c, const cbm_http_req_t *req) {
@@ -2550,6 +2569,12 @@ static void dispatch_request(cbm_http_server_t *srv, cbm_http_conn_t *c,
      * MUST precede /api/symbol*, whose wildcard would swallow it. */
     if (is_get && cbm_http_path_match(req->path, "/api/symbol-history*")) {
         handle_atlas_symbol_history(c, req);
+        return;
+    }
+
+    /* GET /api/who → who can help with one file (authorship evidence) */
+    if (is_get && cbm_http_path_match(req->path, "/api/who*")) {
+        handle_atlas_who(c, req);
         return;
     }
 

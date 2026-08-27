@@ -51,6 +51,12 @@ void cbm_atlas_metrics_cache_clear(void);
  * Returns {"available":false} JSON when the project has no git history. */
 char *cbm_atlas_file_history_json(cbm_store_t *store, const char *project, const char *file_path);
 
+/* Who can help with one file: people with recorded history, each with
+ * their evidence (commits here, repo-wide breadth, last-touched where the
+ * retained newest commits prove it). Evidence framing only — never a
+ * performance surface. */
+char *cbm_atlas_who_json(cbm_store_t *store, const char *project, const char *file_path);
+
 /* Per-symbol rationale evidence: `git log -L start,end:file` (bounded,
  * on-demand) with the forge base URL for commit/#ref links. */
 char *cbm_atlas_symbol_history_json(cbm_store_t *store, const char *project, const char *file_path,

@@ -1930,6 +1930,109 @@ TEST(atlas_attach_observed_marks_hops) {
     PASS();
 }
 
+/* Who can help: authorship as evidence from the churn scan — commits in
+ * this file, repo-wide breadth, last-touched where the retained newest
+ * commits prove it. Real throwaway git repo; environments without git
+ * pass through, like the feature itself. */
+TEST(atlas_who_reports_authorship_evidence) {
+#ifdef _WIN32
+    if (system("git --version >NUL 2>&1") != 0)
+#else
+    if (system("git --version >/dev/null 2>&1") != 0)
+#endif
+        PASS();
+
+    char tmpl[256] = "/tmp/cbm_who_XXXXXX";
+    char *root = cbm_mkdtemp(tmpl);
+    ASSERT_NOT_NULL(root);
+    char dir[1024];
+    snprintf(dir, sizeof(dir), "%s/src", root);
+    cbm_mkdir_p(dir, 0755);
+    static const char *const files[2] = {"src/a.c", "src/b.c"};
+    for (int i = 0; i < 2; i++) {
+        char path[1024];
+        snprintf(path, sizeof(path), "%s/%s", root, files[i]);
+        FILE *fp = cbm_fopen(path, "wb");
+        ASSERT_NOT_NULL(fp);
+        fputs("int x;\n", fp);
+        fclose(fp);
+    }
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd),
+             "git -C \"%s\" init -q && git -C \"%s\" add . && "
+             "git -C \"%s\" -c user.name=Alice -c user.email=a@t.io commit -qm seed",
+             root, root, root);
+    if (system(cmd) != 0) {
+        (void)th_rmtree(root);
+        PASS();
+    }
+    /* Bob touches a.c, then Alice touches a.c again — a.c ends with three
+     * commits (Alice 2, Bob 1), b.c with one (Alice). */
+    char touch[1024];
+    snprintf(touch, sizeof(touch), "%s/src/a.c", root);
+    FILE *fp = cbm_fopen(touch, "ab");
+    ASSERT_NOT_NULL(fp);
+    fputs("int y;\n", fp);
+    fclose(fp);
+    snprintf(cmd, sizeof(cmd),
+             "git -C \"%s\" add . && "
+             "git -C \"%s\" -c user.name=Bob -c user.email=b@t.io commit -qm bob",
+             root, root);
+    ASSERT_EQ(system(cmd), 0);
+    fp = cbm_fopen(touch, "ab");
+    ASSERT_NOT_NULL(fp);
+    fputs("int z;\n", fp);
+    fclose(fp);
+    snprintf(cmd, sizeof(cmd),
+             "git -C \"%s\" add . && "
+             "git -C \"%s\" -c user.name=Alice -c user.email=a@t.io commit -qm alice2",
+             root, root);
+    ASSERT_EQ(system(cmd), 0);
+
+    cbm_atlas_metrics_cache_clear();
+    cbm_store_t *store = cbm_store_open_memory();
+    ASSERT_NOT_NULL(store);
+    cbm_store_upsert_project(store, "who-test", root);
+
+    char *json = cbm_atlas_who_json(store, "who-test", "src/a.c");
+    ASSERT_NOT_NULL(json);
+    yyjson_doc *doc = yyjson_read(json, strlen(json), 0);
+    ASSERT_NOT_NULL(doc);
+    yyjson_val *jroot = yyjson_doc_get_root(doc);
+    ASSERT_TRUE(yyjson_get_bool(yyjson_obj_get(jroot, "available")));
+    ASSERT_EQ((int)yyjson_get_int(yyjson_obj_get(jroot, "commits_1y")), 3);
+    ASSERT_EQ((int)yyjson_get_int(yyjson_obj_get(jroot, "people_total")), 2);
+    yyjson_val *people = yyjson_obj_get(jroot, "people");
+    ASSERT_EQ((int)yyjson_arr_size(people), 2);
+    yyjson_val *first = yyjson_arr_get(people, 0);
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(first, "name")), "Alice");
+    ASSERT_EQ((int)yyjson_get_int(yyjson_obj_get(first, "commits_here")), 2);
+    ASSERT_EQ((int)yyjson_get_int(yyjson_obj_get(first, "files_repo_wide")), 2);
+    ASSERT_GT(yyjson_get_int(yyjson_obj_get(first, "last_seen")), 0);
+    yyjson_val *second = yyjson_arr_get(people, 1);
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(second, "name")), "Bob");
+    ASSERT_EQ((int)yyjson_get_int(yyjson_obj_get(second, "commits_here")), 1);
+    ASSERT_EQ((int)yyjson_get_int(yyjson_obj_get(second, "files_repo_wide")), 1);
+    yyjson_doc_free(doc);
+    free(json);
+
+    /* A file with no recorded commits answers honestly, not with an error. */
+    json = cbm_atlas_who_json(store, "who-test", "src/never.c");
+    ASSERT_NOT_NULL(json);
+    doc = yyjson_read(json, strlen(json), 0);
+    jroot = yyjson_doc_get_root(doc);
+    ASSERT_TRUE(yyjson_get_bool(yyjson_obj_get(jroot, "available")));
+    ASSERT_EQ((int)yyjson_get_int(yyjson_obj_get(jroot, "commits_1y")), 0);
+    ASSERT_EQ((int)yyjson_arr_size(yyjson_obj_get(jroot, "people")), 0);
+    yyjson_doc_free(doc);
+    free(json);
+
+    cbm_store_close(store);
+    cbm_atlas_metrics_cache_clear();
+    (void)th_rmtree(root);
+    PASS();
+}
+
 /* Per-symbol history: `git log -L` over the symbol's line range, with the
  * forge base URL normalized for the UI's commit/#ref links. Runs against a
  * real throwaway git repo; environments without git pass through (the
@@ -2168,6 +2271,7 @@ SUITE(ui) {
     RUN_TEST(atlas_blast_buckets_files_by_region);
     RUN_TEST(atlas_handout_is_selfcontained_and_escaped);
     RUN_TEST(atlas_attach_observed_marks_hops);
+    RUN_TEST(atlas_who_reports_authorship_evidence);
     RUN_TEST(atlas_symbol_history_log_l_and_remote);
     RUN_TEST(atlas_why_extracts_guard_chains);
 }

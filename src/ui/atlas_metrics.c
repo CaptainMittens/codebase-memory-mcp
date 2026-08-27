@@ -761,6 +761,133 @@ char *cbm_atlas_metrics_json(cbm_store_t *store, const char *project) {
     return json;
 }
 
+/* ── Who can help: authorship as evidence, never as a scoreboard ──
+ *
+ * The most-sought information type in the developer-questions literature
+ * is "who knows this code". This answers it for one file from the same
+ * bounded churn scan the dashboard uses: people with recorded history
+ * here, each with their evidence — commits in this file, share of the
+ * file's year, breadth across the repo, and last-touched when it falls
+ * inside the retained newest commits. Deliberate constraints: no
+ * cross-person performance framing, no percentages without their
+ * absolute pair, and absence of a last-seen date is stated honestly
+ * (the scan retains only the newest commits per file). */
+
+enum { WHO_PEOPLE_CAP = 8 };
+
+typedef struct {
+    const char *name; /* borrowed from the commit array */
+    long long commits_here;
+    long long files_repo_wide;
+    long long last_seen; /* 0 = not in the retained newest commits */
+} who_person_t;
+
+typedef struct {
+    who_person_t people[WHO_PEOPLE_CAP];
+    int count;
+} who_scan_t;
+
+static void who_collect_iter(const char *name, void *value, void *userdata) {
+    who_scan_t *scan = userdata;
+    long long commits = (long long)(intptr_t)value;
+    int pos = scan->count < WHO_PEOPLE_CAP ? scan->count : WHO_PEOPLE_CAP;
+    while (pos > 0 && scan->people[pos - 1].commits_here < commits)
+        pos--;
+    if (pos >= WHO_PEOPLE_CAP)
+        return;
+    if (scan->count < WHO_PEOPLE_CAP)
+        scan->count++;
+    for (int i = scan->count - 1; i > pos; i--)
+        scan->people[i] = scan->people[i - 1];
+    scan->people[pos] = (who_person_t){.name = name, .commits_here = commits};
+}
+
+typedef struct {
+    who_scan_t *scan;
+} who_breadth_ctx_t;
+
+static void who_breadth_iter(const char *file, void *value, void *userdata) {
+    (void)file;
+    who_breadth_ctx_t *ctx = userdata;
+    const mx_file_stat_t *stat = value;
+    if (!stat || !stat->authors)
+        return;
+    for (int i = 0; i < ctx->scan->count; i++)
+        if (cbm_ht_get(stat->authors, ctx->scan->people[i].name))
+            ctx->scan->people[i].files_repo_wide++;
+}
+
+char *cbm_atlas_who_json(cbm_store_t *store, const char *project, const char *file_path) {
+    if (!store || !project || !file_path)
+        return NULL;
+    char stamp[128];
+    char root_path[CBM_SZ_1K];
+    mx_project_stamp(store, project, stamp, sizeof(stamp), root_path, sizeof(root_path));
+    char key[1280];
+    snprintf(key, sizeof(key), "%s|%s", project, stamp);
+
+    pthread_mutex_lock(&g_hist_mu);
+    bool fresh = g_hist_cache.valid && strcmp(g_hist_cache.key, key) == 0;
+    pthread_mutex_unlock(&g_hist_mu);
+    if (!fresh) {
+        char *metrics = cbm_atlas_metrics_json(store, project);
+        free(metrics);
+    }
+
+    yyjson_mut_doc *doc = yyjson_mut_doc_new(NULL);
+    yyjson_mut_val *root = yyjson_mut_obj(doc);
+    yyjson_mut_doc_set_root(doc, root);
+    yyjson_mut_obj_add_str(doc, root, "window", "1y");
+
+    pthread_mutex_lock(&g_hist_mu);
+    fresh = g_hist_cache.valid && strcmp(g_hist_cache.key, key) == 0;
+    const mx_file_stat_t *stat = fresh && g_hist_cache.churn.counts
+                                     ? cbm_ht_get(g_hist_cache.churn.counts, file_path)
+                                     : NULL;
+    if (!fresh || !g_hist_cache.churn.counts || g_hist_cache.churn.commit_count == 0) {
+        yyjson_mut_obj_add_bool(doc, root, "available", false);
+    } else if (!stat || !stat->authors || stat->count <= 0) {
+        yyjson_mut_obj_add_bool(doc, root, "available", true);
+        yyjson_mut_obj_add_int(doc, root, "commits_1y", stat ? stat->count : 0);
+        yyjson_mut_obj_add_val(doc, root, "people", yyjson_mut_arr(doc));
+        yyjson_mut_obj_add_int(doc, root, "people_total", 0);
+    } else {
+        who_scan_t scan = {0};
+        cbm_ht_foreach(stat->authors, who_collect_iter, &scan);
+        mx_owner_scan_t totals = {0};
+        cbm_ht_foreach(stat->authors, mx_owner_iter, &totals);
+        who_breadth_ctx_t breadth = {.scan = &scan};
+        cbm_ht_foreach(g_hist_cache.churn.counts, who_breadth_iter, &breadth);
+        /* Last-touched, where the retained newest commits can prove it. */
+        for (int r = 0; r < stat->recent_count; r++) {
+            const mx_commit_t *commit = &g_hist_cache.churn.commits[stat->recent[r]];
+            for (int i = 0; i < scan.count; i++)
+                if (scan.people[i].last_seen == 0 &&
+                    strcmp(scan.people[i].name, commit->author) == 0)
+                    scan.people[i].last_seen = commit->time;
+        }
+        yyjson_mut_obj_add_bool(doc, root, "available", true);
+        yyjson_mut_obj_add_int(doc, root, "commits_1y", stat->count);
+        yyjson_mut_val *people = yyjson_mut_arr(doc);
+        for (int i = 0; i < scan.count; i++) {
+            yyjson_mut_val *person = yyjson_mut_obj(doc);
+            yyjson_mut_obj_add_strcpy(doc, person, "name", scan.people[i].name);
+            yyjson_mut_obj_add_int(doc, person, "commits_here", scan.people[i].commits_here);
+            yyjson_mut_obj_add_int(doc, person, "files_repo_wide", scan.people[i].files_repo_wide);
+            if (scan.people[i].last_seen > 0)
+                yyjson_mut_obj_add_int(doc, person, "last_seen", scan.people[i].last_seen);
+            yyjson_mut_arr_append(people, person);
+        }
+        yyjson_mut_obj_add_val(doc, root, "people", people);
+        yyjson_mut_obj_add_int(doc, root, "people_total", totals.distinct);
+    }
+    pthread_mutex_unlock(&g_hist_mu);
+
+    char *json = yyjson_mut_write(doc, 0, NULL);
+    yyjson_mut_doc_free(doc);
+    return json;
+}
+
 /* ── Rationale evidence: forge base URL + per-symbol history ────── */
 
 /* Normalize the origin remote to a browsable https base ("" if none):
