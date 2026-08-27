@@ -20,6 +20,13 @@ import {
 } from "../lib/regions";
 import { surprisingCouplings, suggestedQuestions } from "../lib/firstread";
 import { kneeCount, findingKey, isDismissed, dismiss } from "../lib/findings";
+import {
+  QUESTION_FAMILIES,
+  questionStatusCounts,
+  type QuestionStatus,
+  type QuestionTab,
+} from "../lib/questions";
+import { useUiMessages } from "../lib/i18n";
 import { AddToPromptButton } from "./PromptBasket";
 import type { RegionsPayload } from "../lib/types";
 
@@ -30,6 +37,7 @@ interface OverviewTabProps {
   onOpenModules: () => void;
   onOpenFlows: () => void;
   onOpenDashboard: () => void;
+  onOpenTab: (tab: QuestionTab) => void;
 }
 
 interface HotspotRow {
@@ -106,6 +114,142 @@ function Slot({
   );
 }
 
+/* Status glyph for the question index — the shape carries the state
+ * (filled / half / hollow), the color is redundant with the word chip,
+ * never color-only. */
+function StatusGlyph({ status }: { status: QuestionStatus }) {
+  const tone =
+    status === "answers"
+      ? "text-good"
+      : status === "partial"
+        ? "text-warn"
+        : "text-foreground/40";
+  return (
+    <svg
+      width="10"
+      height="10"
+      viewBox="0 0 10 10"
+      className={`shrink-0 ${tone}`}
+      aria-hidden="true"
+    >
+      {status === "answers" ? (
+        <circle cx="5" cy="5" r="4" fill="currentColor" />
+      ) : status === "partial" ? (
+        <>
+          <circle cx="5" cy="5" r="3.5" fill="none" stroke="currentColor" />
+          <path d="M5 1.5 A3.5 3.5 0 0 0 5 8.5 Z" fill="currentColor" />
+        </>
+      ) : (
+        <circle cx="5" cy="5" r="3.5" fill="none" stroke="currentColor" />
+      )}
+    </svg>
+  );
+}
+
+/* "What can Atlas answer?" — the 18 developer-question families as an
+ * honest scorecard: answered, partially answered, or not answered yet.
+ * Collapsed by default; the header summary is derived from the data. */
+function QuestionIndex({ onOpenTab }: { onOpenTab: (tab: QuestionTab) => void }) {
+  const t = useUiMessages();
+  const [open, setOpen] = useState(() => {
+    try {
+      return localStorage.getItem("cbm-questions-open") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggle = () => {
+    setOpen((value) => {
+      try {
+        localStorage.setItem("cbm-questions-open", value ? "0" : "1");
+      } catch {
+        /* ignore */
+      }
+      return !value;
+    });
+  };
+  const counts = questionStatusCounts(QUESTION_FAMILIES);
+  const statusWord: Record<QuestionStatus, string> = {
+    answers: t.questions.answers,
+    partial: t.questions.partial,
+    lacks: t.questions.lacks,
+  };
+  const statusTone: Record<QuestionStatus, string> = {
+    answers: "text-good/90",
+    partial: "text-warn/90",
+    lacks: "text-foreground/40",
+  };
+
+  return (
+    <div className="bg-card border border-border/50 rounded-md mb-5">
+      <button
+        onClick={toggle}
+        className="flex items-center gap-3 w-full text-left px-4 py-2.5 group"
+      >
+        <p className="text-[12px] uppercase tracking-widest text-foreground/40 group-hover:text-foreground/60 transition-colors">
+          {t.questions.title}
+        </p>
+        <span className="text-[12px] text-foreground/35 tabular-nums truncate ml-auto shrink-1">
+          {t.questions.summary(counts.answers, counts.partial, counts.lacks)}
+        </span>
+        <span className="text-[11px] text-foreground/40 shrink-0">
+          {open ? "▾" : "▸"}
+        </span>
+      </button>
+      {open && (
+        <div className="border-t border-border/30 py-1">
+          {QUESTION_FAMILIES.map((family) => {
+            const tab = family.tab;
+            const inner = (clickable: boolean) => (
+              <>
+                <span className="flex items-center gap-1.5 w-[76px] shrink-0 pt-[2px]">
+                  <StatusGlyph status={family.status} />
+                  <span className={`text-[11px] ${statusTone[family.status]}`}>
+                    {statusWord[family.status]}
+                  </span>
+                </span>
+                <span className="flex-1 min-w-0">
+                  <span
+                    className={`block text-[13px] text-foreground/85 ${
+                      clickable
+                        ? "group-hover/question:text-primary transition-colors"
+                        : ""
+                    }`}
+                  >
+                    {family.question}
+                  </span>
+                  {(family.hint || family.gap) && (
+                    <span className="block text-[12px] text-foreground/40 mt-0.5">
+                      {family.hint}
+                      {family.hint && family.gap && " · "}
+                      {family.gap && `${t.questions.missingPrefix} ${family.gap}`}
+                    </span>
+                  )}
+                </span>
+              </>
+            );
+            /* Only rows with a destination are buttons — no fake affordance;
+             * for the rest the hint carries the "how". */
+            return tab ? (
+              <button
+                key={family.id}
+                onClick={() => onOpenTab(tab)}
+                className="flex items-start gap-3 w-full text-left px-4 py-2 hover:bg-surface-3 transition-colors group/question"
+              >
+                {inner(true)}
+              </button>
+            ) : (
+              <div key={family.id} className="flex items-start gap-3 px-4 py-2">
+                {inner(false)}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* All displayed regions' cohesion values as an inline dot strip — a bare
  * value invites misreading (0.4 can be the tightest region on the map or
  * the loosest). This region's dot is emphasized; the tick is the median. */
@@ -158,6 +302,7 @@ export function OverviewTab({
   onOpenModules,
   onOpenFlows,
   onOpenDashboard,
+  onOpenTab,
 }: OverviewTabProps) {
   const [arch, setArch] = useState<ArchitectureJson | null>(null);
   const [regions, setRegions] = useState<RegionsPayload | null>(null);
@@ -308,6 +453,9 @@ export function OverviewTab({
             Handout ↗
           </a>
         </div>
+
+        {/* The scorecard: what can Atlas answer? */}
+        <QuestionIndex onOpenTab={onOpenTab} />
 
         {/* The four slots: is anything wrong? */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">

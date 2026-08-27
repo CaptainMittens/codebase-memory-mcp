@@ -80,6 +80,15 @@ export const messages = {
       close: "Close",
       clickForMore: "click for more →",
     },
+    questions: {
+      title: "What can Atlas answer?",
+      answers: "answers",
+      partial: "partial",
+      lacks: "not yet",
+      missingPrefix: "missing:",
+      summary: (answers: number, partial: number, lacks: number) =>
+        `${answers} answered · ${partial} partial · ${lacks} not yet`,
+    },
     control: {
       panel: "Control Panel",
       totalCpu: "Total CPU",
@@ -170,6 +179,15 @@ export const messages = {
       back: "返回",
       close: "关闭",
       clickForMore: "点击查看更多 →",
+    },
+    questions: {
+      title: "Atlas 能回答什么？",
+      answers: "已回答",
+      partial: "部分",
+      lacks: "暂缺",
+      missingPrefix: "缺少:",
+      summary: (answers: number, partial: number, lacks: number) =>
+        `${answers} 已回答 · ${partial} 部分 · ${lacks} 暂缺`,
     },
     control: {
       panel: "控制面板",

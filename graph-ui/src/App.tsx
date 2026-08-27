@@ -270,6 +270,7 @@ export function App() {
               onOpenModules={() => navigate({ tab: "modules" })}
               onOpenFlows={() => navigate({ tab: "flows" })}
               onOpenDashboard={() => navigate({ tab: "dashboard" })}
+              onOpenTab={(tab) => navigate({ tab })}
             />
           ) : activeTab === "modules" && selectedProject ? (
             <ModulesTab
