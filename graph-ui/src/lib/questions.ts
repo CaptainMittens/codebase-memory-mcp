@@ -43,9 +43,9 @@ export const QUESTION_FAMILIES: QuestionFamily[] = [
   {
     id: "F3",
     question: "If I change this, what breaks — and what must I retest?",
-    status: "partial",
+    status: "answers",
     tab: "changes",
-    gap: "Blast radius covers the uncommitted diff only; hypothetical per-symbol impact and tests-to-run are planned",
+    hint: "Changes tab for the current diff; every symbol page answers it hypothetically under 'If you change this'",
   },
   {
     id: "F4",

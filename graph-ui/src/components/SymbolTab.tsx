@@ -12,6 +12,7 @@ import {
   type SymbolBundle,
   type SymbolRef,
 } from "../lib/atlas";
+import { fetchImpact, impactSentence, type ImpactPayload } from "../lib/impact";
 import { AddToPromptButton } from "./PromptBasket";
 import { MetricChip } from "./MetricChip";
 import { TriggerTree } from "./TriggerTree";
@@ -152,6 +153,8 @@ export function SymbolTab({
   const [code, setCode] = useState<string | null>(null);
   const [codeLoading, setCodeLoading] = useState(false);
   const [repoInfo, setRepoInfo] = useState<RepoInfo | null>(null);
+  const [impact, setImpact] = useState<ImpactPayload | null>(null);
+  const [impactError, setImpactError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -183,6 +186,22 @@ export function SymbolTab({
     };
   }, [project]);
 
+  useEffect(() => {
+    let cancelled = false;
+    setImpact(null);
+    setImpactError(null);
+    fetchImpact(project, symbolRef)
+      .then((payload) => {
+        if (!cancelled) setImpact(payload);
+      })
+      .catch((err) => {
+        if (!cancelled) setImpactError(err instanceof Error ? err.message : "failed");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [project, symbolRef.id, symbolRef.qn]);
+
   if (error) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -209,6 +228,26 @@ export function SymbolTab({
   const editorUrl =
     repoInfo?.root_path && node.file_path
       ? `vscode://file/${repoInfo.root_path}/${node.file_path}${node.start_line ? `:${node.start_line}` : ""}`
+      : null;
+
+  /* The cumulative hop tiers: "12 direct callers · 48 within 2 hops ·
+   * 210 total within 10" — only the tiers this symbol actually has. */
+  const impactDirect = impact?.by_distance[0] ?? 0;
+  const impactTiers =
+    impact && impact.reachable > 0
+      ? [
+          `${impactDirect.toLocaleString("en-US")} direct caller${impactDirect === 1 ? "" : "s"}`,
+          ...(impact.max_distance >= 2
+            ? [
+                `${(impactDirect + (impact.by_distance[1] ?? 0)).toLocaleString("en-US")} within 2 hops`,
+              ]
+            : []),
+          ...(impact.max_distance > 2
+            ? [
+                `${impact.reachable.toLocaleString("en-US")} total within ${impact.max_depth}`,
+              ]
+            : []),
+        ].join(" · ")
       : null;
 
   const loadCode = async () => {
@@ -354,6 +393,94 @@ export function SymbolTab({
             onOpenWiki={onOpenWiki}
           />
         </div>
+
+        {/* If you change this — reverse reachability: the hypothetical blast
+         * radius of an edit here, and the tests to run first. Non-callables
+         * (File nodes, …) have no radius; the section stays hidden. */}
+        {impactError && impactError !== "symbol is not an indexed callable" && (
+          <p className="text-[13px] text-foreground/40 mb-4">
+            Impact unavailable: {impactError}
+          </p>
+        )}
+        {impact && (
+          <div className="bg-card border border-border/40 rounded-md p-4 mb-4">
+            <div className="flex items-baseline gap-2 mb-2">
+              <p className="text-[12px] uppercase tracking-widest text-foreground/45">
+                If you change this
+              </p>
+              <span className="text-[12px] text-foreground/40">
+                <MetricChip slug="blast-radius" onOpen={onOpenWiki} />
+              </span>
+            </div>
+            <p className="text-[14px] text-foreground/85">{impactSentence(impact)}</p>
+            {impactTiers && (
+              <p className="text-[12px] text-foreground/40 mt-1">{impactTiers}</p>
+            )}
+            {impact.regions.length > 0 && (
+              <div className="flex flex-wrap items-baseline gap-1.5 mt-2">
+                {impact.regions.map((region) => (
+                  <span
+                    key={region.name}
+                    className="px-2 py-0.5 rounded-md text-[12px] bg-surface-3 text-foreground/60"
+                  >
+                    {region.name} ({region.count.toLocaleString("en-US")})
+                  </span>
+                ))}
+                {impact.regions_more > 0 && (
+                  <span className="text-[12px] text-foreground/40">
+                    +{impact.regions_more.toLocaleString("en-US")} more
+                  </span>
+                )}
+                {impact.unregioned > 0 && (
+                  <span className="text-[12px] text-foreground/40">
+                    +{impact.unregioned.toLocaleString("en-US")} unmapped
+                  </span>
+                )}
+              </div>
+            )}
+            {impact.tests.count > 0 ? (
+              <div className="mt-3">
+                <p className="text-[12px] uppercase tracking-widest text-foreground/45 mb-1">
+                  Run these first
+                </p>
+                <div className="space-y-px">
+                  {impact.tests.nearest.map((test) => (
+                    <button
+                      key={test.id}
+                      onClick={() => onOpenSymbol({ id: test.id })}
+                      className="flex items-center gap-2 w-full text-left px-2 py-[3px] rounded-md hover:bg-surface-3 transition-colors group"
+                    >
+                      <span className="text-[13px] font-mono text-foreground/65 group-hover:text-primary truncate transition-colors">
+                        {test.name}
+                      </span>
+                      <span className="text-[12px] text-foreground/35 truncate">
+                        {test.file_path}
+                      </span>
+                      <span className="text-[12px] tabular-nums text-foreground/40 ml-auto shrink-0">
+                        d {test.distance}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[12px] text-foreground/40 mt-1">
+                  {impact.tests.count.toLocaleString("en-US")} test
+                  {impact.tests.count === 1 ? " reaches" : "s reach"} this symbol
+                  {impact.tests.nearest.length < impact.tests.count &&
+                    ` — showing ${impact.tests.nearest.length} of ${impact.tests.count.toLocaleString("en-US")}`}
+                </p>
+              </div>
+            ) : (
+              <p className="text-[13px] text-amber-300/80 mt-3">
+                ⚠ No test reaches this symbol — nothing will catch a regression
+                here automatically.
+              </p>
+            )}
+            <p className="text-[12px] text-foreground/35 mt-3">
+              Static CALLS edges only — dynamic dispatch and reflection are not
+              counted; treat the count as a floor.
+            </p>
+          </div>
+        )}
 
         {/* Why & who — the rationale proxy and the knowledge map. */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">

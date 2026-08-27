@@ -273,8 +273,8 @@ export const WIKI_ENTRIES: WikiEntry[] = [
       "Everything that can reach the code you changed — what could notice, grouped by region.",
     why: "Most regressions ship because a change was tested where it was made, not where it is felt. The blast list is what to retest before pushing.",
     notCovered:
-      "Computed on the uncommitted diff today; hypothetical per-symbol impact and tests-to-run are planned. Confidence caveats apply along every path.",
-    appearsIn: ["Changes"],
+      "Static CALLS edges only — dynamic dispatch, reflection and code generation are invisible here, so every count is a floor. The walk is capped in depth and volume; caps are always stated.",
+    appearsIn: ["Changes", "Symbol — If you change this"],
     seeAlso: ["fan", "confidence"],
   },
   {

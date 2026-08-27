@@ -1929,6 +1929,28 @@ static void handle_atlas_trace(cbm_http_conn_t *c, const cbm_http_req_t *req) {
     atlas_reply_json(c, json, 500, "{\"error\":\"trace failed\"}");
 }
 
+/* GET /api/impact?project=X&node=QN|#id — reverse reachability: who could
+ * notice a change to this symbol, at what distance, in which regions, and
+ * which test functions reach it. */
+static void handle_atlas_impact(cbm_http_conn_t *c, const cbm_http_req_t *req) {
+    char project[256] = {0};
+    cbm_store_t *store = atlas_open_project(c, req, project, sizeof(project));
+    if (!store)
+        return;
+    char node_str[1024] = {0};
+    cbm_http_query_param(req->query, "node", node_str, (int)sizeof(node_str));
+    if (!node_str[0]) {
+        cbm_store_close(store);
+        cbm_http_replyf(c, 400, g_cors_json, "{\"error\":\"missing node parameter\"}");
+        return;
+    }
+    int64_t node_id = node_str[0] == '#' ? strtoll(node_str + 1, NULL, 10) : -1;
+    char *json =
+        cbm_atlas_impact_json(store, project, node_id, node_id < 0 ? node_str : NULL);
+    cbm_store_close(store);
+    atlas_reply_json(c, json, 500, "{\"error\":\"impact failed\"}");
+}
+
 /* Attach guard chains to a flow-detail JSON (guards=1): each step's call
  * site is (steps[step.parent] → step); the guard chain is extracted in the
  * parent's file. Best-effort, same contract as the trace variant. */
@@ -2448,6 +2470,12 @@ static void dispatch_request(cbm_http_server_t *srv, cbm_http_conn_t *c,
     /* GET /api/trace → CBM Atlas A→B reachability */
     if (is_get && cbm_http_path_match(req->path, "/api/trace*")) {
         handle_atlas_trace(c, req);
+        return;
+    }
+
+    /* GET /api/impact → CBM Atlas reverse reachability from one symbol */
+    if (is_get && cbm_http_path_match(req->path, "/api/impact*")) {
+        handle_atlas_impact(c, req);
         return;
     }
 

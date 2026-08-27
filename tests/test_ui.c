@@ -1417,6 +1417,115 @@ TEST(atlas_trace_reachability_calls_and_data) {
     PASS();
 }
 
+/* Impact = reverse reachability with distances, region rollup, and the
+ * test functions that reach the symbol. On the two-community fixture,
+ * everything can reach beta_one except beta_one itself: alpha_one and
+ * beta_three directly, alpha_three and beta_two at two hops, alpha_two
+ * at three. */
+TEST(atlas_impact_reverse_reachability_and_tests) {
+    cbm_layout_regions_cache_clear();
+    cbm_atlas_flows_cache_clear();
+    cbm_store_t *store = regions_fixture();
+    ASSERT_NOT_NULL(store);
+
+    char *json = cbm_atlas_impact_json(store, "regions-test", -1, "regions-test::beta_one");
+    ASSERT_NOT_NULL(json);
+    yyjson_doc *doc = yyjson_read(json, strlen(json), 0);
+    ASSERT_NOT_NULL(doc);
+    yyjson_val *root = yyjson_doc_get_root(doc);
+    ASSERT_EQ((int)yyjson_get_int(yyjson_obj_get(root, "reachable")), 5);
+    ASSERT_EQ((int)yyjson_get_int(yyjson_obj_get(root, "max_distance")), 3);
+    ASSERT_FALSE(yyjson_get_bool(yyjson_obj_get(root, "truncated")));
+    yyjson_val *by_d = yyjson_obj_get(root, "by_distance");
+    ASSERT_EQ((int)yyjson_arr_size(by_d), 3);
+    ASSERT_EQ((int)yyjson_get_int(yyjson_arr_get(by_d, 0)), 2);
+    ASSERT_EQ((int)yyjson_get_int(yyjson_arr_get(by_d, 1)), 2);
+    ASSERT_EQ((int)yyjson_get_int(yyjson_arr_get(by_d, 2)), 1);
+    /* The region split plus the unregioned tail must account for every
+     * reacher; with both communities regioned, alpha's three outrank
+     * beta's two. */
+    yyjson_val *regions = yyjson_obj_get(root, "regions");
+    int region_sum = 0;
+    size_t ri, rmax;
+    yyjson_val *rv;
+    yyjson_arr_foreach(regions, ri, rmax, rv) {
+        ASSERT_NOT_NULL(yyjson_get_str(yyjson_obj_get(rv, "name")));
+        region_sum += (int)yyjson_get_int(yyjson_obj_get(rv, "count"));
+    }
+    ASSERT_EQ(region_sum + (int)yyjson_get_int(yyjson_obj_get(root, "unregioned")), 5);
+    if (yyjson_arr_size(regions) == 2)
+        ASSERT_EQ((int)yyjson_get_int(yyjson_obj_get(yyjson_arr_get(regions, 0), "count")), 3);
+    yyjson_val *tests = yyjson_obj_get(root, "tests");
+    ASSERT_EQ((int)yyjson_get_int(yyjson_obj_get(tests, "count")), 0);
+    yyjson_doc_free(doc);
+    free(json);
+
+    /* A test function calling into the beta cycle is reported as a test
+     * to run, with its call distance. */
+    cbm_node_t tnode;
+    memset(&tnode, 0, sizeof(tnode));
+    tnode.project = "regions-test";
+    tnode.label = "Function";
+    tnode.name = "test_beta";
+    tnode.qualified_name = "regions-test::test_beta";
+    tnode.file_path = "tests/test_beta.c";
+    tnode.start_line = 1;
+    tnode.end_line = 5;
+    int64_t test_id = cbm_store_upsert_node(store, &tnode);
+    ASSERT_GT(test_id, 0);
+    int64_t beta_two_id = -1;
+    {
+        cbm_search_params_t params;
+        memset(&params, 0, sizeof(params));
+        params.project = "regions-test";
+        params.qn_pattern = "regions-test::beta_two";
+        params.limit = 1;
+        params.min_degree = -1;
+        params.max_degree = -1;
+        cbm_search_output_t out;
+        memset(&out, 0, sizeof(out));
+        if (cbm_store_search(store, &params, &out) == CBM_STORE_OK && out.count == 1)
+            beta_two_id = out.results[0].node.id;
+        cbm_store_search_free(&out);
+    }
+    ASSERT_GT(beta_two_id, 0);
+    cbm_edge_t tedge;
+    memset(&tedge, 0, sizeof(tedge));
+    tedge.project = "regions-test";
+    tedge.source_id = test_id;
+    tedge.target_id = beta_two_id;
+    tedge.type = "CALLS";
+    ASSERT_GT(cbm_store_insert_edge(store, &tedge), 0);
+    cbm_atlas_flows_cache_clear();
+
+    json = cbm_atlas_impact_json(store, "regions-test", -1, "regions-test::beta_one");
+    ASSERT_NOT_NULL(json);
+    doc = yyjson_read(json, strlen(json), 0);
+    root = yyjson_doc_get_root(doc);
+    ASSERT_EQ((int)yyjson_get_int(yyjson_obj_get(root, "reachable")), 6);
+    tests = yyjson_obj_get(root, "tests");
+    ASSERT_EQ((int)yyjson_get_int(yyjson_obj_get(tests, "count")), 1);
+    yyjson_val *tnear = yyjson_obj_get(tests, "nearest");
+    ASSERT_EQ((int)yyjson_arr_size(tnear), 1);
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(yyjson_arr_get(tnear, 0), "name")), "test_beta");
+    ASSERT_EQ((int)yyjson_get_int(yyjson_obj_get(yyjson_arr_get(tnear, 0), "distance")), 3);
+    yyjson_doc_free(doc);
+    free(json);
+
+    /* Unknown symbol answers with an error, not a crash. */
+    json = cbm_atlas_impact_json(store, "regions-test", -1, "regions-test::nope");
+    ASSERT_NOT_NULL(json);
+    doc = yyjson_read(json, strlen(json), 0);
+    ASSERT_NOT_NULL(yyjson_obj_get(yyjson_doc_get_root(doc), "error"));
+    yyjson_doc_free(doc);
+    free(json);
+
+    cbm_store_close(store);
+    cbm_atlas_flows_cache_clear();
+    cbm_layout_regions_cache_clear();
+    PASS();
+}
+
 TEST(atlas_symbol_data_flows_and_history_shape) {
     cbm_layout_regions_cache_clear();
     cbm_atlas_metrics_cache_clear();
@@ -1888,6 +1997,7 @@ SUITE(ui) {
     RUN_TEST(atlas_flows_walk_and_rank);
     RUN_TEST(atlas_metrics_totals_and_certainty);
     RUN_TEST(atlas_trace_reachability_calls_and_data);
+    RUN_TEST(atlas_impact_reverse_reachability_and_tests);
     RUN_TEST(atlas_symbol_data_flows_and_history_shape);
     RUN_TEST(atlas_scent_buckets_matches_by_region);
     RUN_TEST(atlas_bridges_rank_by_region_reach);

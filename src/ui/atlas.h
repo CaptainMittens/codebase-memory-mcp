@@ -72,6 +72,12 @@ char *cbm_atlas_scent_json(cbm_store_t *store, const char *project, const char *
 char *cbm_atlas_trace_json(cbm_store_t *store, const char *project, int64_t from_id,
                            const char *from_qn, int64_t to_id, const char *to_qn, const char *mode);
 
+/* Reverse reachability from one symbol: who could notice a change here,
+ * at what call distance, in which regions — and which test functions
+ * reach it (the tests to run first). id or qualified name. */
+char *cbm_atlas_impact_json(cbm_store_t *store, const char *project, int64_t node_id,
+                            const char *node_qn);
+
 /* ── Region lookups (layout_regions.c) ────────────────────────────
  * Cache-backed; computing on first use. name_out (optional) receives a
  * heap copy the caller frees. Returns region id or -1. */

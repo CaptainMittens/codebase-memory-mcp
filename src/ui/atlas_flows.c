@@ -67,6 +67,10 @@ typedef struct {
     flow_node_t *nodes;
     int node_count;
     int32_t *out_edges; /* callee node indices, grouped by caller (CALLS) */
+    /* Reverse CALLS adjacency: caller indices grouped by callee — the
+     * impact question ("who can reach this?") walks edges backwards. */
+    int32_t *in_first; /* per node: index into in_edges (in_count on the node) */
+    int32_t *in_edges;
     /* DATA_FLOWS adjacency (same node set, its own CSR). */
     int32_t *data_first; /* per node: index into data_edges, -1 none */
     int32_t *data_count;
@@ -97,6 +101,8 @@ static void flow_cache_clear_locked(void) {
     }
     free(g_flow_cache.nodes);
     free(g_flow_cache.out_edges);
+    free(g_flow_cache.in_first);
+    free(g_flow_cache.in_edges);
     free(g_flow_cache.data_first);
     free(g_flow_cache.data_count);
     free(g_flow_cache.data_edges);
@@ -467,6 +473,26 @@ static int fl_rebuild_locked(cbm_store_t *store, const char *project, const char
             out_edges[nodes[src[e]].first_out + cursor[src[e]]++] = dst[e];
     }
     free(cursor);
+
+    /* Reverse CSR over the same edge list (in_count already tallied). */
+    g_flow_cache.in_first = malloc((size_t)n * sizeof(int32_t));
+    g_flow_cache.in_edges = malloc(ne > 0 ? (size_t)ne * sizeof(int32_t) : sizeof(int32_t));
+    int32_t *rcursor = calloc((size_t)n, sizeof(int32_t));
+    if (g_flow_cache.in_first && g_flow_cache.in_edges && rcursor) {
+        int32_t offset = 0;
+        for (int i = 0; i < n; i++) {
+            g_flow_cache.in_first[i] = offset;
+            offset += nodes[i].in_count;
+        }
+        for (int e = 0; e < ne; e++)
+            g_flow_cache.in_edges[g_flow_cache.in_first[dst[e]] + rcursor[dst[e]]++] = src[e];
+    } else {
+        free(g_flow_cache.in_first);
+        free(g_flow_cache.in_edges);
+        g_flow_cache.in_first = NULL;
+        g_flow_cache.in_edges = NULL;
+    }
+    free(rcursor);
     free(src);
     free(dst);
     if (!out_edges) {
@@ -475,6 +501,10 @@ static int fl_rebuild_locked(cbm_store_t *store, const char *project, const char
             free(nodes[i].file_path);
         }
         free(nodes);
+        free(g_flow_cache.in_first);
+        free(g_flow_cache.in_edges);
+        g_flow_cache.in_first = NULL;
+        g_flow_cache.in_edges = NULL;
         return -1;
     }
 
@@ -829,6 +859,219 @@ char *cbm_atlas_trace_json(cbm_store_t *store, const char *project, int64_t from
     }
     free(parent);
     free(depth);
+    free(queue);
+    pthread_mutex_unlock(&g_flow_mu);
+    char *json = yyjson_mut_write(doc, 0, NULL);
+    yyjson_mut_doc_free(doc);
+    return json;
+}
+
+/* ── Impact: who can reach this symbol? ───────────────────────────
+ *
+ * The change-impact question ("if I change this, what breaks — and what
+ * must I retest?") is a reverse-reachability walk over CALLS edges:
+ * every symbol that can reach the target could notice a change to it.
+ * Distance-labelled BFS, honest caps, regions aggregated for the map
+ * view, and test-file reachers reported separately — those are the
+ * tests to run first. Unresolved dynamic calls are not in the edge set,
+ * so the count is a floor, never a ceiling; the UI says so. */
+
+enum {
+    IMPACT_MAX_DEPTH = 10,
+    IMPACT_VISIT_CAP = 50000,
+    IMPACT_NEAREST_CAP = 30,
+    IMPACT_TESTS_CAP = 20,
+    IMPACT_REGIONS_CAP = 64,
+    IMPACT_REGIONS_SHOWN = 12,
+};
+
+typedef struct {
+    char *name; /* owned */
+    int count;
+} impact_region_t;
+
+static void impact_add_node(yyjson_mut_doc *doc, yyjson_mut_val *arr, const flow_node_t *node,
+                            int distance) {
+    yyjson_mut_val *obj = yyjson_mut_obj(doc);
+    yyjson_mut_obj_add_int(doc, obj, "id", node->id);
+    yyjson_mut_obj_add_strcpy(doc, obj, "name", node->name ? node->name : "?");
+    if (node->file_path)
+        yyjson_mut_obj_add_strcpy(doc, obj, "file_path", node->file_path);
+    yyjson_mut_obj_add_int(doc, obj, "distance", distance);
+    yyjson_mut_arr_append(arr, obj);
+}
+
+char *cbm_atlas_impact_json(cbm_store_t *store, const char *project, int64_t node_id,
+                            const char *node_qn) {
+    if (!store || !project)
+        return NULL;
+    pthread_mutex_lock(&g_flow_mu);
+    if (fl_ensure_locked(store, project) != 0 || g_flow_cache.node_count == 0 ||
+        !g_flow_cache.in_first || !g_flow_cache.in_edges) {
+        pthread_mutex_unlock(&g_flow_mu);
+        return NULL;
+    }
+    struct sqlite3 *db = cbm_store_get_db(store);
+    int32_t origin = fl_resolve_endpoint(db, project, node_id, node_qn);
+
+    yyjson_mut_doc *doc = yyjson_mut_doc_new(NULL);
+    yyjson_mut_val *root = yyjson_mut_obj(doc);
+    yyjson_mut_doc_set_root(doc, root);
+    yyjson_mut_obj_add_str(doc, root, "basis", "CALLS");
+    yyjson_mut_obj_add_int(doc, root, "max_depth", IMPACT_MAX_DEPTH);
+    yyjson_mut_obj_add_int(doc, root, "visit_cap", IMPACT_VISIT_CAP);
+    yyjson_mut_obj_add_int(doc, root, "callable_total", g_flow_cache.callable_total);
+    if (origin < 0) {
+        yyjson_mut_obj_add_str(doc, root, "error", "symbol is not an indexed callable");
+        pthread_mutex_unlock(&g_flow_mu);
+        char *json = yyjson_mut_write(doc, 0, NULL);
+        yyjson_mut_doc_free(doc);
+        return json;
+    }
+
+    const int n = g_flow_cache.node_count;
+    const flow_node_t *nodes = g_flow_cache.nodes;
+    yyjson_mut_val *node_obj = yyjson_mut_obj(doc);
+    yyjson_mut_obj_add_int(doc, node_obj, "id", nodes[origin].id);
+    yyjson_mut_obj_add_strcpy(doc, node_obj, "name",
+                              nodes[origin].name ? nodes[origin].name : "?");
+    if (nodes[origin].file_path)
+        yyjson_mut_obj_add_strcpy(doc, node_obj, "file_path", nodes[origin].file_path);
+    yyjson_mut_obj_add_val(doc, root, "node", node_obj);
+
+    uint8_t *dist = calloc((size_t)n, sizeof(uint8_t));
+    uint8_t *seen = calloc((size_t)n, sizeof(uint8_t));
+    int32_t *queue = malloc((size_t)n * sizeof(int32_t));
+    yyjson_mut_val *nearest = yyjson_mut_arr(doc);
+    yyjson_mut_val *tests_nearest = yyjson_mut_arr(doc);
+    impact_region_t regions[IMPACT_REGIONS_CAP];
+    int region_count = 0;
+    long long by_distance[IMPACT_MAX_DEPTH] = {0};
+    long long reachable = 0, test_count = 0, unregioned = 0;
+    int nearest_emitted = 0, tests_emitted = 0, max_dist = 0;
+    bool truncated = false, depth_capped = false;
+    /* file → region-name cache: keys borrow the cache's file_path (stable
+     * under g_flow_mu); values are region index + 2 (1 = no region). */
+    CBMHashTable *file_region = cbm_ht_create(1024);
+
+    if (dist && seen && queue && file_region) {
+        int head = 0, tail = 0;
+        queue[tail++] = origin;
+        seen[origin] = 1;
+        long long visited = 0;
+        while (head < tail) {
+            const int32_t node = queue[head++];
+            if (dist[node] >= IMPACT_MAX_DEPTH) {
+                if (nodes[node].in_count > 0)
+                    depth_capped = true;
+                continue;
+            }
+            const int32_t first = g_flow_cache.in_first[node];
+            for (int e = 0; e < nodes[node].in_count; e++) {
+                const int32_t caller = g_flow_cache.in_edges[first + e];
+                if (seen[caller])
+                    continue;
+                if (visited >= IMPACT_VISIT_CAP) {
+                    truncated = true;
+                    break;
+                }
+                seen[caller] = 1;
+                dist[caller] = (uint8_t)(dist[node] + 1);
+                visited++;
+                reachable++;
+                by_distance[dist[caller] - 1]++;
+                if (dist[caller] > max_dist)
+                    max_dist = dist[caller];
+                const char *fp = nodes[caller].file_path;
+                const bool is_test = fp && cbm_is_test_file_path(fp);
+                if (is_test) {
+                    test_count++;
+                    if (tests_emitted < IMPACT_TESTS_CAP) {
+                        impact_add_node(doc, tests_nearest, &nodes[caller], dist[caller]);
+                        tests_emitted++;
+                    }
+                } else {
+                    if (nearest_emitted < IMPACT_NEAREST_CAP) {
+                        impact_add_node(doc, nearest, &nodes[caller], dist[caller]);
+                        nearest_emitted++;
+                    }
+                    /* Region rollup (non-test reachers only). */
+                    int ridx = -1;
+                    if (fp) {
+                        void *hit = cbm_ht_get(file_region, fp);
+                        if (hit) {
+                            ridx = (int)(intptr_t)hit - 2;
+                        } else {
+                            char *rname = NULL;
+                            int rid = cbm_layout_region_for_file(store, project, fp, &rname);
+                            if (rid >= 0 && rname) {
+                                for (int r = 0; r < region_count; r++)
+                                    if (strcmp(regions[r].name, rname) == 0) {
+                                        ridx = r;
+                                        break;
+                                    }
+                                if (ridx < 0 && region_count < IMPACT_REGIONS_CAP) {
+                                    regions[region_count].name = rname;
+                                    regions[region_count].count = 0;
+                                    ridx = region_count++;
+                                    rname = NULL;
+                                }
+                            }
+                            free(rname);
+                            cbm_ht_set(file_region, fp, (void *)(intptr_t)(ridx + 2));
+                        }
+                    }
+                    if (ridx >= 0)
+                        regions[ridx].count++;
+                    else
+                        unregioned++;
+                }
+                queue[tail++] = caller;
+            }
+            if (truncated)
+                break;
+        }
+    }
+
+    yyjson_mut_obj_add_int(doc, root, "reachable", reachable);
+    yyjson_mut_obj_add_int(doc, root, "max_distance", max_dist);
+    yyjson_mut_obj_add_bool(doc, root, "truncated", truncated);
+    yyjson_mut_obj_add_bool(doc, root, "depth_capped", depth_capped);
+    yyjson_mut_val *by_d = yyjson_mut_arr(doc);
+    for (int d = 0; d < max_dist; d++)
+        yyjson_mut_arr_add_int(doc, by_d, by_distance[d]);
+    yyjson_mut_obj_add_val(doc, root, "by_distance", by_d);
+
+    /* Regions, largest first, honest tail. */
+    for (int a = 0; a < region_count; a++)
+        for (int b = a + 1; b < region_count; b++)
+            if (regions[b].count > regions[a].count) {
+                impact_region_t swap = regions[a];
+                regions[a] = regions[b];
+                regions[b] = swap;
+            }
+    yyjson_mut_val *rarr = yyjson_mut_arr(doc);
+    const int shown = region_count < IMPACT_REGIONS_SHOWN ? region_count : IMPACT_REGIONS_SHOWN;
+    for (int r = 0; r < shown; r++) {
+        yyjson_mut_val *obj = yyjson_mut_obj(doc);
+        yyjson_mut_obj_add_strcpy(doc, obj, "name", regions[r].name);
+        yyjson_mut_obj_add_int(doc, obj, "count", regions[r].count);
+        yyjson_mut_arr_append(rarr, obj);
+    }
+    yyjson_mut_obj_add_val(doc, root, "regions", rarr);
+    yyjson_mut_obj_add_int(doc, root, "regions_more", region_count - shown);
+    yyjson_mut_obj_add_int(doc, root, "unregioned", unregioned);
+    yyjson_mut_obj_add_val(doc, root, "nearest", nearest);
+    yyjson_mut_val *tests_obj = yyjson_mut_obj(doc);
+    yyjson_mut_obj_add_int(doc, tests_obj, "count", test_count);
+    yyjson_mut_obj_add_val(doc, tests_obj, "nearest", tests_nearest);
+    yyjson_mut_obj_add_val(doc, root, "tests", tests_obj);
+
+    for (int r = 0; r < region_count; r++)
+        free(regions[r].name);
+    cbm_ht_free(file_region);
+    free(dist);
+    free(seen);
     free(queue);
     pthread_mutex_unlock(&g_flow_mu);
     char *json = yyjson_mut_write(doc, 0, NULL);
