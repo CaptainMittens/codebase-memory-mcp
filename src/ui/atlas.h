@@ -83,6 +83,12 @@ char *cbm_atlas_trace_json(cbm_store_t *store, const char *project, int64_t from
 char *cbm_atlas_impact_json(cbm_store_t *store, const char *project, int64_t node_id,
                             const char *node_qn);
 
+/* Attach runtime observation (observed_calls) to a trace ("path") or
+ * flow-detail ("steps") JSON: observed hops gain {count, label,
+ * last_seen}; unobserved hops stay merely possible. Takes ownership of
+ * `json` and returns it (or a replacement). */
+char *cbm_atlas_attach_observed(cbm_store_t *store, const char *project, char *json);
+
 /* ── Region lookups (layout_regions.c) ────────────────────────────
  * Cache-backed; computing on first use. name_out (optional) receives a
  * heap copy the caller frees. Returns region id or -1. */

@@ -1845,6 +1845,91 @@ static const char *WHY_SAMPLE_C = "void beta(void);\n"
                                   "    }\n"
                                   "}\n";
 
+/* Observed runtime calls attach to trace and flow JSON by qualified name:
+ * an observed hop gains {count, label, last_seen}; an unobserved hop and
+ * absent stores add nothing (absence is data, never "dead"). */
+TEST(atlas_attach_observed_marks_hops) {
+    cbm_layout_regions_cache_clear();
+    cbm_atlas_flows_cache_clear();
+    cbm_store_t *store = regions_fixture();
+    ASSERT_NOT_NULL(store);
+
+    /* alpha_one → beta_one observed twice in one run; the rest never ran. */
+    ASSERT_EQ(cbm_store_observed_upsert_pair(store, "regions-test", "regions-test::alpha_one",
+                                             "regions-test::beta_one", "pytest", 2),
+              CBM_STORE_OK);
+
+    char *json = cbm_atlas_trace_json(store, "regions-test", -1, "regions-test::alpha_one", -1,
+                                      "regions-test::beta_three", "calls");
+    ASSERT_NOT_NULL(json);
+    json = cbm_atlas_attach_observed(store, "regions-test", json);
+    ASSERT_NOT_NULL(json);
+    yyjson_doc *doc = yyjson_read(json, strlen(json), 0);
+    ASSERT_NOT_NULL(doc);
+    yyjson_val *path = yyjson_obj_get(yyjson_doc_get_root(doc), "path");
+    ASSERT_GT((int)yyjson_arr_size(path), 2);
+    /* Hop 0→1 is alpha_one→beta_one: observed lands on the CALLEE hop. */
+    yyjson_val *hop1 = yyjson_arr_get(path, 1);
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(hop1, "name")), "beta_one");
+    yyjson_val *obs = yyjson_obj_get(hop1, "observed");
+    ASSERT_NOT_NULL(obs);
+    ASSERT_EQ((int)yyjson_get_int(yyjson_obj_get(obs, "count")), 2);
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(obs, "label")), "pytest");
+    ASSERT_NOT_NULL(yyjson_get_str(yyjson_obj_get(obs, "last_seen")));
+    /* The next hop (beta_one→beta_three) never ran: no marker. */
+    yyjson_val *hop2 = yyjson_arr_get(path, 2);
+    ASSERT_NULL(yyjson_obj_get(hop2, "observed"));
+    yyjson_doc_free(doc);
+    free(json);
+
+    /* Flow shape: steps with parent indices join the same way. */
+    int64_t alpha_one_id = -1, beta_one_id = -1;
+    const struct {
+        const char *qn;
+        int64_t *out;
+    } wanted[2] = {{"regions-test::alpha_one", &alpha_one_id},
+                   {"regions-test::beta_one", &beta_one_id}};
+    for (int i = 0; i < 2; i++) {
+        cbm_search_params_t params;
+        memset(&params, 0, sizeof(params));
+        params.project = "regions-test";
+        params.qn_pattern = wanted[i].qn;
+        params.limit = 1;
+        params.min_degree = -1;
+        params.max_degree = -1;
+        cbm_search_output_t out;
+        memset(&out, 0, sizeof(out));
+        if (cbm_store_search(store, &params, &out) == CBM_STORE_OK && out.count == 1)
+            *wanted[i].out = out.results[0].node.id;
+        cbm_store_search_free(&out);
+    }
+    ASSERT_GT(alpha_one_id, 0);
+    ASSERT_GT(beta_one_id, 0);
+    char flow_json[256];
+    snprintf(flow_json, sizeof(flow_json),
+             "{\"steps\":[{\"id\":%lld,\"parent\":-1},{\"id\":%lld,\"parent\":0}]}",
+             (long long)alpha_one_id, (long long)beta_one_id);
+    char *owned = malloc(strlen(flow_json) + 1);
+    ASSERT_NOT_NULL(owned);
+    strcpy(owned, flow_json);
+    owned = cbm_atlas_attach_observed(store, "regions-test", owned);
+    ASSERT_NOT_NULL(owned);
+    doc = yyjson_read(owned, strlen(owned), 0);
+    ASSERT_NOT_NULL(doc);
+    yyjson_val *steps = yyjson_obj_get(yyjson_doc_get_root(doc), "steps");
+    yyjson_val *step1 = yyjson_arr_get(steps, 1);
+    obs = yyjson_obj_get(step1, "observed");
+    ASSERT_NOT_NULL(obs);
+    ASSERT_EQ((int)yyjson_get_int(yyjson_obj_get(obs, "count")), 2);
+    yyjson_doc_free(doc);
+    free(owned);
+
+    cbm_store_close(store);
+    cbm_atlas_flows_cache_clear();
+    cbm_layout_regions_cache_clear();
+    PASS();
+}
+
 /* Per-symbol history: `git log -L` over the symbol's line range, with the
  * forge base URL normalized for the UI's commit/#ref links. Runs against a
  * real throwaway git repo; environments without git pass through (the
@@ -2082,6 +2167,7 @@ SUITE(ui) {
     RUN_TEST(atlas_symbol_overflow_tail_and_dataflow_presence);
     RUN_TEST(atlas_blast_buckets_files_by_region);
     RUN_TEST(atlas_handout_is_selfcontained_and_escaped);
+    RUN_TEST(atlas_attach_observed_marks_hops);
     RUN_TEST(atlas_symbol_history_log_l_and_remote);
     RUN_TEST(atlas_why_extracts_guard_chains);
 }

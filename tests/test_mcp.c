@@ -2569,6 +2569,123 @@ TEST(tool_index_status_no_project) {
     PASS();
 }
 
+/* ingest_traces stores observed runtime calls qn-keyed (reindex-proof):
+ * paths decompose into pairs, counts accumulate per run label, unresolved
+ * names are reported (not silently dropped), whole runs evict together. */
+TEST(tool_ingest_traces_stores_observed_calls) {
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    ASSERT_NOT_NULL(srv);
+    cbm_store_t *st = cbm_mcp_server_store(srv);
+    ASSERT_NOT_NULL(st);
+    const char *project = "traces-test";
+    ASSERT_EQ(cbm_store_upsert_project(st, project, "/tmp/traces-test"), CBM_STORE_OK);
+    cbm_mcp_server_set_project(srv, project);
+
+    static const char *const names[3] = {"alpha", "beta", "gamma"};
+    for (int i = 0; i < 3; i++) {
+        cbm_node_t node;
+        memset(&node, 0, sizeof(node));
+        node.project = project;
+        node.label = "Function";
+        node.name = names[i];
+        char qn[64];
+        snprintf(qn, sizeof(qn), "traces-test::%s", names[i]);
+        node.qualified_name = qn;
+        node.file_path = "src/t.c";
+        node.start_line = 1;
+        node.end_line = 3;
+        ASSERT_GT(cbm_store_upsert_node(st, &node), 0);
+    }
+
+    /* One 3-hop path, one bare pair with a count, one path with an
+     * unindexed hop (skipped, reported), one malformed 1-hop path. */
+    char *resp = cbm_mcp_handle_tool(
+        srv, "ingest_traces",
+        "{\"project\":\"traces-test\",\"label\":\"run1\",\"traces\":["
+        "{\"path\":[\"traces-test::alpha\",\"traces-test::beta\",\"traces-test::gamma\"]},"
+        "{\"caller\":\"traces-test::alpha\",\"callee\":\"traces-test::gamma\",\"count\":5},"
+        "{\"path\":[\"traces-test::alpha\",\"traces-test::missing\"]},"
+        "{\"path\":[\"traces-test::alpha\"]}]}");
+    ASSERT_NOT_NULL(resp);
+    char *inner = extract_text_content(resp);
+    ASSERT_NOT_NULL(inner);
+    ASSERT_NOT_NULL(strstr(inner, "\"status\":\"stored\""));
+    ASSERT_NOT_NULL(strstr(inner, "\"pairs_stored\":3"));
+    ASSERT_NOT_NULL(strstr(inner, "\"paths_stored\":1"));
+    ASSERT_NOT_NULL(strstr(inner, "\"pairs_unmatched\":1"));
+    ASSERT_NOT_NULL(strstr(inner, "traces-test::missing"));
+    ASSERT_NOT_NULL(strstr(inner, "\"malformed\":1"));
+    free(inner);
+    free(resp);
+
+    long long count = -1;
+    char label[64], seen[64];
+    ASSERT_EQ(cbm_store_observed_lookup(st, project, "traces-test::alpha", "traces-test::beta",
+                                        &count, label, sizeof(label), seen, sizeof(seen)),
+              CBM_STORE_OK);
+    ASSERT_EQ((int)count, 1);
+    ASSERT_STR_EQ(label, "run1");
+    ASSERT_TRUE(seen[0] != '\0');
+    ASSERT_EQ(cbm_store_observed_lookup(st, project, "traces-test::alpha", "traces-test::gamma",
+                                        &count, NULL, 0, NULL, 0),
+              CBM_STORE_OK);
+    ASSERT_EQ((int)count, 5);
+    /* Never observed: zero count, not an error. */
+    ASSERT_EQ(cbm_store_observed_lookup(st, project, "traces-test::beta", "traces-test::alpha",
+                                        &count, NULL, 0, NULL, 0),
+              CBM_STORE_OK);
+    ASSERT_EQ((int)count, 0);
+
+    /* Same pair again under the same label accumulates; a second label
+     * aggregates in the lookup and reports as the newest run. */
+    resp = cbm_mcp_handle_tool(
+        srv, "ingest_traces",
+        "{\"project\":\"traces-test\",\"label\":\"run1\",\"traces\":[{\"caller\":"
+        "\"traces-test::alpha\",\"callee\":\"traces-test::gamma\",\"count\":2}]}");
+    ASSERT_NOT_NULL(resp);
+    free(resp);
+    ASSERT_EQ(cbm_store_observed_lookup(st, project, "traces-test::alpha", "traces-test::gamma",
+                                        &count, NULL, 0, NULL, 0),
+              CBM_STORE_OK);
+    ASSERT_EQ((int)count, 7);
+    resp = cbm_mcp_handle_tool(
+        srv, "ingest_traces",
+        "{\"project\":\"traces-test\",\"label\":\"run2\",\"traces\":[{\"caller\":"
+        "\"traces-test::alpha\",\"callee\":\"traces-test::beta\"}]}");
+    ASSERT_NOT_NULL(resp);
+    free(resp);
+    ASSERT_EQ(cbm_store_observed_lookup(st, project, "traces-test::alpha", "traces-test::beta",
+                                        &count, label, sizeof(label), NULL, 0),
+              CBM_STORE_OK);
+    ASSERT_EQ((int)count, 2);
+    ASSERT_STR_EQ(label, "run2");
+
+    /* Whole-run eviction: run1's newest observation is older, so run1 goes
+     * first and run2 survives intact. */
+    char *evicted = NULL;
+    ASSERT_EQ(cbm_store_observed_evict_oldest_label(st, project, &evicted), CBM_STORE_OK);
+    ASSERT_NOT_NULL(evicted);
+    ASSERT_STR_EQ(evicted, "run1");
+    free(evicted);
+    ASSERT_EQ(cbm_store_observed_lookup(st, project, "traces-test::alpha", "traces-test::gamma",
+                                        &count, NULL, 0, NULL, 0),
+              CBM_STORE_OK);
+    ASSERT_EQ((int)count, 0);
+    ASSERT_EQ(cbm_store_observed_lookup(st, project, "traces-test::alpha", "traces-test::beta",
+                                        &count, NULL, 0, NULL, 0),
+              CBM_STORE_OK);
+    ASSERT_EQ((int)count, 1);
+
+    /* Empty traces is a tool error, not a silent accept. */
+    resp = cbm_mcp_handle_tool(srv, "ingest_traces", "{\"project\":\"traces-test\",\"traces\":[]}");
+    ASSERT_NOT_NULL(resp);
+    ASSERT_NOT_NULL(strstr(resp, "\"isError\":true"));
+    free(resp);
+
+    cbm_mcp_server_free(srv);
+    PASS();
+}
+
 /* Reproduce the exact-file false negative in the current Read hook: index_status
  * intentionally caps each coverage category at 500 entries, so a later path is
  * absent even though the authoritative index_coverage table contains it.  The
@@ -7609,6 +7726,9 @@ TEST(detect_changes_zero_overlap_falls_back_issue1363) {
     PASS();
 }
 
+/* ingest_traces stores for real now (the stub answered "accepted" and
+ * discarded). Without a resolvable project there is nothing to store
+ * against — a tool error, not a polite lie. */
 TEST(tool_ingest_traces_basic) {
     cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
 
@@ -7617,8 +7737,8 @@ TEST(tool_ingest_traces_basic) {
              "\"params\":{\"name\":\"ingest_traces\","
              "\"arguments\":{\"traces\":[{\"caller\":\"a\",\"callee\":\"b\"}]}}}");
     ASSERT_NOT_NULL(resp);
-    ASSERT_NOT_NULL(strstr(resp, "accepted"));
-    ASSERT_NOT_NULL(strstr(resp, "traces_received"));
+    ASSERT_NOT_NULL(strstr(resp, "\"isError\":true"));
+    ASSERT_NULL(strstr(resp, "accepted"));
     free(resp);
 
     cbm_mcp_server_free(srv);
@@ -7633,7 +7753,7 @@ TEST(tool_ingest_traces_empty) {
                                    "\"params\":{\"name\":\"ingest_traces\","
                                    "\"arguments\":{\"traces\":[]}}}");
     ASSERT_NOT_NULL(resp);
-    ASSERT_NOT_NULL(strstr(resp, "accepted"));
+    ASSERT_NOT_NULL(strstr(resp, "\"isError\":true"));
     free(resp);
 
     cbm_mcp_server_free(srv);
@@ -11327,6 +11447,7 @@ SUITE(mcp) {
     RUN_TEST(mcp_resource_discovery_methods_return_empty_lists);
     RUN_TEST(tool_query_graph_basic);
     RUN_TEST(tool_index_status_no_project);
+    RUN_TEST(tool_ingest_traces_stores_observed_calls);
     RUN_TEST(tool_check_index_coverage_finds_path_beyond_status_cap);
     RUN_TEST(tool_check_index_coverage_reports_paths_scopes_and_ranges);
     RUN_TEST(tool_check_index_coverage_preserves_multiple_scope_labels);

@@ -1925,8 +1925,104 @@ static void handle_atlas_trace(cbm_http_conn_t *c, const cbm_http_req_t *req) {
     cbm_http_query_param(req->query, "guards", wantg, (int)sizeof(wantg));
     if (json && wantg[0] == '1')
         json = atlas_trace_attach_guards(store, project, json);
+    json = cbm_atlas_attach_observed(store, project, json);
     cbm_store_close(store);
     atlas_reply_json(c, json, 500, "{\"error\":\"trace failed\"}");
+}
+
+/* Attach runtime observation to a trace ("path") or flow-detail ("steps")
+ * JSON: every hop whose (caller, callee) pair appears in observed_calls
+ * gains "observed": {count, label, last_seen}. Observation is qn-keyed
+ * (reindex-proof), so hop ids resolve to qualified names first. Absence
+ * adds nothing — an unobserved hop stays merely possible, never "dead". */
+char *cbm_atlas_attach_observed(cbm_store_t *store, const char *project, char *json) {
+    if (!json)
+        return json;
+    yyjson_doc *doc = yyjson_read(json, strlen(json), 0);
+    if (!doc)
+        return json;
+    yyjson_val *root = yyjson_doc_get_root(doc);
+    bool is_trace = yyjson_obj_get(root, "path") != NULL;
+    bool is_flow = yyjson_obj_get(root, "steps") != NULL;
+    if (!is_trace && !is_flow) {
+        yyjson_doc_free(doc);
+        return json;
+    }
+    yyjson_mut_doc *mut = yyjson_doc_mut_copy(doc, NULL);
+    yyjson_doc_free(doc);
+    if (!mut)
+        return json;
+    yyjson_mut_val *mroot = yyjson_mut_doc_get_root(mut);
+    yyjson_mut_val *arr = yyjson_mut_obj_get(mroot, is_trace ? "path" : "steps");
+    size_t count = arr ? yyjson_mut_arr_size(arr) : 0;
+    struct sqlite3 *db = cbm_store_get_db(store);
+    sqlite3_stmt *qn_stmt = NULL;
+    if (count >= 2 && db)
+        (void)sqlite3_prepare_v2(db, "SELECT qualified_name FROM nodes WHERE id=?1 LIMIT 1", -1,
+                                 &qn_stmt, NULL);
+    if (qn_stmt) {
+        /* Per-request id→qn memo: flows revisit parents for every child. */
+        enum { OBS_MEMO_MAX = 64 };
+        int64_t memo_id[OBS_MEMO_MAX];
+        char memo_qn[OBS_MEMO_MAX][512];
+        int memo_count = 0;
+        for (size_t i = is_trace ? 1 : 0; i < count; i++) {
+            yyjson_mut_val *step = yyjson_mut_arr_get(arr, i);
+            yyjson_mut_val *parent = NULL;
+            if (is_trace) {
+                parent = yyjson_mut_arr_get(arr, i - 1);
+            } else {
+                int64_t pidx = yyjson_mut_get_int(yyjson_mut_obj_get(step, "parent"));
+                if (pidx < 0 || (size_t)pidx >= count)
+                    continue;
+                parent = yyjson_mut_arr_get(arr, (size_t)pidx);
+            }
+            const int64_t ids[2] = {yyjson_mut_get_int(yyjson_mut_obj_get(parent, "id")),
+                                    yyjson_mut_get_int(yyjson_mut_obj_get(step, "id"))};
+            const char *qns[2] = {NULL, NULL};
+            for (int side = 0; side < 2; side++) {
+                for (int m = 0; m < memo_count; m++)
+                    if (memo_id[m] == ids[side]) {
+                        qns[side] = memo_qn[m];
+                        break;
+                    }
+                if (qns[side])
+                    continue;
+                sqlite3_reset(qn_stmt);
+                sqlite3_bind_int64(qn_stmt, 1, ids[side]);
+                if (sqlite3_step(qn_stmt) == SQLITE_ROW && memo_count < OBS_MEMO_MAX) {
+                    const char *qn = (const char *)sqlite3_column_text(qn_stmt, 0);
+                    if (qn) {
+                        memo_id[memo_count] = ids[side];
+                        snprintf(memo_qn[memo_count], sizeof(memo_qn[0]), "%s", qn);
+                        qns[side] = memo_qn[memo_count];
+                        memo_count++;
+                    }
+                }
+            }
+            if (!qns[0] || !qns[1])
+                continue;
+            long long observed_count = 0;
+            char label[256], last_seen[64];
+            if (cbm_store_observed_lookup(store, project, qns[0], qns[1], &observed_count, label,
+                                          sizeof(label), last_seen,
+                                          sizeof(last_seen)) != CBM_STORE_OK ||
+                observed_count <= 0)
+                continue;
+            yyjson_mut_val *obs = yyjson_mut_obj(mut);
+            yyjson_mut_obj_add_int(mut, obs, "count", observed_count);
+            yyjson_mut_obj_add_strcpy(mut, obs, "label", label);
+            yyjson_mut_obj_add_strcpy(mut, obs, "last_seen", last_seen);
+            yyjson_mut_obj_add_val(mut, step, "observed", obs);
+        }
+        sqlite3_finalize(qn_stmt);
+    }
+    char *out = yyjson_mut_write(mut, 0, NULL);
+    yyjson_mut_doc_free(mut);
+    if (!out)
+        return json;
+    free(json);
+    return out;
 }
 
 /* GET /api/symbol-history?project=X&file=PATH&start=N&end=N — per-symbol
@@ -2164,6 +2260,7 @@ static void handle_atlas_flow(cbm_http_conn_t *c, const cbm_http_req_t *req) {
     cbm_http_query_param(req->query, "guards", wantg, (int)sizeof(wantg));
     if (json && wantg[0] == '1')
         json = atlas_flow_attach_guards(store, project, json);
+    json = cbm_atlas_attach_observed(store, project, json);
     cbm_store_close(store);
     atlas_reply_json(c, json, 404, "{\"error\":\"unknown flow\"}");
 }
