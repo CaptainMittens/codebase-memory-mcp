@@ -11148,7 +11148,7 @@ static char *adr_read_legacy_file(const char *root_path) {
  * that reader before opening a dedicated writer because atomic publication uses
  * a self-contained DELETE-mode database that switches back to WAL on write. */
 static cbm_store_t *open_store_for_write(cbm_mcp_server_t *srv, cbm_store_t *resolved,
-                                             cbm_store_t **owned_rw) {
+                                         cbm_store_t **owned_rw) {
     if (!srv || !resolved || !owned_rw) {
         return NULL;
     }

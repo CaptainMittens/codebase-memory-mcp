@@ -5758,8 +5758,17 @@ TEST(tool_outer_request_scope_preserves_predispatch_cancel) {
                                  strstr(cancelled_response, "\"isError\":true");
     cbm_mcp_server_request_scope_end(srv);
 
-    char *next_response = srv ? cbm_mcp_handle_tool(srv, "ingest_traces", "{\"traces\":[]}") : NULL;
-    bool next_response_clean = next_response && strstr(next_response, "accepted") &&
+    /* Clean-token probe: a valid ingest (unresolved names store nothing)
+     * must succeed normally — the cancel must not leak into it. The old
+     * probe sent traces:[] and expected the stub's "accepted"; empty
+     * traces are a tool error under the real contract. */
+    char *next_response =
+        srv ? cbm_mcp_handle_tool(
+                  srv, "ingest_traces",
+                  "{\"project\":\"outer-scope-cancel-adr\",\"traces\":"
+                  "[{\"caller\":\"never-indexed-a\",\"callee\":\"never-indexed-b\"}]}")
+            : NULL;
+    bool next_response_clean = next_response && strstr(next_response, "\"status\":\"stored\"") &&
                                !strstr(next_response, "cancelled") &&
                                !strstr(next_response, "\"isError\":true");
 
@@ -5819,9 +5828,12 @@ TEST(tool_index_repository_early_raw_cancel_survives_index_entry) {
     snprintf(db_path, sizeof(db_path), "%s/%s.db", cache, project ? project : "missing-project");
     bool no_project_published = !cbm_file_exists(db_path);
 
-    char *next_response = srv ? cbm_mcp_handle_tool(srv, "ingest_traces", "{\"traces\":[]}") : NULL;
-    bool next_response_clean = next_response && strstr(next_response, "accepted") &&
-                               !strstr(next_response, "cancelled") &&
+    /* Clean-token probe: no project exists here by design (the index was
+     * cancelled), so probe with the project-free list_projects — the next
+     * request must simply run clean, unpoisoned by the cancel. The old
+     * probe leaned on the ingest_traces stub, which accepted anything. */
+    char *next_response = srv ? cbm_mcp_handle_tool(srv, "list_projects", "{}") : NULL;
+    bool next_response_clean = next_response && !strstr(next_response, "cancelled") &&
                                !strstr(next_response, "\"isError\":true");
 
     free(cancelled_response);
