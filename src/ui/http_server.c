@@ -2450,6 +2450,13 @@ static void dispatch_request(cbm_http_server_t *srv, cbm_http_conn_t *c,
         return;
     }
 
+    /* GET /api/symbol-history → per-symbol git log -L evidence.
+     * MUST precede /api/symbol*, whose wildcard would swallow it. */
+    if (is_get && cbm_http_path_match(req->path, "/api/symbol-history*")) {
+        handle_atlas_symbol_history(c, req);
+        return;
+    }
+
     /* GET /api/symbol → CBM Atlas symbol bundle */
     if (is_get && cbm_http_path_match(req->path, "/api/symbol*")) {
         handle_atlas_symbol(c, req);
@@ -2501,12 +2508,6 @@ static void dispatch_request(cbm_http_server_t *srv, cbm_http_conn_t *c,
     /* GET /api/impact → CBM Atlas reverse reachability from one symbol */
     if (is_get && cbm_http_path_match(req->path, "/api/impact*")) {
         handle_atlas_impact(c, req);
-        return;
-    }
-
-    /* GET /api/symbol-history → per-symbol git log -L evidence */
-    if (is_get && cbm_http_path_match(req->path, "/api/symbol-history*")) {
-        handle_atlas_symbol_history(c, req);
         return;
     }
 
