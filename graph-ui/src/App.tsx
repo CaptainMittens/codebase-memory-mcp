@@ -11,6 +11,7 @@ import { DashboardTab } from "./components/DashboardTab";
 import { CommandK } from "./components/CommandK";
 import { ProjectSwitcher } from "./components/ProjectSwitcher";
 import { WikiPanel } from "./components/WikiPanel";
+import { wikiEntry } from "./wiki/entries";
 import {
   PromptBasketProvider,
   PromptBasketDrawer,
@@ -95,6 +96,18 @@ export function App() {
     const onPopState = () => setRoute(readRoute());
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  /* #wiki=<slug> deep link: wiki entries are addressable by URL (the doc_url
+   * target), opening the panel over whatever view the rest of the URL names. */
+  useEffect(() => {
+    const openFromHash = () => {
+      const match = window.location.hash.match(/wiki=([a-z][a-z-]*)/);
+      if (match && wikiEntry(match[1])) setWikiSlug(match[1]);
+    };
+    openFromHash();
+    window.addEventListener("hashchange", openFromHash);
+    return () => window.removeEventListener("hashchange", openFromHash);
   }, []);
 
   /* ⌘K / ctrl-K anywhere. */
