@@ -11147,7 +11147,7 @@ static char *adr_read_legacy_file(const char *root_path) {
 /* resolve_store opens file-backed projects query-only. A mutation must release
  * that reader before opening a dedicated writer because atomic publication uses
  * a self-contained DELETE-mode database that switches back to WAL on write. */
-static cbm_store_t *open_adr_store_for_write(cbm_mcp_server_t *srv, cbm_store_t *resolved,
+static cbm_store_t *open_store_for_write(cbm_mcp_server_t *srv, cbm_store_t *resolved,
                                              cbm_store_t **owned_rw) {
     if (!srv || !resolved || !owned_rw) {
         return NULL;
@@ -11248,7 +11248,7 @@ static char *handle_manage_adr(cbm_mcp_server_t *srv, const char *args) {
     cbm_store_t *store = resolved;
     cbm_store_t *owned_rw = NULL;
     if (write_request) {
-        store = open_adr_store_for_write(srv, resolved, &owned_rw);
+        store = open_store_for_write(srv, resolved, &owned_rw);
         if (!store) {
             if (mutation_held) {
                 mcp_project_mutation_end(srv, project);
@@ -11285,7 +11285,7 @@ static char *handle_manage_adr(cbm_mcp_server_t *srv, const char *args) {
                     resolved = resolve_store_internal(srv, project, true, false, NULL);
                 }
                 if (resolved) {
-                    store = open_adr_store_for_write(srv, resolved, &owned_rw);
+                    store = open_store_for_write(srv, resolved, &owned_rw);
                     if (store) {
                         have_adr = (cbm_store_adr_get(store, project, &adr) == CBM_STORE_OK);
                         if (!have_adr &&
@@ -11384,12 +11384,25 @@ static char *handle_ingest_traces(cbm_mcp_server_t *srv, const char *args) {
     if (!label || !label[0])
         label = "unlabeled";
 
+    /* resolve_store opens file-backed projects query-only (and skips schema
+     * DDL); observation writes need the dedicated read-write connection —
+     * whose open also creates the observed_* tables in pre-existing DBs. */
+    cbm_store_t *owned_rw = NULL;
+    store = open_store_for_write(srv, store, &owned_rw);
+    if (!store) {
+        yyjson_doc_free(adoc);
+        free(project);
+        return cbm_mcp_text_result("could not open the project store for writing", true);
+    }
+
     struct sqlite3 *db = cbm_store_get_db(store);
     sqlite3_stmt *exists = NULL;
     if (!db || sqlite3_prepare_v2(db,
                                   "SELECT 1 FROM nodes WHERE project=?1 AND qualified_name=?2 "
                                   "LIMIT 1",
                                   -1, &exists, NULL) != SQLITE_OK) {
+        if (owned_rw)
+            cbm_store_close(owned_rw);
         yyjson_doc_free(adoc);
         free(project);
         return cbm_mcp_text_result("store is not queryable", true);
@@ -11518,6 +11531,8 @@ static char *handle_ingest_traces(cbm_mcp_server_t *srv, const char *args) {
     char *json = yy_doc_to_str(doc);
     yyjson_mut_doc_free(doc);
     yyjson_doc_free(adoc);
+    if (owned_rw)
+        cbm_store_close(owned_rw);
     free(project);
 
     char *result = cbm_mcp_text_result(json, false);

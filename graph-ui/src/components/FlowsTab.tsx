@@ -10,10 +10,13 @@ import {
   searchGraph,
   type FlowDetail,
   type FlowsPayload,
+  type ObservedCall,
   type TracePayload,
 } from "../lib/atlas";
 import { groupFlowsByEntry } from "../lib/flowgroup";
+import { allHopsObserved, newestObserved, observedTitle } from "../lib/observed";
 import { formatGuard } from "../lib/why";
+import { MetricChip } from "./MetricChip";
 import { AddToPromptButton } from "./PromptBasket";
 
 interface FlowsTabProps {
@@ -21,6 +24,7 @@ interface FlowsTabProps {
   flowId: number | null;
   onOpenFlow: (id: number | null) => void;
   onOpenSymbol: (ref: { id?: number; qn?: string }) => void;
+  onOpenWiki: (slug: string) => void;
 }
 
 function flowToMermaid(detail: FlowDetail): string {
@@ -33,6 +37,35 @@ function flowToMermaid(detail: FlowDetail): string {
     lines.push(`  ${safe(parent.name)}${step.parent} --> ${safe(step.name)}${index}`);
   }
   return lines.join("\n");
+}
+
+/* "▶ observed ×N" — runtime-evidence marker beside the guard chips: this
+ * exact hop fired in a recorded run. Glyph + word, never color-only. With
+ * onOpenWiki the word opens the wiki entry; omit it where the chip sits
+ * inside a row button (flow steps) — nested buttons are invalid HTML. */
+export function ObservedChip({
+  observed,
+  onOpenWiki,
+}: {
+  observed: ObservedCall;
+  onOpenWiki?: (slug: string) => void;
+}) {
+  return (
+    <span
+      className="text-[10px] px-1 rounded-full border border-good/50 text-good/80 font-mono shrink-0"
+      title={observedTitle(observed)}
+    >
+      ▶{" "}
+      {onOpenWiki ? (
+        <MetricChip slug="observed" onOpen={onOpenWiki}>
+          observed
+        </MetricChip>
+      ) : (
+        "observed"
+      )}{" "}
+      ×{observed.count}
+    </span>
+  );
 }
 
 /* One endpoint picker: type ≥2 chars, pick from symbol matches. */
@@ -118,7 +151,13 @@ function EndpointPicker({
   );
 }
 
-export function FlowsTab({ project, flowId, onOpenFlow, onOpenSymbol }: FlowsTabProps) {
+export function FlowsTab({
+  project,
+  flowId,
+  onOpenFlow,
+  onOpenSymbol,
+  onOpenWiki,
+}: FlowsTabProps) {
   const [payload, setPayload] = useState<FlowsPayload | null>(null);
   const [detail, setDetail] = useState<FlowDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -185,6 +224,13 @@ export function FlowsTab({ project, flowId, onOpenFlow, onOpenSymbol }: FlowsTab
       intra: flows.filter((flow) => !flow.cross_region),
     };
   }, [payload]);
+
+  /* Newest observation each — names the runtime-freshness footers. */
+  const traceNewest = useMemo(() => newestObserved(trace?.path ?? []), [trace]);
+  const detailNewest = useMemo(
+    () => (detail ? newestObserved(detail.steps) : null),
+    [detail],
+  );
 
   useEffect(() => {
     if (!copied) return;
@@ -254,6 +300,11 @@ export function FlowsTab({ project, flowId, onOpenFlow, onOpenSymbol }: FlowsTab
                     reachable in {trace.hops} hop{trace.hops === 1 ? "" : "s"} via{" "}
                     {trace.mode === "data" ? "data flow" : "calls"}
                   </p>
+                  {allHopsObserved(trace.path ?? []) && (
+                    <p className="text-[11px] text-good/70 mb-1">
+                      This whole path was observed in recorded runs.
+                    </p>
+                  )}
                   <div className="flex items-center gap-1 flex-wrap">
                     {(trace.path ?? []).map((step, index) => (
                       <span key={index} className="flex items-center gap-1 flex-wrap">
@@ -280,9 +331,19 @@ export function FlowsTab({ project, flowId, onOpenFlow, onOpenSymbol }: FlowsTab
                             {formatGuard(guard)}
                           </span>
                         ))}
+                        {step.observed && (
+                          <ObservedChip observed={step.observed} onOpenWiki={onOpenWiki} />
+                        )}
                       </span>
                     ))}
                   </div>
+                  {traceNewest && (
+                    <p className="text-[11px] text-foreground/40 mt-1.5">
+                      Runtime markers from recorded runs ({traceNewest.label}).
+                      Unmarked hops are possible, not dead — runs only cover
+                      what they exercised.
+                    </p>
+                  )}
                 </div>
               ) : (
                 <p className="text-[12px] text-foreground/45">
@@ -452,12 +513,20 @@ export function FlowsTab({ project, flowId, onOpenFlow, onOpenSymbol }: FlowsTab
                         {formatGuard(guard)}
                       </span>
                     ))}
+                    {step.observed && <ObservedChip observed={step.observed} />}
                     <span className="text-[12px] text-foreground/35 truncate ml-auto shrink-0 max-w-[40%]">
                       {step.file_path}
                     </span>
                   </button>
                 ))}
               </div>
+              {detailNewest && (
+                <p className="text-[11px] text-foreground/40 mt-3">
+                  Runtime markers from recorded runs ({detailNewest.label}).
+                  Unmarked hops are possible, not dead — runs only cover what
+                  they exercised.
+                </p>
+              )}
             </div>
           </ScrollArea>
         )}

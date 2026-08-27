@@ -174,6 +174,25 @@ export const WIKI_ENTRIES: WikiEntry[] = [
     appearsIn: ["Flows", "Trace", "Symbol connections"],
   },
   {
+    id: "M-OBSERVED",
+    slug: "observed",
+    term: "observed",
+    tier: "first-class",
+    sentence:
+      "A call that actually fired in a recorded run — observed, not merely possible from static analysis.",
+    why: "Static edges say what could happen; observation says what did. An observed marker on a speculative edge is runtime evidence the resolver got it right.",
+    computedParts: [
+      "ingest_traces call paths, stored by qualified name per run label",
+    ],
+    caps: [
+      "capped: 200k observed pairs per project — whole runs age out together, oldest first",
+    ],
+    notCovered:
+      "Absence of observation never means dead or unused — a run covers only what it exercised. Counts survive reindexing (name-keyed), but renamed symbols start fresh.",
+    appearsIn: ["Flows", "Trace"],
+    seeAlso: ["confidence", "dead-candidate"],
+  },
+  {
     id: "M-DEAD",
     slug: "dead-candidate",
     term: "dead candidate",

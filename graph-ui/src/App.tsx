@@ -289,6 +289,7 @@ export function App() {
                 navigate({ tab: "flows", flow: id !== null ? String(id) : null })
               }
               onOpenSymbol={openSymbol}
+              onOpenWiki={setWikiSlug}
             />
           ) : activeTab === "changes" && selectedProject ? (
             <ChangesTab project={selectedProject} onOpenSymbol={openSymbol} />

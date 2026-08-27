@@ -59,7 +59,8 @@ export const QUESTION_FAMILIES: QuestionFamily[] = [
     question: "What code caused this behavior?",
     status: "partial",
     tab: "flows",
-    gap: "Flows are static journeys; observed executions (traces) are not surfaced in the UI yet",
+    hint: "Flows tab — ▶ observed markers on trace hops and flow steps show what actually ran",
+    gap: "Flows and traces now mark observed vs possible hops from ingested runtime traces; automatic trace capture and failure reproduction are not built",
   },
   {
     id: "F6",

@@ -138,6 +138,15 @@ export interface FlowsPayload {
   flows: FlowSummary[];
 }
 
+/* Runtime evidence: this exact caller→callee pair fired in a recorded run.
+ * Absent means "never recorded" — NOT dead; a run only covers what it
+ * exercised. label/last_seen name the newest run, count spans all runs. */
+export interface ObservedCall {
+  count: number;
+  label: string;
+  last_seen: string;
+}
+
 export interface FlowStep {
   id: number;
   name: string;
@@ -147,6 +156,7 @@ export interface FlowStep {
   guards?: { kind: string; cond?: string; negated?: boolean }[];
   /* Resolver confidence of the edge from the parent step (0..1). */
   confidence?: number;
+  observed?: ObservedCall;
 }
 
 export interface FlowDetail {
@@ -283,6 +293,7 @@ export interface TracePayload {
     name: string;
     file_path?: string;
     guards?: { kind: string; cond?: string; negated?: boolean }[];
+    observed?: ObservedCall;
   }[];
 }
 
