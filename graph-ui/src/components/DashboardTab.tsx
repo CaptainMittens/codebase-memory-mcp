@@ -4,9 +4,10 @@
  * tones and trends; inventory facts live in the footer; histograms exist
  * only with a computed takeaway. No composite score — the cards are the
  * score. Everything derives from the graph and one bounded git-log pass. */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { kneeCount, costSentence, findingKey, isDismissed, dismiss } from "../lib/findings";
+import { MetricChip } from "./MetricChip";
 
 interface MetricEntry {
   qn?: string;
@@ -54,6 +55,7 @@ interface DashboardTabProps {
   project: string;
   onOpenSymbol: (ref: { qn: string }) => void;
   onOpenModulesPath: (path: string) => void;
+  onOpenWiki: (slug: string) => void;
 }
 
 const CPLX_LABELS = ["1", "2–5", "6–10", "11–20", "21–50", ">50"];
@@ -90,7 +92,7 @@ function QualityCard({
   tone,
   trend,
 }: {
-  label: string;
+  label: ReactNode;
   value: string;
   sub?: string;
   tone?: "warn" | "crit";
@@ -119,7 +121,7 @@ function TopList({
   total,
   onOpenSymbol,
 }: {
-  title: string;
+  title: ReactNode;
   entries: MetricEntry[];
   unit: string;
   /* Size of the population the list was ranked over — only when the payload
@@ -173,7 +175,12 @@ function TopList({
   );
 }
 
-export function DashboardTab({ project, onOpenSymbol, onOpenModulesPath }: DashboardTabProps) {
+export function DashboardTab({
+  project,
+  onOpenSymbol,
+  onOpenModulesPath,
+  onOpenWiki,
+}: DashboardTabProps) {
   const [metrics, setMetrics] = useState<MetricsPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showMuted, setShowMuted] = useState(false);
@@ -270,7 +277,9 @@ export function DashboardTab({ project, onOpenSymbol, onOpenModulesPath }: Dashb
         <div className="bg-card border border-border/50 rounded-md p-5 mb-4">
           <div className="flex items-baseline gap-3 flex-wrap">
             <h2 className="text-[17px] font-semibold text-foreground/90">
-              Where the bugs live — churn × complexity
+              <MetricChip slug="hotspot" onOpen={onOpenWiki}>
+                Where the bugs live — churn × complexity
+              </MetricChip>
             </h2>
             {metrics.top_churn_complex.length > 0 && (
               <span className="text-[12px] uppercase tracking-widest text-foreground/35 tabular-nums">
@@ -351,20 +360,32 @@ export function DashboardTab({ project, onOpenSymbol, onOpenModulesPath }: Dashb
             trend={history.map((entry) => 1 - entry.usage_share)}
           />
           <QualityCard
-            label="Dead candidates"
+            label={
+              <MetricChip slug="dead-candidate" onOpen={onOpenWiki}>
+                Dead candidates
+              </MetricChip>
+            }
             value={totals.dead.toLocaleString("en-US")}
             sub="no callers; entry/test/exported excluded"
             tone={totals.dead > 0 ? "warn" : undefined}
             trend={history.map((entry) => entry.dead)}
           />
           <QualityCard
-            label="Tested symbols"
+            label={
+              <MetricChip slug="tested" onOpen={onOpenWiki}>
+                Tested symbols
+              </MetricChip>
+            }
             value={`${(testedShare * 100).toFixed(0)}%`}
             sub={`${totals.tested_symbols.toLocaleString("en-US")} with TESTS edges`}
             trend={history.map((entry) => entry.tested)}
           />
           <QualityCard
-            label="Documented exports"
+            label={
+              <MetricChip slug="documented" onOpen={onOpenWiki}>
+                Documented exports
+              </MetricChip>
+            }
             value={`${(docShare * 100).toFixed(0)}%`}
             sub={`${totals.documented_exported.toLocaleString("en-US")} of ${totals.exported.toLocaleString("en-US")} exported`}
             tone={docShare < 0.3 ? "warn" : undefined}
@@ -404,7 +425,11 @@ export function DashboardTab({ project, onOpenSymbol, onOpenModulesPath }: Dashb
         {/* ── Drill-down lists ──────────────────────────────────── */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <TopList
-            title="Most complex"
+            title={
+              <MetricChip slug="complexity" onOpen={onOpenWiki}>
+                Most complex
+              </MetricChip>
+            }
             entries={metrics.top_complex}
             unit="cyclo"
             total={totals.callables}

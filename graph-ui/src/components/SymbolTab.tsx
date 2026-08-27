@@ -13,6 +13,7 @@ import {
   type SymbolRef,
 } from "../lib/atlas";
 import { AddToPromptButton } from "./PromptBasket";
+import { MetricChip } from "./MetricChip";
 import { TriggerTree } from "./TriggerTree";
 import type { RepoInfo } from "../lib/types";
 
@@ -21,6 +22,7 @@ interface SymbolTabProps {
   symbolRef: { id?: number; qn?: string };
   onOpenSymbol: (ref: { id?: number; qn?: string }) => void;
   onOpenRegion: (regionId: number) => void;
+  onOpenWiki: (slug: string) => void;
 }
 
 const CONFIDENCE: Record<string, { label: string; tone: string }> = {
@@ -37,12 +39,14 @@ function ConnectionList({
   homeRegion,
   onLoadMore,
   onOpenSymbol,
+  onOpenWiki,
 }: {
   title: string;
   page: ConnectionPage;
   homeRegion?: number;
   onLoadMore: () => void;
   onOpenSymbol: (ref: { id?: number; qn?: string }) => void;
+  onOpenWiki: (slug: string) => void;
 }) {
   const shown = page.offset + page.items.length;
   /* A utility called from everywhere would carry a dot on every row — the
@@ -68,9 +72,11 @@ function ConnectionList({
           </span>
         )}
         <span className="text-[12px] text-foreground/40 ml-auto">
-          {Object.entries(page.by_type)
-            .map(([type, count]) => `${CONFIDENCE[type]?.label ?? type.toLowerCase()} ${count}`)
-            .join(" · ")}
+          <MetricChip slug="confidence" onOpen={onOpenWiki}>
+            {Object.entries(page.by_type)
+              .map(([type, count]) => `${CONFIDENCE[type]?.label ?? type.toLowerCase()} ${count}`)
+              .join(" · ")}
+          </MetricChip>
         </span>
       </div>
       <div className="space-y-px">
@@ -133,7 +139,13 @@ function ConnectionList({
   );
 }
 
-export function SymbolTab({ project, symbolRef, onOpenSymbol, onOpenRegion }: SymbolTabProps) {
+export function SymbolTab({
+  project,
+  symbolRef,
+  onOpenSymbol,
+  onOpenRegion,
+  onOpenWiki,
+}: SymbolTabProps) {
   const [bundle, setBundle] = useState<SymbolBundle | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [limit, setLimit] = useState(50);
@@ -331,6 +343,7 @@ export function SymbolTab({ project, symbolRef, onOpenSymbol, onOpenRegion }: Sy
             homeRegion={bundle.region?.id}
             onLoadMore={() => setLimit((value) => value + 100)}
             onOpenSymbol={onOpenSymbol}
+            onOpenWiki={onOpenWiki}
           />
           <ConnectionList
             title="Calls"
@@ -338,6 +351,7 @@ export function SymbolTab({ project, symbolRef, onOpenSymbol, onOpenRegion }: Sy
             homeRegion={bundle.region?.id}
             onLoadMore={() => setLimit((value) => value + 100)}
             onOpenSymbol={onOpenSymbol}
+            onOpenWiki={onOpenWiki}
           />
         </div>
 
@@ -430,7 +444,9 @@ export function SymbolTab({ project, symbolRef, onOpenSymbol, onOpenRegion }: Sy
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <div className="bg-card border border-border/40 rounded-md p-4">
             <p className="text-[12px] uppercase tracking-widest text-foreground/45 mb-2">
-              Tested by
+              <MetricChip slug="tested" onOpen={onOpenWiki}>
+                Tested by
+              </MetricChip>
             </p>
             {(bundle.tests ?? []).map((test: SymbolRef) => (
               <button
@@ -448,7 +464,9 @@ export function SymbolTab({ project, symbolRef, onOpenSymbol, onOpenRegion }: Sy
 
           <div className="bg-card border border-border/40 rounded-md p-4">
             <p className="text-[12px] uppercase tracking-widest text-foreground/45 mb-2">
-              Changes together with
+              <MetricChip slug="co-change" onOpen={onOpenWiki}>
+                Changes together with
+              </MetricChip>
             </p>
             {(bundle.co_change ?? []).map((partner) => (
               <p key={partner.file_path} className="text-[13px] font-mono text-foreground/55 py-[3px] truncate">

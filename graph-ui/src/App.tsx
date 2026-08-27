@@ -10,6 +10,7 @@ import { ChangesTab } from "./components/ChangesTab";
 import { DashboardTab } from "./components/DashboardTab";
 import { CommandK } from "./components/CommandK";
 import { ProjectSwitcher } from "./components/ProjectSwitcher";
+import { WikiPanel } from "./components/WikiPanel";
 import {
   PromptBasketProvider,
   PromptBasketDrawer,
@@ -74,6 +75,8 @@ export function App() {
   const t = useUiMessages();
   const [route, setRoute] = useState<RouteState>(readRoute);
   const [commandOpen, setCommandOpen] = useState(false);
+  /* The metric wiki: any dotted-underline term opens its entry here. */
+  const [wikiSlug, setWikiSlug] = useState<string | null>(null);
   /* The galaxy keeps its WebGL context and layout across tab switches:
    * mounted once visited, hidden with `invisible` (never display:none, which
    * would zero the canvas), frameloop paused while hidden. */
@@ -280,6 +283,7 @@ export function App() {
               project={selectedProject}
               onOpenSymbol={(ref) => openSymbol(ref)}
               onOpenModulesPath={(path) => navigate({ tab: "modules", path })}
+              onOpenWiki={setWikiSlug}
             />
           ) : activeTab === "symbol" && selectedProject && symbolRef ? (
             <SymbolTab
@@ -287,6 +291,7 @@ export function App() {
               symbolRef={symbolRef}
               onOpenSymbol={openSymbol}
               onOpenRegion={openRegion}
+              onOpenWiki={setWikiSlug}
             />
           ) : activeTab === "control" ? (
             <ControlTab />
@@ -303,6 +308,13 @@ export function App() {
           onClose={() => setCommandOpen(false)}
           onOpenSymbol={openSymbol}
         />
+        {wikiSlug && (
+          <WikiPanel
+            slug={wikiSlug}
+            onClose={() => setWikiSlug(null)}
+            onNavigate={setWikiSlug}
+          />
+        )}
         <PromptBasketDrawer project={selectedProject} />
       </div>
     </PromptBasketProvider>

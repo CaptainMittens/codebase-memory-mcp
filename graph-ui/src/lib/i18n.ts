@@ -70,6 +70,15 @@ export const messages = {
       title: "Architecture Decision Record",
       lastUpdated: "Last updated",
     },
+    wiki: {
+      whyMatters: "Why this matters",
+      howComputed: "How it's computed",
+      notCovered: "What this does not cover",
+      whereAppears: "Where it appears",
+      pairedWith: "Paired with",
+      back: "Back",
+      close: "Close",
+    },
     control: {
       panel: "Control Panel",
       totalCpu: "Total CPU",
@@ -150,6 +159,15 @@ export const messages = {
     adr: {
       title: "架构决策记录",
       lastUpdated: "最后更新",
+    },
+    wiki: {
+      whyMatters: "为什么重要",
+      howComputed: "如何计算",
+      notCovered: "不涵盖的内容",
+      whereAppears: "出现位置",
+      pairedWith: "配对指标",
+      back: "返回",
+      close: "关闭",
     },
     control: {
       panel: "控制面板",
