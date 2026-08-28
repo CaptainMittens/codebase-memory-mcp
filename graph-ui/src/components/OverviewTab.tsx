@@ -27,7 +27,7 @@ import {
   type QuestionStatus,
   type QuestionTab,
 } from "../lib/questions";
-import { messages, useUiLanguage } from "../lib/i18n";
+import { messages, useUiLanguage, useUiMessages } from "../lib/i18n";
 import { AddToPromptButton } from "./PromptBasket";
 import type { RegionsPayload } from "../lib/types";
 
@@ -257,6 +257,7 @@ function QuestionIndex({ onOpenTab }: { onOpenTab: (tab: QuestionTab) => void })
  * value invites misreading (0.4 can be the tightest region on the map or
  * the loosest). This region's dot is emphasized; the tick is the median. */
 function CohesionStrip({ values, own }: { values: number[]; own: number }) {
+  const t = useUiMessages();
   if (values.length < 2) return null;
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
@@ -270,7 +271,7 @@ function CohesionStrip({ values, own }: { values: number[]; own: number }) {
       viewBox="0 0 120 14"
       className="shrink-0"
       role="img"
-      aria-label={`cohesion ${own.toFixed(2)} among ${values.length} regions, median ${median.toFixed(2)}`}
+      aria-label={t.overview.cohesionAria(own, values.length, median)}
     >
       <title>{`p50 = ${median.toFixed(2)}`}</title>
       <line
@@ -307,6 +308,7 @@ export function OverviewTab({
   onOpenDashboard,
   onOpenTab,
 }: OverviewTabProps) {
+  const t = useUiMessages();
   const [arch, setArch] = useState<ArchitectureJson | null>(null);
   const [regions, setRegions] = useState<RegionsPayload | null>(null);
   const [metrics, setMetrics] = useState<MetricsLite | null>(null);
@@ -437,7 +439,7 @@ export function OverviewTab({
   if (!arch && !regions) {
     return (
       <div className="flex items-center justify-center h-full">
-        <p className="text-foreground/45 text-sm">Reading the map…</p>
+        <p className="text-foreground/45 text-sm">{t.overview.loading}</p>
       </div>
     );
   }
@@ -451,9 +453,9 @@ export function OverviewTab({
             target="_blank"
             rel="noreferrer"
             className="text-[12px] text-foreground/45 hover:text-primary transition-colors"
-            title="A self-contained, shareable document explaining this codebase — generated from the graph, print-friendly"
+            title={t.overview.handoutTitle}
           >
-            Handout ↗
+            {t.overview.handout}
           </a>
         </div>
 
@@ -463,43 +465,46 @@ export function OverviewTab({
         {/* The four slots: is anything wrong? */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
           <Slot
-            label="Needs attention"
+            label={t.overview.needsAttention}
             value={
               attention === null
                 ? metrics?.churn_available === false
                   ? "—"
                   : "…"
-                : `${attention} file${attention === 1 ? "" : "s"}`
+                : t.overview.filesCount(attention)
             }
             sub={
               attention === null
-                ? "churn unavailable without git history"
-                : "concentrate the churn × complexity risk"
+                ? t.overview.churnUnavailable
+                : t.overview.concentrateRisk
             }
             tone={attention !== null && attention > 0 ? "warn" : undefined}
             onClick={onOpenDashboard}
           />
           <Slot
-            label="Direction"
-            value={direction ? direction.text : "first index"}
-            sub={direction ? "since the previous index" : "trends appear after the next reindex"}
+            label={t.overview.direction}
+            value={direction ? direction.text : t.overview.firstIndex}
+            sub={direction ? t.overview.sincePrevIndex : t.overview.trendsAfterReindex}
             tone={direction?.worsening ? "warn" : "quiet"}
           />
           <Slot
-            label="Riskiest area"
+            label={t.overview.riskiestArea}
             value={riskiest?.file?.split("/").slice(-1)[0] ?? "—"}
             sub={
               riskiest
-                ? `${riskiest.commits ?? "?"} commits this year × high complexity — ${riskiest.file}`
-                : "no complex churning files"
+                ? t.overview.riskiestSub(riskiest.commits ?? "?", riskiest.file ?? "")
+                : t.overview.noComplexChurn
             }
             tone={riskiest ? "crit" : undefined}
             onClick={onOpenDashboard}
           />
           <Slot
-            label="Trust"
-            value={`${metrics?.totals.missed_files ?? 0} files missed`}
-            sub={`index ${metrics?.generated_from?.slice(0, 10) ?? "…"} · ${regions?.unmapped_nodes ?? 0} unmapped symbols`}
+            label={t.overview.trust}
+            value={t.overview.filesMissed(metrics?.totals.missed_files ?? 0)}
+            sub={t.overview.trustSub(
+              metrics?.generated_from?.slice(0, 10) ?? "…",
+              regions?.unmapped_nodes ?? 0,
+            )}
             tone="quiet"
           />
         </div>
@@ -509,11 +514,11 @@ export function OverviewTab({
           <div className="mb-5">
             <div className="flex items-baseline gap-3 mb-2">
               <p className="text-[12px] uppercase tracking-widest text-foreground/40">
-                Findings
+                {t.overview.findings}
               </p>
               {dismissedCount > 0 && (
                 <span className="text-[12px] text-foreground/30">
-                  {dismissedCount} dismissed
+                  {t.overview.dismissed(dismissedCount)}
                 </span>
               )}
             </div>
@@ -526,9 +531,9 @@ export function OverviewTab({
                   <div className="flex-1 min-w-0">
                     <p className="text-[14px] text-foreground/85">
                       <span className="font-medium">{coupling.source.name}</span>
-                      <span className="text-foreground/40"> and </span>
+                      <span className="text-foreground/40">{t.overview.couplingAnd}</span>
                       <span className="font-medium">{coupling.target.name}</span>
-                      <span className="text-foreground/40"> are unusually coupled</span>
+                      <span className="text-foreground/40">{t.overview.couplingSuffix}</span>
                     </p>
                     <p className="text-[12px] text-foreground/45 mt-0.5">
                       {coupling.reasons.join(" · ")}
@@ -538,7 +543,7 @@ export function OverviewTab({
                     onClick={() => onOpenRegion(coupling.source.id)}
                     className="text-[12px] text-primary/80 hover:text-primary shrink-0 transition-colors"
                   >
-                    inspect
+                    {t.overview.inspect}
                   </button>
                   <button
                     onClick={() => {
@@ -546,9 +551,9 @@ export function OverviewTab({
                       setDismissedTick((tick) => tick + 1);
                     }}
                     className="text-[12px] text-foreground/30 hover:text-foreground/60 shrink-0 transition-colors"
-                    title="Dismiss as intended — re-alerts if the coupling grows an order of magnitude"
+                    title={t.overview.intendedTitle}
                   >
-                    intended
+                    {t.overview.intended}
                   </button>
                 </div>
               ))}
@@ -560,7 +565,7 @@ export function OverviewTab({
         {questions.length > 0 && (
           <div className="mb-5">
             <p className="text-[12px] uppercase tracking-widest text-foreground/40 mb-2">
-              Questions this graph can answer — ask your agent
+              {t.overview.questionsHeading}
             </p>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
               {questions.map((question) => (
@@ -590,7 +595,7 @@ export function OverviewTab({
         <div className="mb-5">
           <div className="flex items-baseline justify-between mb-2">
             <p className="text-[12px] uppercase tracking-widest text-foreground/40">
-              Regions — the de-facto modules ({regions?.method ?? "…"})
+              {t.overview.regionsHeading(regions?.method ?? "…")}
             </p>
             {hiddenTestRegions > 0 && (
               <button
@@ -598,8 +603,8 @@ export function OverviewTab({
                 className="text-[12px] text-foreground/40 hover:text-foreground/70 transition-colors"
               >
                 {includeTests
-                  ? "hide test code"
-                  : `${hiddenTestRegions} test region${hiddenTestRegions > 1 ? "s" : ""} hidden — show`}
+                  ? t.overview.hideTestCode
+                  : t.overview.testRegionsHidden(hiddenTestRegions)}
               </button>
             )}
           </div>
@@ -621,8 +626,7 @@ export function OverviewTab({
                 </div>
                 <div className="flex items-center gap-2">
                   <p className="text-[12px] text-foreground/45 truncate tabular-nums flex-1 min-w-0">
-                    {region.members.toLocaleString("en-US")} symbols · cohesion{" "}
-                    {region.cohesion.toFixed(2)}
+                    {t.overview.regionMeta(region.members, region.cohesion)}
                   </p>
                   <CohesionStrip
                     values={displayRegions.map((r) => r.cohesion)}
@@ -642,7 +646,7 @@ export function OverviewTab({
               onClick={onOpenModules}
               className="mt-2 text-[13px] text-primary/80 hover:text-primary transition-colors"
             >
-              all {displayRegions.length} regions in Modules →
+              {t.overview.allRegions(displayRegions.length)}
             </button>
           )}
         </div>
@@ -652,7 +656,7 @@ export function OverviewTab({
         {bridges.length > 0 && (
           <div className="bg-card border border-border/40 rounded-md p-4 mb-5">
             <p className="text-[12px] uppercase tracking-widest text-foreground/40 mb-2">
-              Boundary spanners — code that reaches into many regions
+              {t.overview.bridgesHeading}
             </p>
             {bridges.map((bridge) => (
               <div key={bridge.id} className="flex items-center gap-2 py-[3px]">
@@ -664,14 +668,12 @@ export function OverviewTab({
                   {bridge.name}
                 </button>
                 <span className="text-[12px] text-foreground/40 tabular-nums ml-auto shrink-0">
-                  {bridge.regions} regions · {bridge.cross_calls.toLocaleString("en-US")}{" "}
-                  cross calls
+                  {t.overview.bridgeMeta(bridge.regions, bridge.cross_calls)}
                 </span>
               </div>
             ))}
             <p className="text-[12px] text-foreground/35 mt-1.5">
-              Changes here ripple across regions — mention these names when a task spans
-              areas.
+              {t.overview.bridgesFootnote}
             </p>
           </div>
         )}
@@ -679,12 +681,12 @@ export function OverviewTab({
         {/* Reference — one disclosure away, never shouting. */}
         <details className="mb-5">
           <summary className="cursor-pointer text-[12px] uppercase tracking-widest text-foreground/40 hover:text-foreground/60 transition-colors select-none">
-            Reference — hubs, entry points, boundaries
+            {t.overview.referenceSummary}
           </summary>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-3">
             <div className="bg-card border border-border/40 rounded-md p-4">
               <p className="text-[12px] uppercase tracking-widest text-foreground/40 mb-2">
-                Hubs — highest fan-in
+                {t.overview.hubsHeading}
               </p>
               {hotspots.slice(0, 8).map((hotspot) => (
                 <div key={hotspot.qn} className="flex items-center gap-2 py-[3px]">
@@ -701,12 +703,12 @@ export function OverviewTab({
                 </div>
               ))}
               {hotspots.length === 0 && (
-                <p className="text-[13px] text-foreground/40">No hotspot data.</p>
+                <p className="text-[13px] text-foreground/40">{t.overview.noHotspots}</p>
               )}
             </div>
             <div className="bg-card border border-border/40 rounded-md p-4">
               <p className="text-[12px] uppercase tracking-widest text-foreground/40 mb-2">
-                Entry points
+                {t.overview.entryPoints}
               </p>
               {entries.slice(0, 8).map((entry) => (
                 <button
@@ -727,12 +729,12 @@ export function OverviewTab({
                 onClick={onOpenFlows}
                 className="mt-2 text-[12px] text-primary/80 hover:text-primary transition-colors"
               >
-                follow them in Flows →
+                {t.overview.followFlows}
               </button>
             </div>
             <div className="bg-card border border-border/40 rounded-md p-4 md:col-span-2 overflow-x-auto">
               <p className="text-[12px] uppercase tracking-widest text-foreground/40 mb-2">
-                Boundaries — cross-package calls
+                {t.overview.boundariesHeading}
               </p>
               <table className="w-full text-[13px]">
                 <tbody>
@@ -750,7 +752,7 @@ export function OverviewTab({
                 </tbody>
               </table>
               {boundaries.length === 0 && (
-                <p className="text-[13px] text-foreground/40">No cross-package calls recorded.</p>
+                <p className="text-[13px] text-foreground/40">{t.overview.noBoundaries}</p>
               )}
             </div>
           </div>
@@ -758,9 +760,12 @@ export function OverviewTab({
 
         {/* Inventory footer — facts, untoned. */}
         <p className="text-[12px] text-foreground/35 tabular-nums border-t border-border/40 pt-3">
-          {totalNodes?.toLocaleString("en-US") ?? "…"} symbols ·{" "}
-          {totalEdges?.toLocaleString("en-US") ?? "…"} edges ·{" "}
-          {regions?.regions.length ?? "…"} regions ·{" "}
+          {t.overview.inventory(
+            totalNodes?.toLocaleString("en-US") ?? "…",
+            totalEdges?.toLocaleString("en-US") ?? "…",
+            `${regions?.regions.length ?? "…"}`,
+          )}{" "}
+          ·{" "}
           {languages
             .slice(0, 4)
             .map((lang) => lang.language)

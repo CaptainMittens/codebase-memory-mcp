@@ -59,6 +59,7 @@ function ConnectionList({
   onOpenSymbol: (ref: { id?: number; qn?: string }) => void;
   onOpenWiki: (slug: string) => void;
 }) {
+  const t = useUiMessages();
   const shown = page.offset + page.items.length;
   /* A utility called from everywhere would carry a dot on every row — the
    * signal inverts into noise. Past half, say it once instead. */
@@ -77,9 +78,9 @@ function ConnectionList({
         {!dotsUseful && crossCount > 0 && (
           <span
             className="text-[12px] text-foreground/40"
-            title="most of these live in other regions — the cross-seam dot is omitted because it would mark nearly every row"
+            title={t.symbol.crossRegionsTitle}
           >
-            {crossCount} of {page.items.length} cross regions
+            {t.symbol.crossRegions(crossCount, page.items.length)}
           </span>
         )}
         <span className="text-[12px] text-foreground/40 ml-auto">
@@ -111,7 +112,7 @@ function ConnectionList({
               item.region !== homeRegion && (
                 <span
                   className="w-[6px] h-[6px] rounded-full bg-primary/70 shrink-0"
-                  title="in another region — this edge crosses an architectural seam"
+                  title={t.symbol.crossSeamDotTitle}
                 />
               )}
             <span className="text-[12px] text-foreground/35 truncate ml-auto shrink-0 max-w-[45%]">
@@ -120,7 +121,7 @@ function ConnectionList({
           </button>
         ))}
         {page.items.length === 0 && (
-          <p className="text-[13px] text-foreground/40 px-2 py-2">None.</p>
+          <p className="text-[13px] text-foreground/40 px-2 py-2">{t.symbol.none}</p>
         )}
       </div>
       {shown < page.total && (
@@ -129,11 +130,11 @@ function ConnectionList({
             onClick={onLoadMore}
             className="mt-1.5 px-2 text-[12px] text-primary/70 hover:text-primary transition-colors"
           >
-            Show more ({(page.total - shown).toLocaleString("en-US")} hidden)
+            {t.symbol.showMore(page.total - shown)}
           </button>
           {(page.overflow_by_file?.length ?? 0) > 0 && (
             <div className="mt-1 px-2">
-              <p className="text-[12px] text-foreground/35 mb-0.5">hidden, by file:</p>
+              <p className="text-[12px] text-foreground/35 mb-0.5">{t.symbol.hiddenByFile}</p>
               {page.overflow_by_file!.map((row) => (
                 <p
                   key={row.file}
@@ -296,7 +297,7 @@ export function SymbolTab({
   if (!bundle) {
     return (
       <div className="flex items-center justify-center h-full">
-        <p className="text-foreground/45 text-sm">Loading symbol…</p>
+        <p className="text-foreground/45 text-sm">{t.symbol.loading}</p>
       </div>
     );
   }
@@ -320,16 +321,12 @@ export function SymbolTab({
   const impactTiers =
     impact && impact.reachable > 0
       ? [
-          `${impactDirect.toLocaleString("en-US")} direct caller${impactDirect === 1 ? "" : "s"}`,
+          t.impact.directCallers(impactDirect),
           ...(impact.max_distance >= 2
-            ? [
-                `${(impactDirect + (impact.by_distance[1] ?? 0)).toLocaleString("en-US")} within 2 hops`,
-              ]
+            ? [t.impact.withinTwoHops(impactDirect + (impact.by_distance[1] ?? 0))]
             : []),
           ...(impact.max_distance > 2
-            ? [
-                `${impact.reachable.toLocaleString("en-US")} total within ${impact.max_depth}`,
-              ]
+            ? [t.impact.totalWithin(impact.reachable, impact.max_depth)]
             : []),
         ].join(" · ")
       : null;
@@ -382,17 +379,17 @@ export function SymbolTab({
             </span>
             {node.is_entry && (
               <span className="px-2 py-0.5 rounded-md text-[12px] bg-emerald-400/10 text-emerald-300/80">
-                entry point
+                {t.symbol.entryPoint}
               </span>
             )}
             {node.is_test && (
               <span className="px-2 py-0.5 rounded-md text-[12px] bg-surface-3 text-foreground/50">
-                test
+                {t.symbol.testFlag}
               </span>
             )}
             {node.is_exported && (
               <span className="px-2 py-0.5 rounded-md text-[12px] bg-sky-400/10 text-sky-300/80">
-                exported
+                {t.symbol.exported}
               </span>
             )}
             <div className="ml-auto flex gap-2 items-center">
@@ -426,12 +423,12 @@ export function SymbolTab({
                 onClick={() => onOpenRegion(bundle.region!.id)}
                 className="text-[13px] text-primary/70 hover:text-primary transition-colors"
               >
-                region: {bundle.region.name ?? bundle.region.id} →
+                {t.symbol.regionLink(`${bundle.region.name ?? bundle.region.id}`)}
               </button>
             )}
             {editorUrl && (
               <a href={editorUrl} className="text-[13px] text-foreground/40 hover:text-foreground/70 transition-colors">
-                Open in editor ↗
+                {t.symbol.openInEditor}
               </a>
             )}
             {ghUrl && (
@@ -456,7 +453,7 @@ export function SymbolTab({
               disabled={codeLoading || !node.qualified_name}
               className="px-2.5 py-1 rounded-md bg-primary/15 text-primary text-[13px] font-medium hover:bg-primary/25 transition-colors disabled:opacity-40"
             >
-              {codeLoading ? "Loading…" : code ? "Hide code" : "Show code"}
+              {codeLoading ? t.common.loading : code ? t.symbol.hideCode : t.symbol.showCode}
             </button>
             {code && (
               <pre className="mt-2 max-h-[360px] overflow-auto rounded-md bg-black/40 border border-border p-3 text-[13px] leading-relaxed font-mono text-foreground/75 whitespace-pre">
@@ -479,7 +476,7 @@ export function SymbolTab({
         {/* Connections */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
           <ConnectionList
-            title="Called by"
+            title={t.symbol.calledBy}
             page={bundle.callers}
             homeRegion={bundle.region?.id}
             onLoadMore={() => setLimit((value) => value + 100)}
@@ -487,7 +484,7 @@ export function SymbolTab({
             onOpenWiki={onOpenWiki}
           />
           <ConnectionList
-            title="Calls"
+            title={t.symbol.calls}
             page={bundle.callees}
             homeRegion={bundle.region?.id}
             onLoadMore={() => setLimit((value) => value + 100)}
@@ -501,7 +498,7 @@ export function SymbolTab({
          * (File nodes, …) have no radius; the section stays hidden. */}
         {impactError && impactError !== "symbol is not an indexed callable" && (
           <p className="text-[13px] text-foreground/40 mb-4">
-            Impact unavailable: {impactError}
+            {t.impact.unavailable(impactError)}
           </p>
         )}
         {impact && (
@@ -567,10 +564,7 @@ export function SymbolTab({
                   ))}
                 </div>
                 <p className="text-[12px] text-foreground/40 mt-1">
-                  {impact.tests.count.toLocaleString("en-US")} test
-                  {impact.tests.count === 1 ? " reaches" : "s reach"} this symbol
-                  {impact.tests.nearest.length < impact.tests.count &&
-                    ` — showing ${impact.tests.nearest.length} of ${impact.tests.count.toLocaleString("en-US")}`}
+                  {t.impact.testsReach(impact.tests.count, impact.tests.nearest.length)}
                 </p>
               </div>
             ) : (
@@ -588,17 +582,17 @@ export function SymbolTab({
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
           <div className="bg-card border border-border/50 rounded-md p-4">
             <p className="text-[12px] uppercase tracking-widest text-foreground/40 mb-2">
-              Recent changes to this file
+              {t.symbol.recentChanges}
             </p>
             {bundle.file_history?.available === false && (
               <p className="text-[13px] text-foreground/40">
-                No git history readable for this project.
+                {t.symbol.noGitHistory}
               </p>
             )}
             {bundle.file_history?.available &&
               (bundle.file_history.recent?.length ?? 0) === 0 && (
                 <p className="text-[13px] text-foreground/40">
-                  Untouched in the last year.
+                  {t.symbol.untouchedYear}
                 </p>
               )}
             {(bundle.file_history?.recent ?? []).map((commit) => (
@@ -611,17 +605,20 @@ export function SymbolTab({
             {bundle.file_history?.available &&
               (bundle.file_history.commits_1y ?? 0) > 0 && (
                 <p className="text-[12px] text-foreground/40 mt-2">
-                  {bundle.file_history.commits_1y?.toLocaleString("en-US")} commits in the
-                  last year
+                  {t.symbol.commitsLastYear(bundle.file_history.commits_1y ?? 0)}
                   {bundle.file_history.top_author &&
-                    ` · mostly ${bundle.file_history.top_author} (${((bundle.file_history.top_author_share ?? 0) * 100).toFixed(0)}% of ${bundle.file_history.authors} author${(bundle.file_history.authors ?? 0) > 1 ? "s" : ""})`}
+                    t.symbol.mostlyBy(
+                      bundle.file_history.top_author,
+                      bundle.file_history.top_author_share ?? 0,
+                      bundle.file_history.authors ?? 0,
+                    )}
                 </p>
               )}
           </div>
           {bundle.project_has_data_flows !== false && (
           <div className="bg-card border border-border/50 rounded-md p-4">
             <p className="text-[12px] uppercase tracking-widest text-foreground/40 mb-2">
-              Data flows
+              {t.symbol.dataFlows}
             </p>
             {(["data_in", "data_out"] as const).map((direction) => {
               const flows: DataFlowRef[] = bundle[direction] ?? [];
@@ -629,7 +626,7 @@ export function SymbolTab({
               return (
                 <div key={direction} className="mb-2">
                   <p className="text-[12px] text-foreground/35 mb-1">
-                    {direction === "data_in" ? "receives from" : "feeds into"}
+                    {direction === "data_in" ? t.symbol.receivesFrom : t.symbol.feedsInto}
                   </p>
                   {flows.map((flow) => (
                     <button
@@ -656,7 +653,7 @@ export function SymbolTab({
             {(bundle.data_in ?? []).length === 0 &&
               (bundle.data_out ?? []).length === 0 && (
                 <p className="text-[13px] text-foreground/40">
-                  No DATA_FLOWS edges touch this symbol.
+                  {t.symbol.noDataFlows}
                 </p>
               )}
           </div>
@@ -784,7 +781,7 @@ export function SymbolTab({
           <div className="bg-card border border-border/40 rounded-md p-4">
             <p className="text-[12px] uppercase tracking-widest text-foreground/45 mb-2">
               <MetricChip slug="tested" onOpen={onOpenWiki}>
-                Tested by
+                {t.symbol.testedBy}
               </MetricChip>
             </p>
             {(bundle.tests ?? []).map((test: SymbolRef) => (
@@ -797,14 +794,14 @@ export function SymbolTab({
               </button>
             ))}
             {(bundle.tests ?? []).length === 0 && (
-              <p className="text-[13px] text-amber-300/50">No TESTS edges reach this symbol.</p>
+              <p className="text-[13px] text-amber-300/50">{t.symbol.noTests}</p>
             )}
           </div>
 
           <div className="bg-card border border-border/40 rounded-md p-4">
             <p className="text-[12px] uppercase tracking-widest text-foreground/45 mb-2">
               <MetricChip slug="co-change" onOpen={onOpenWiki}>
-                Changes together with
+                {t.symbol.changesTogether}
               </MetricChip>
             </p>
             {(bundle.co_change ?? []).map((partner) => (
@@ -816,13 +813,13 @@ export function SymbolTab({
               </p>
             ))}
             {(bundle.co_change ?? []).length === 0 && (
-              <p className="text-[13px] text-foreground/40">No co-change history.</p>
+              <p className="text-[13px] text-foreground/40">{t.symbol.noCoChange}</p>
             )}
           </div>
 
           <div className="bg-card border border-border/40 rounded-md p-4">
             <p className="text-[12px] uppercase tracking-widest text-foreground/45 mb-2">
-              Near-clones
+              {t.symbol.nearClones}
             </p>
             {(bundle.similar ?? []).map((clone) => (
               <button
@@ -837,7 +834,7 @@ export function SymbolTab({
               </button>
             ))}
             {(bundle.similar ?? []).length === 0 && (
-              <p className="text-[13px] text-foreground/40">No near-clones.</p>
+              <p className="text-[13px] text-foreground/40">{t.symbol.noNearClones}</p>
             )}
           </div>
         </div>

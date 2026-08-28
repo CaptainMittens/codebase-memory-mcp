@@ -127,7 +127,7 @@ export const QUESTION_FAMILIES: QuestionFamily[] = [
     gap: "TESTS-edge reach is shown per symbol; change→test selection is planned",
     zh: {
       question: "哪些测试覆盖它？",
-      hint: "已测符号卡片；每个符号页的 Tested by",
+      hint: "已测符号卡片；每个符号页的“覆盖它的测试”",
       gap: "按符号展示 TESTS 边触达；变更→测试选择在计划中",
     },
   },

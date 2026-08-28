@@ -102,7 +102,7 @@ export function WikiPanel({ slug, onClose, onNavigate }: WikiPanelProps) {
 
       {!entry || !view ? (
         <p className="text-[13px] text-foreground/40 px-4 py-6">
-          No wiki entry for “{slug}”.
+          {t.wiki.noEntry(slug)}
         </p>
       ) : (
         <ScrollArea className="flex-1 min-h-0">

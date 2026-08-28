@@ -183,7 +183,7 @@ export function FlowsTab({
         mode: traceMode,
         max_depth: 0,
         reachable: false,
-        error: err instanceof Error ? err.message : "trace failed",
+        error: err instanceof Error ? err.message : t.flows.traceFailed,
       });
     } finally {
       setTracing(false);
@@ -251,7 +251,7 @@ export function FlowsTab({
   if (!payload) {
     return (
       <div className="flex items-center justify-center h-full">
-        <p className="text-foreground/45 text-sm">Tracing the journeys…</p>
+        <p className="text-foreground/45 text-sm">{t.flows.loading}</p>
       </div>
     );
   }
@@ -262,35 +262,35 @@ export function FlowsTab({
       <div className="w-[380px] shrink-0 border-r border-border/40 flex flex-col bg-card/60">
         <div className="px-4 py-3 border-b border-border/30 shrink-0">
           <p className="text-[12px] uppercase tracking-widest text-foreground/45 mb-2">
-            Trace A → B
+            {t.flows.traceHeading}
           </p>
           <div className="flex items-center gap-1.5 flex-wrap">
             <EndpointPicker
               project={project}
-              placeholder="from symbol…"
+              placeholder={t.flows.fromPlaceholder}
               value={traceFrom}
               onPick={setTraceFrom}
             />
             <span className="text-foreground/30 text-[13px]">→</span>
             <EndpointPicker
               project={project}
-              placeholder="to symbol…"
+              placeholder={t.flows.toPlaceholder}
               value={traceTo}
               onPick={setTraceTo}
             />
             <button
               onClick={() => setTraceMode((mode) => (mode === "calls" ? "data" : "calls"))}
               className="px-2 py-1 rounded-md bg-popover border border-border/50 text-[12px] text-foreground/60 hover:text-foreground/85 transition-colors"
-              title="Follow control flow (CALLS) or data flow (DATA_FLOWS)"
+              title={t.flows.modeTitle}
             >
-              {traceMode === "calls" ? "control" : "data"}
+              {traceMode === "calls" ? t.flows.modeControl : t.flows.modeData}
             </button>
             <button
               onClick={runTrace}
               disabled={!traceFrom || !traceTo || tracing}
               className="px-2.5 py-1 rounded-md bg-primary/15 text-primary text-[12px] font-medium hover:bg-primary/25 transition-colors disabled:opacity-40"
             >
-              {tracing ? "…" : "trace"}
+              {tracing ? "…" : t.flows.traceButton}
             </button>
           </div>
           {trace && (
@@ -300,8 +300,7 @@ export function FlowsTab({
               ) : trace.reachable ? (
                 <div>
                   <p className="text-[12px] text-good/90 mb-1">
-                    reachable in {trace.hops} hop{trace.hops === 1 ? "" : "s"} via{" "}
-                    {trace.mode === "data" ? "data flow" : "calls"}
+                    {t.flows.reachableIn(trace.hops ?? 0, trace.mode === "data")}
                   </p>
                   {allHopsObserved(trace.path ?? []) && (
                     <p className="text-[11px] text-good/70 mb-1">
@@ -329,7 +328,7 @@ export function FlowsTab({
                                 ? "border-warn/50 text-warn/80"
                                 : "border-primary/40 text-primary/80"
                             }`}
-                            title="syntactic guard at this hop's call site"
+                            title={t.flows.guardTitleHop}
                           >
                             {formatGuard(guard)}
                           </span>
@@ -348,9 +347,7 @@ export function FlowsTab({
                 </div>
               ) : (
                 <p className="text-[12px] text-foreground/45">
-                  not reachable within {trace.max_depth} hops (
-                  {trace.mode === "data" ? "data flow" : "calls"};{" "}
-                  {trace.explored?.toLocaleString("en-US")} nodes explored)
+                  {t.flows.notReachable(trace.max_depth, trace.mode === "data", trace.explored)}
                 </p>
               )}
             </div>
@@ -358,13 +355,14 @@ export function FlowsTab({
         </div>
         <div className="px-4 py-3 border-b border-border/30 shrink-0">
           <p className="text-[12px] uppercase tracking-widest text-foreground/45">
-            Flows — entry → terminal
+            {t.flows.listHeading}
           </p>
           <p className="text-[12px] text-foreground/45 mt-1">
-            {payload.flows.length} journeys from{" "}
-            {payload.callable_total.toLocaleString("en-US")} callables
-            {payload.candidates_dropped > 0 &&
-              ` · ${payload.candidates_dropped.toLocaleString("en-US")} candidates not walked`}
+            {t.flows.summary(
+              payload.flows.length,
+              payload.callable_total,
+              payload.candidates_dropped,
+            )}
           </p>
         </div>
         <ScrollArea className="flex-1 min-h-0">
@@ -375,7 +373,7 @@ export function FlowsTab({
               return (
                 <div key={groupKey}>
                   <p className="px-4 pt-2 pb-1 text-[12px] uppercase tracking-widest text-foreground/40">
-                    {groupKey === "cross" ? "across regions" : "within one region"}
+                    {groupKey === "cross" ? t.flows.acrossRegions : t.flows.withinOneRegion}
                   </p>
                   {groupFlowsByEntry(flows).map((group) => {
                     const groupKey2 = `${groupKey}:${group.entryName}`;
@@ -398,7 +396,7 @@ export function FlowsTab({
                               {flow.steps}
                             </span>
                             {!flow.sink_terminated && (
-                              <span className="text-[12px] text-foreground/35 shrink-0" title="walk stopped at the depth cap, not at a sink">
+                              <span className="text-[12px] text-foreground/35 shrink-0" title={t.flows.depthCapTitle}>
                                 …
                               </span>
                             )}
@@ -417,8 +415,8 @@ export function FlowsTab({
                             className="w-full text-left px-4 py-[3px] text-[12px] text-foreground/40 hover:text-primary transition-colors"
                           >
                             {expanded
-                              ? "− collapse"
-                              : `× ${group.flows.length} journeys from ${group.entryName} — show all`}
+                              ? t.flows.collapse
+                              : t.flows.showAll(group.flows.length, group.entryName)}
                           </button>
                         )}
                       </div>
@@ -429,7 +427,7 @@ export function FlowsTab({
             })}
             {payload.flows.length === 0 && (
               <p className="text-[13px] text-foreground/40 px-4 py-4">
-                No flows detected — the project may have no clear entry points.
+                {t.flows.noFlows}
               </p>
             )}
           </div>
@@ -441,7 +439,7 @@ export function FlowsTab({
         {flowId === null || !detail ? (
           <div className="flex items-center justify-center h-full">
             <p className="text-foreground/45 text-sm">
-              {flowId === null ? "Pick a journey on the left" : "Loading…"}
+              {flowId === null ? t.flows.pickJourney : t.common.loading}
             </p>
           </div>
         ) : (
@@ -467,16 +465,18 @@ export function FlowsTab({
                   }}
                   className="px-2.5 py-1 rounded-md bg-surface-3 text-foreground/60 text-[13px] font-medium hover:bg-surface-4 transition-colors"
                 >
-                  {copied ? "Copied ✓" : "Copy as mermaid"}
+                  {copied ? t.flows.copied : t.flows.copyMermaid}
                 </button>
               </div>
               <p className="text-[13px] text-foreground/50 mb-4">
-                {detail.steps.length} steps
-                {detail.sink_terminated ? " · ends at a sink" : " · stopped at the depth cap"}
-                {detail.cross_region ? " · crosses regions" : ""}
-                {detail.steps_capped
-                  ? ` · ${detail.steps_capped} branches beyond the cap not shown`
-                  : ""}
+                {[
+                  t.flows.stepsCount(detail.steps.length),
+                  detail.sink_terminated ? t.flows.endsAtSink : t.flows.stoppedAtCap,
+                  ...(detail.cross_region ? [t.flows.crossesRegions] : []),
+                  ...(detail.steps_capped
+                    ? [t.flows.branchesBeyondCap(detail.steps_capped)]
+                    : []),
+                ].join(" · ")}
               </p>
 
               <div className="space-y-px">
@@ -496,7 +496,7 @@ export function FlowsTab({
                     {step.confidence !== undefined && step.confidence < 0.75 && (
                       <span
                         className="text-[11px] text-warn/80 shrink-0"
-                        title={`resolver confidence ${Math.round(step.confidence * 100)}% — this hop may be misresolved`}
+                        title={t.flows.resolverConfidence(Math.round(step.confidence * 100))}
                       >
                         ≈{Math.round(step.confidence * 100)}%
                       </span>
@@ -509,7 +509,7 @@ export function FlowsTab({
                             ? "border-warn/50 text-warn/80"
                             : "border-primary/40 text-primary/80"
                         }`}
-                        title="syntactic guard at this step's call site"
+                        title={t.flows.guardTitleStep}
                       >
                         {formatGuard(guard)}
                       </span>
