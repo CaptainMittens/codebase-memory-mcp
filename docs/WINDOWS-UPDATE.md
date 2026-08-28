@@ -111,3 +111,46 @@ trip truncates them at its default depth.
 `check-cbm.ps1` still carries a SHA-256 written into the script, so it goes
 stale on every build. It should read the `.sha256` asset beside the exe the way
 the update command above does.
+
+## Git and the API reach Forgejo by two different routes
+
+Cloudflare Access sits in front of `forgejo.richter-home.org`. It treats git
+traffic and API traffic differently, and the difference is not obvious.
+
+| What you are doing | How it gets there |
+|:--|:--|
+| `git clone`, `git fetch`, `git push` | Straight through Cloudflare. Nothing special needed. |
+| Any `/api/v1/` call | Blocked by Access. Add `--resolve forgejo.richter-home.org:443:192.168.1.168` to send it to the LAN address instead. |
+
+An API call without `--resolve` does not fail loudly. Access answers with an
+HTML login page and a 200, so a script that pipes the body into `jq` reports a
+parse error rather than an access problem. Read the first bytes of the body if
+a call returns something that is not JSON.
+
+### The credential helper
+
+`~/.local/bin/git-credential-forgejo` reads the API token out of Proton Pass
+every time git asks for it. No token is written to `.git/config`, to a remote
+URL, or to shell history. The repository turns it on with two settings:
+
+```
+git config credential.https://forgejo.richter-home.org.helper forgejo
+git config credential.https://forgejo.richter-home.org.username CaptainMittens
+```
+
+The token itself lives on the `forgejo.richter-home.org` item in the Proton Pass
+`Home Server` vault, in a field named `api`. Replace the token there and every
+repository picks up the new one with no further edits.
+
+### There is no git over SSH
+
+Checked on 2026-08-28 on the server itself. The Forgejo container publishes no
+ports at all — `docker port forgejo` prints nothing, and Caddy reverse-proxies
+its HTTP. The host has no `git` user either.
+
+So `ssh git@192.168.1.168` answers `Permission denied (publickey)` no matter
+what key you hold. That reply is the host's own sshd refusing an unknown
+username, not Forgejo rejecting a key. Registering an SSH key on the Forgejo
+account does nothing while the container has no SSH listener.
+
+Use HTTPS. It works, and it is the only route that does.
