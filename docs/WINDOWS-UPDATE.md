@@ -142,15 +142,51 @@ The token itself lives on the `forgejo.richter-home.org` item in the Proton Pass
 `Home Server` vault, in a field named `api`. Replace the token there and every
 repository picks up the new one with no further edits.
 
-### There is no git over SSH
+### Git over SSH: on the LAN only, and on port 2222
 
-Checked on 2026-08-28 on the server itself. The Forgejo container publishes no
-ports at all — `docker port forgejo` prints nothing, and Caddy reverse-proxies
-its HTTP. The host has no `git` user either.
+Until 2026-08-28 there was no SSH route at all. The container ran its own sshd
+on port 22, but the compose file published no ports, so nothing outside the
+container could reach it. `ssh git@192.168.1.168` answered
+`Permission denied (publickey)` — that was the HOST's sshd refusing an unknown
+username, not Forgejo refusing a key. Registering a key on the Forgejo account
+did nothing.
 
-So `ssh git@192.168.1.168` answers `Permission denied (publickey)` no matter
-what key you hold. That reply is the host's own sshd refusing an unknown
-username, not Forgejo rejecting a key. Registering an SSH key on the Forgejo
-account does nothing while the container has no SSH listener.
+The compose file now maps host port 2222 to container port 22. The host keeps
+port 22 for its own sshd, which is why 2222 and not 22:
 
-Use HTTPS. It works, and it is the only route that does.
+```yaml
+    ports:
+      - "2222:22"
+```
+
+Two settings go with it, and they only change the clone URL Forgejo PRINTS:
+
+```yaml
+      - FORGEJO__server__SSH_DOMAIN=forgejo.richter-home.org
+      - FORGEJO__server__SSH_PORT=2222
+```
+
+Without them the API answered `ssh://git@localhost:22/...`, which is right for
+nobody.
+
+**Cloudflare does not carry SSH.** The public name resolves to Cloudflare, and
+a connection to `forgejo.richter-home.org:2222` times out — measured on
+2026-08-28. So the printed clone URL does not work as printed from a machine
+that resolves the name through Cloudflare. Reach it by the LAN address, or by a
+Tailscale address, or add a `Host` block to `~/.ssh/config`:
+
+```
+Host forgejo
+    HostName 192.168.1.168
+    Port 2222
+    User git
+    IdentityFile ~/.ssh/<your key>
+```
+
+A key still has to be registered on the Forgejo account. The one made on
+2026-08-28 was deleted the same day, so today an unauthenticated
+`ssh -p 2222 git@192.168.1.168` correctly answers
+`Permission denied (publickey)` — the listener is there, the key is not.
+
+**HTTPS remains the route this document uses**, because it works from anywhere
+and needs no hosts entry, no key, and no LAN.
