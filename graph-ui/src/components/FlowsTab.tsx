@@ -330,7 +330,7 @@ export function FlowsTab({
                             }`}
                             title={t.flows.guardTitleHop}
                           >
-                            {formatGuard(guard)}
+                            {formatGuard(guard, t.why)}
                           </span>
                         ))}
                         {step.observed && (
@@ -511,7 +511,7 @@ export function FlowsTab({
                         }`}
                         title={t.flows.guardTitleStep}
                       >
-                        {formatGuard(guard)}
+                        {formatGuard(guard, t.why)}
                       </span>
                     ))}
                     {step.observed && <ObservedChip observed={step.observed} />}

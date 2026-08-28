@@ -1,3 +1,4 @@
+import { messages, type UiMessages } from "./i18n";
 import { fetchJsonFrom } from "./whyfetch";
 
 /* The Why view's data layer. Guards are SYNTACTIC: the conditions the code
@@ -44,30 +45,35 @@ export function fetchWhy(
 }
 
 /* One guard as human text: `when mode > 2` / `unless strict` /
- * `case CBM_LANG_C` / `in a loop` / `in catch`. */
-export function formatGuard(guard: Guard): string {
+ * `case CBM_LANG_C` / `in a loop` / `in catch`. Pass the active locale's
+ * why messages to localize the frame — the condition expression stays
+ * verbatim code in every language. */
+export function formatGuard(guard: Guard, m: UiMessages["why"] = messages.en.why): string {
   const cond = guard.cond ?? "";
   switch (guard.kind) {
     case "if":
     case "ternary":
-      if (!cond) return guard.negated ? "in an else arm" : "conditionally";
-      return `${guard.negated ? "unless" : "when"} ${cond}`;
+      if (!cond) return guard.negated ? m.guardElseArm : m.guardConditionally;
+      return guard.negated ? m.guardUnless(cond) : m.guardWhen(cond);
     case "case":
-      return cond ? `case ${cond}` : "in a switch case";
+      return cond ? m.guardCase(cond) : m.guardSwitchCase;
     case "switch":
-      return cond ? `switch on ${cond}` : "in a switch";
+      return cond ? m.guardSwitchOn(cond) : m.guardSwitch;
     case "loop":
-      return cond ? `looping while ${cond}` : "in a loop";
+      return cond ? m.guardLoopWhile(cond) : m.guardLoop;
     case "catch":
-      return "on error handling";
+      return m.guardCatch;
     default:
       return cond || guard.kind;
   }
 }
 
 /* A whole chain as one sentence fragment, outermost first. */
-export function formatGuardChain(guards: Guard[]): string {
-  return guards.map(formatGuard).join(" → ");
+export function formatGuardChain(
+  guards: Guard[],
+  m: UiMessages["why"] = messages.en.why,
+): string {
+  return guards.map((guard) => formatGuard(guard, m)).join(m.chainJoiner);
 }
 
 /* Trivial-trigger check: the complexity gate. A symbol whose callers are all

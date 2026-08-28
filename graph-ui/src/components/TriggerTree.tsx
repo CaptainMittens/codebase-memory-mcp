@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useUiMessages } from "../lib/i18n";
 import {
   fetchWhy,
   formatGuard,
@@ -12,27 +13,29 @@ import {
  * Thin by default; elision declared; guards honest about being syntactic. */
 
 function DispatchChip({ entry }: { entry: WhyEntry }) {
+  const t = useUiMessages();
   if (!entry.candidates || entry.candidates <= 1) return null;
   return (
     <span
       className="text-[11px] px-1.5 rounded-full border border-border/60 text-foreground/55"
-      title="dynamic dispatch: the resolver saw several possible targets for this call site — this is one of them"
+      title={t.why.dispatchTitle}
     >
-      ◇ 1 of {entry.candidates} targets
+      {t.why.dispatchChip(entry.candidates)}
     </span>
   );
 }
 
 function GuardChips({ entry }: { entry: WhyEntry }) {
+  const t = useUiMessages();
   if (entry.guards_unavailable)
-    return <span className="text-[12px] text-foreground/35">guards unavailable (source not readable)</span>;
+    return <span className="text-[12px] text-foreground/35">{t.why.guardsUnavailable}</span>;
   if (entry.guards.length === 0 && !entry.loop)
-    return <span className="text-[12px] text-foreground/35">unguarded — always on this path</span>;
+    return <span className="text-[12px] text-foreground/35">{t.why.unguarded}</span>;
   return (
     <span className="inline-flex flex-wrap gap-1 items-center">
       {entry.loop && (
-        <span className="text-[11px] px-1.5 rounded-full border border-border/60 text-foreground/50" title="the call site sits inside a loop">
-          ⟳ loop
+        <span className="text-[11px] px-1.5 rounded-full border border-border/60 text-foreground/50" title={t.why.loopChipTitle}>
+          {t.why.loopChip}
         </span>
       )}
       {entry.guards.map((guard, index) => (
@@ -43,9 +46,9 @@ function GuardChips({ entry }: { entry: WhyEntry }) {
               ? "border-warn/50 text-warn/90 bg-warn/10"
               : "border-primary/40 text-primary/90 bg-primary/10"
           }`}
-          title={`syntactic ${guard.kind} guard around the call site — not a proven path condition`}
+          title={t.why.guardChipTitle(guard.kind)}
         >
-          ? {formatGuard(guard)}
+          ? {formatGuard(guard, t.why)}
         </span>
       ))}
     </span>
@@ -242,6 +245,7 @@ export function TriggerTree({
   symbolId: number;
   onOpenSymbol: (ref: { id?: number; qn?: string }) => void;
 }) {
+  const t = useUiMessages();
   const [direction, setDirection] = useState<"up" | "down">("up");
   const [root, setRoot] = useState<WhyPayload | null>(null);
   const [asTable, setAsTable] = useState(false);
@@ -264,7 +268,7 @@ export function TriggerTree({
     <div className="bg-card border border-border/50 rounded-md p-4">
       <div className="flex items-baseline gap-2 mb-2">
         <p className="text-[12px] uppercase tracking-widest text-foreground/40">
-          {direction === "up" ? "When does this run?" : "What does this trigger?"}
+          {direction === "up" ? t.why.whenRuns : t.why.whatTriggers}
         </p>
         <div className="ml-auto flex items-center gap-3">
           {guardedCount >= 3 && (
@@ -280,16 +284,16 @@ export function TriggerTree({
             onClick={() => setDirection((d) => (d === "up" ? "down" : "up"))}
             className="text-[12px] text-foreground/45 hover:text-primary transition-colors"
           >
-            {direction === "up" ? "→ what it triggers" : "← when it runs"}
+            {direction === "up" ? t.why.toWhatTriggers : t.why.toWhenRuns}
           </button>
         </div>
       </div>
       {root && allUnguarded(root.entries) && root.entries.length > 0 && root.entries.length <= 2 ? (
         <p className="text-[13px] text-foreground/60">
-          {direction === "up" ? "Always runs when " : "Always triggers "}
+          {direction === "up" ? t.why.alwaysRunsPrefix : t.why.alwaysTriggersPrefix}
           {root.entries.map((entry, index) => (
             <span key={entry.id}>
-              {index > 0 && " and "}
+              {index > 0 && t.why.alwaysJoiner}
               <button
                 onClick={() => onOpenSymbol({ id: entry.id })}
                 className="font-mono text-foreground/80 hover:text-primary transition-colors"
@@ -298,7 +302,7 @@ export function TriggerTree({
               </button>
             </span>
           ))}
-          {direction === "up" ? " runs — no conditions at the call sites." : " — unconditionally."}
+          {direction === "up" ? t.why.alwaysRunsSuffix : t.why.alwaysTriggersSuffix}
         </p>
       ) : asTable && root ? (
         <GuardTable
@@ -314,10 +318,7 @@ export function TriggerTree({
           onOpenSymbol={onOpenSymbol}
         />
       )}
-      <p className="text-[11px] text-foreground/30 mt-2">
-        Guards are the syntactic conditions around each call site — not proven path
-        conditions. Dispatch, events and reflection are invisible here.
-      </p>
+      <p className="text-[11px] text-foreground/30 mt-2">{t.why.honestyFooter}</p>
     </div>
   );
 }

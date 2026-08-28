@@ -5,7 +5,9 @@ import {
   regionsViewWorthwhile,
   REGIONS_MIN_TOTAL_NODES,
   cohesionWord,
+  localizeRegionWhy,
 } from "./regions";
+import { messages } from "./i18n";
 import { minimapLayout, minimapProject } from "../components/Minimap";
 import type { Region, RegionsPayload } from "./types";
 
@@ -66,6 +68,31 @@ describe("region adapters", () => {
     expect(
       regionsViewWorthwhile(payload([region({ id: 0, name: "a" })], 99999)),
     ).toBe(false);
+  });
+});
+
+describe("localizeRegionWhy", () => {
+  const templates = [
+    "call community: 23 files, 87% under src/parser",
+    "folder group (not explained by a kept call community)",
+    "files outside every kept community and folder group",
+    "some future server template",
+  ];
+  it("passes the server's English through byte-identically", () => {
+    for (const why of templates) expect(localizeRegionWhy(why)).toBe(why);
+  });
+  it("recomposes the known templates in zh, unknown ones verbatim", () => {
+    const zh = messages.zh.regions;
+    expect(localizeRegionWhy(templates[0], zh)).toBe(
+      "调用社区：23 个文件，87% 位于 src/parser 之下",
+    );
+    expect(localizeRegionWhy(templates[1], zh)).toBe(
+      "目录分组（未被任何保留的调用社区解释）",
+    );
+    expect(localizeRegionWhy(templates[2], zh)).toBe(
+      "游离于所有保留社区与目录分组之外的文件",
+    );
+    expect(localizeRegionWhy(templates[3], zh)).toBe(templates[3]);
   });
 });
 

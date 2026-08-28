@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { kneeCount, costSentence, findingKey } from "./findings";
+import { messages } from "./i18n";
 import { isTestRegion, lensRegionsPayload, isBuiltinQn } from "./regions";
 import type { RegionsPayload } from "./types";
 
@@ -41,9 +42,15 @@ describe("costSentence", () => {
       "9 files — 1.1% of the codebase, 34% of all commits this year",
     );
   });
+  it("composes the zh sentence from the same numbers", () => {
+    expect(costSentence(9, 340, 800, 1000, messages.zh.dashboard)).toBe(
+      "9 个文件——占代码库的 1.1%，占今年全部提交的 34%",
+    );
+  });
   it("returns null without denominators", () => {
     expect(costSentence(9, 340, 0, 1000)).toBeNull();
     expect(costSentence(0, 0, 800, 1000)).toBeNull();
+    expect(costSentence(9, 340, 0, 1000, messages.zh.dashboard)).toBeNull();
   });
 });
 

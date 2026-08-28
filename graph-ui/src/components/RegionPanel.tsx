@@ -1,4 +1,6 @@
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { useUiMessages } from "../lib/i18n";
+import { localizeRegionWhy } from "../lib/regions";
 import type { Region } from "../lib/types";
 
 interface RegionPanelProps {
@@ -10,6 +12,7 @@ interface RegionPanelProps {
 /* Detail panel for a selected region body: what it is, why it got its name,
  * its representative symbols, and the door into its full-detail layout. */
 export function RegionPanel({ region, onOpen, onClose }: RegionPanelProps) {
+  const t = useUiMessages();
   return (
     <div className="w-full bg-card/95 backdrop-blur-xl flex flex-col h-full min-h-0 overflow-hidden">
       <div className="px-4 pt-4 pb-3 border-b border-border/30">
@@ -38,7 +41,7 @@ export function RegionPanel({ region, onOpen, onClose }: RegionPanelProps) {
 
         {region.why && (
           <p className="text-[13px] text-foreground/40 mt-2 leading-relaxed">
-            {region.why}
+            {localizeRegionWhy(region.why, t.regions)}
           </p>
         )}
 

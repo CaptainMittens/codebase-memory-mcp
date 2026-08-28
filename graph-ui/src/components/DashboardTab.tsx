@@ -7,6 +7,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { kneeCount, costSentence, findingKey, isDismissed, dismiss } from "../lib/findings";
+import { useUiMessages } from "../lib/i18n";
 import {
   CPLX_BINS,
   CPLX_TAIL_MIN,
@@ -239,6 +240,7 @@ export function DashboardTab({
   onOpenModulesPath,
   onOpenWiki,
 }: DashboardTabProps) {
+  const t = useUiMessages();
   const [metrics, setMetrics] = useState<MetricsPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showMuted, setShowMuted] = useState(false);
@@ -285,16 +287,14 @@ export function DashboardTab({
     };
   }, [metrics, showMuted, mutedTick]);
 
-  /* TODO(content-i18n): the computed takeaway and cost sentences interpolate
-   * many numbers and stay English this pass; route them through the i18n
-   * messages mechanism in a follow-up. */
   const takeaway = useMemo(() => {
     if (!metrics) return null;
     return complexityTakeaway(
       metrics.complexity_hist,
       metrics.top_complex.slice(0, 3).map((entry) => entry.name ?? ""),
+      t.dashboard,
     );
-  }, [metrics]);
+  }, [metrics, t]);
 
   if (error) {
     return (
@@ -322,6 +322,7 @@ export function DashboardTab({
     hero.headCommits,
     totals.files,
     metrics.churn_total_commits,
+    t.dashboard,
   );
 
   return (
@@ -353,7 +354,8 @@ export function DashboardTab({
           </div>
           {cost ? (
             <p className="text-[13px] text-foreground/55 mt-1">
-              {cost} — change here is where defects concentrate.
+              {cost}
+              {t.dashboard.costConcentrate}
             </p>
           ) : (
             <p className="text-[13px] text-foreground/45 mt-1">

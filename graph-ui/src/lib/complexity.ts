@@ -1,7 +1,9 @@
 /* Complexity bins — the single source of truth for the dashboard's
  * histogram labels and the takeaway sentence. The sentence's bin claims
  * ("simple (≤5)", "exceed 20") derive from this table, and a test binds
- * label text to the numeric bounds, so a label edit cannot silently lie. */
+ * label text to the numeric bounds — in every catalog language — so a
+ * label edit cannot silently lie. */
+import { messages, type UiMessages } from "./i18n";
 
 export interface CplxBin {
   label: string;
@@ -24,7 +26,15 @@ export const CPLX_SIMPLE_MAX = CPLX_BINS[1].hi;
 export const CPLX_TAIL_START = CPLX_BINS.length - 2;
 export const CPLX_TAIL_MIN = CPLX_BINS[CPLX_TAIL_START - 1].hi;
 
-export function complexityTakeaway(hist: number[], names: string[]): string | null {
+/* The takeaway sentence, composed by the active locale's catalog message.
+ * Every locale receives the same bin-derived parameters — no locale may
+ * hardcode a threshold. Pass the active locale's dashboard messages to
+ * localize. */
+export function complexityTakeaway(
+  hist: number[],
+  names: string[],
+  m: UiMessages["dashboard"] = messages.en.dashboard,
+): string | null {
   const total = hist.reduce((a, b) => a + b, 0);
   if (total === 0) return null;
   const simple = hist
@@ -33,6 +43,11 @@ export function complexityTakeaway(hist: number[], names: string[]): string | nu
   const tail = hist
     .filter((_, index) => index >= CPLX_TAIL_START)
     .reduce((a, b) => a + b, 0);
-  const led = names.filter(Boolean).join(", ");
-  return `${((simple / total) * 100).toFixed(0)}% of functions are simple (≤${CPLX_SIMPLE_MAX}); ${tail.toLocaleString("en-US")} exceed ${CPLX_TAIL_MIN}${led ? ` — led by ${led}` : ""}.`;
+  return m.takeaway(
+    ((simple / total) * 100).toFixed(0),
+    CPLX_SIMPLE_MAX,
+    tail,
+    CPLX_TAIL_MIN,
+    names.filter(Boolean),
+  );
 }

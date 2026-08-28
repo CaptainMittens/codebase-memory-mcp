@@ -1,5 +1,6 @@
 /* Region level of detail — adapters between the level=regions payload
  * (layout_regions.c) and the node/edge shapes the 3D scene renders. */
+import { messages, type UiMessages } from "./i18n";
 import type { GraphData, GraphNode, Region, RegionsPayload } from "./types";
 
 /* The scene renders GraphNodes; a region becomes one body. Region ids live in
@@ -78,6 +79,25 @@ export function lensRegionsPayload(
     regions: payload.regions.filter((region) => kept.has(region.id)),
     edges: payload.edges.filter((edge) => kept.has(edge.source) && kept.has(edge.target)),
   };
+}
+
+/* region.why arrives from layout_regions.c as one of three English
+ * templates; recompose it in the viewer's locale. The en messages
+ * reproduce the server strings byte-for-byte, and an unrecognized string
+ * (a future server template) passes through verbatim — honest English
+ * beats a wrong translation. */
+const REGION_WHY_CALL_COMMUNITY = /^call community: (\d+) files, (\d+)% under (.+)$/;
+
+export function localizeRegionWhy(
+  why: string,
+  m: UiMessages["regions"] = messages.en.regions,
+): string {
+  const match = REGION_WHY_CALL_COMMUNITY.exec(why);
+  if (match) return m.whyCallCommunity(Number(match[1]), Number(match[2]), match[3]);
+  if (why === "folder group (not explained by a kept call community)")
+    return m.whyFolderGroup;
+  if (why === "files outside every kept community and folder group") return m.whyMisc;
+  return why;
 }
 
 /* Hub lists must never headline builtins — a `len` hub reads as a bug and

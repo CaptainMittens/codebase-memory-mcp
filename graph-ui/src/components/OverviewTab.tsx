@@ -17,6 +17,7 @@ import {
   disambiguateRegionNames,
   lensRegionsPayload,
   isBuiltinQn,
+  localizeRegionWhy,
 } from "../lib/regions";
 import { surprisingCouplings, suggestedQuestions } from "../lib/firstread";
 import { kneeCount, findingKey, isDismissed, dismiss } from "../lib/findings";
@@ -371,11 +372,16 @@ export function OverviewTab({
   const hiddenTestRegions =
     regions && lensed ? regions.regions.length - lensed.regions.length : 0;
 
-  const couplings = useMemo(() => (lensed ? surprisingCouplings(lensed, 5) : []), [lensed]);
+  const couplings = useMemo(
+    () => (lensed ? surprisingCouplings(lensed, 5, t.firstread) : []),
+    [lensed, t],
+  );
   const questions = useMemo(
     () =>
-      lensed ? suggestedQuestions(lensed, { deadCount: metrics?.totals.dead }, 4) : [],
-    [lensed, metrics],
+      lensed
+        ? suggestedQuestions(lensed, { deadCount: metrics?.totals.dead }, 4, t.firstread)
+        : [],
+    [lensed, metrics, t],
   );
 
   /* Findings with dismissal (magnitude-bucketed keys re-alert on jumps). */
@@ -635,7 +641,7 @@ export function OverviewTab({
                 </div>
                 {region.why && (
                   <p className="text-[12px] text-foreground/35 mt-1 line-clamp-2">
-                    {region.why}
+                    {localizeRegionWhy(region.why, t.regions)}
                   </p>
                 )}
               </button>

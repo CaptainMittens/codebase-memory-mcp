@@ -1,5 +1,6 @@
 /* Findings machinery: knee-point cutoffs, the cost sentence, and finding
  * dismissals — the difference between a dashboard and a number museum. */
+import { messages, type UiMessages } from "./i18n";
 
 /* Knee of a descending score list — how many head items deserve emphasis:
  * "the head that matters" (CodeScene's refusal to show 5,000 items).
@@ -37,17 +38,20 @@ export function kneeCount(values: number[]): number {
   return Math.min(Math.max(knee, 3), Math.min(15, Math.ceil(n / 2)));
 }
 
-/* "9 files — 1.1% of the codebase, 34% of all commits this year." */
+/* "9 files — 1.1% of the codebase, 34% of all commits this year." The
+ * shares are computed here so every locale interpolates identical numbers.
+ * Pass the active locale's dashboard messages to localize. */
 export function costSentence(
   headFiles: number,
   headCommits: number,
   totalFiles: number,
   totalCommits: number,
+  m: UiMessages["dashboard"] = messages.en.dashboard,
 ): string | null {
   if (headFiles <= 0 || totalFiles <= 0 || totalCommits <= 0) return null;
   const filesShare = ((headFiles / totalFiles) * 100).toFixed(1);
   const commitShare = ((headCommits / totalCommits) * 100).toFixed(0);
-  return `${headFiles} file${headFiles > 1 ? "s" : ""} — ${filesShare}% of the codebase, ${commitShare}% of all commits this year`;
+  return m.costSentence(headFiles, filesShare, commitShare);
 }
 
 /* Dismissals: a finding stays dismissed until its magnitude changes bucket

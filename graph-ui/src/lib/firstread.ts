@@ -2,6 +2,7 @@
  * graph already holds — every insight carries the reason it is interesting.
  * No model, no scores without provenance. */
 import type { Region, RegionsPayload } from "./types";
+import { messages, type UiMessages } from "./i18n";
 import { disambiguateRegionNames } from "./regions";
 
 export interface SurprisingCoupling {
@@ -13,10 +14,12 @@ export interface SurprisingCoupling {
 
 /* Cross-region couplings ranked by an explained score: heavier links, links
  * that cross top-level directories, and links touching a low-cohesion region
- * rank higher. `misc` never surprises anyone. */
+ * rank higher. `misc` never surprises anyone. Pass the active locale's
+ * firstread messages to localize the reasons. */
 export function surprisingCouplings(
   payload: RegionsPayload,
   limit = 5,
+  m: UiMessages["firstread"] = messages.en.firstread,
 ): SurprisingCoupling[] {
   const regions = disambiguateRegionNames(payload.regions);
   const byId = new Map(regions.map((region) => [region.id, region]));
@@ -29,19 +32,15 @@ export function surprisingCouplings(
     if (source.name === "misc" || target.name === "misc") continue;
     const reasons: string[] = [];
     let score = Math.log2(1 + edge.weight);
-    reasons.push(`${edge.weight.toLocaleString("en-US")} edges cross the boundary`);
+    reasons.push(m.edgesCross(edge.weight));
     if (top(source.name) !== top(target.name)) {
       score += 2;
-      reasons.push(
-        `links ${top(source.name)}/ to ${top(target.name)}/ — different top-level areas`,
-      );
+      reasons.push(m.linksAreas(top(source.name), top(target.name)));
     }
     if (source.cohesion < 0.3 || target.cohesion < 0.3) {
       score += 1;
       const loose = source.cohesion < target.cohesion ? source : target;
-      reasons.push(
-        `${loose.name} holds together loosely (cohesion ${loose.cohesion.toFixed(2)})`,
-      );
+      reasons.push(m.holdsLoosely(loose.name, loose.cohesion));
     }
     scored.push({ source, target, weight: edge.weight, reasons, score });
   }
@@ -64,22 +63,25 @@ export interface FirstReadStats {
 }
 
 /* Question templates keyed to structural signals — each one is a prompt
- * starter the human can hand to their agent. */
+ * starter the human can hand to their agent. Pass the active locale's
+ * firstread messages to localize question and evidence; the `about` seeds
+ * stay English (they feed the composer, not the page). */
 export function suggestedQuestions(
   payload: RegionsPayload,
   stats: FirstReadStats = {},
   limit = 5,
+  m: UiMessages["firstread"] = messages.en.firstread,
 ): SuggestedQuestion[] {
   const regions = disambiguateRegionNames(payload.regions).filter(
     (region) => region.name !== "misc",
   );
   const questions: SuggestedQuestion[] = [];
 
-  const couplings = surprisingCouplings(payload, 2);
+  const couplings = surprisingCouplings(payload, 2, m);
   for (const coupling of couplings) {
     questions.push({
-      question: `Why does ${coupling.source.name} depend on ${coupling.target.name}?`,
-      why: coupling.reasons.join("; "),
+      question: m.questionWhyDepend(coupling.source.name, coupling.target.name),
+      why: coupling.reasons.join(m.reasonSeparator),
       about: [coupling.source.name, coupling.target.name],
     });
   }
@@ -89,24 +91,24 @@ export function suggestedQuestions(
     .sort((a, b) => a.cohesion - b.cohesion)[0];
   if (loose) {
     questions.push({
-      question: `Should ${loose.name} be split into smaller modules?`,
-      why: `only ${(loose.cohesion * 100).toFixed(0)}% of its edges stay inside the region (${loose.members.toLocaleString("en-US")} symbols)`,
+      question: m.questionSplit(loose.name),
+      why: m.whySplit((loose.cohesion * 100).toFixed(0), loose.members),
       about: [loose.name],
     });
   }
 
   if (stats.deadCount && stats.deadCount > 0) {
     questions.push({
-      question: `Are the ${stats.deadCount.toLocaleString("en-US")} functions with no callers safe to delete?`,
-      why: "zero CALLS and zero USAGE reach them, excluding entry points and tests",
+      question: m.questionDeadSafe(stats.deadCount),
+      why: m.whyDeadSafe,
       about: ["dead code"],
     });
   }
 
   if (stats.unresolvedShare !== undefined && stats.unresolvedShare > 0.3) {
     questions.push({
-      question: "Which call sites does the graph fail to resolve, and why?",
-      why: `${(stats.unresolvedShare * 100).toFixed(0)}% of call-ish edges are USAGE (no proven single target)`,
+      question: m.questionUnresolved,
+      why: m.whyUnresolved((stats.unresolvedShare * 100).toFixed(0)),
       about: ["resolution certainty"],
     });
   }

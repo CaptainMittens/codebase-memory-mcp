@@ -277,6 +277,84 @@ export const messages = {
       inventory: (symbols: string, edges: string, regions: string) =>
         `${symbols} symbols · ${edges} edges · ${regions} regions`,
     },
+    dashboard: {
+      /* Both thresholds arrive from CPLX_BINS via complexityTakeaway — the
+       * binding test in complexity.test.ts parses each language's claims
+       * back against the bin labels, so a bin edit fails both or neither. */
+      takeaway: (
+        simplePct: string,
+        simpleMax: number,
+        tail: number,
+        tailMin: number,
+        led: string[],
+      ) =>
+        `${simplePct}% of functions are simple (≤${simpleMax}); ${tail.toLocaleString("en-US")} exceed ${tailMin}${led.length > 0 ? ` — led by ${led.join(", ")}` : ""}.`,
+      costSentence: (files: number, filesShare: string, commitShare: string) =>
+        `${files} file${files > 1 ? "s" : ""} — ${filesShare}% of the codebase, ${commitShare}% of all commits this year`,
+      costConcentrate: " — change here is where defects concentrate.",
+    },
+    why: {
+      whenRuns: "When does this run?",
+      whatTriggers: "What does this trigger?",
+      toWhatTriggers: "→ what it triggers",
+      toWhenRuns: "← when it runs",
+      dispatchChip: (n: number) => `◇ 1 of ${n} targets`,
+      dispatchTitle:
+        "dynamic dispatch: the resolver saw several possible targets for this call site — this is one of them",
+      guardsUnavailable: "guards unavailable (source not readable)",
+      unguarded: "unguarded — always on this path",
+      loopChip: "⟳ loop",
+      loopChipTitle: "the call site sits inside a loop",
+      guardChipTitle: (kind: string) =>
+        `syntactic ${kind} guard around the call site — not a proven path condition`,
+      alwaysRunsPrefix: "Always runs when ",
+      alwaysRunsSuffix: " runs — no conditions at the call sites.",
+      alwaysTriggersPrefix: "Always triggers ",
+      alwaysTriggersSuffix: " — unconditionally.",
+      alwaysJoiner: " and ",
+      honestyFooter:
+        "Guards are the syntactic conditions around each call site — not proven path conditions. Dispatch, events and reflection are invisible here.",
+      /* Guard fragments — the condition expression stays verbatim code. */
+      guardWhen: (cond: string) => `when ${cond}`,
+      guardUnless: (cond: string) => `unless ${cond}`,
+      guardConditionally: "conditionally",
+      guardElseArm: "in an else arm",
+      guardCase: (cond: string) => `case ${cond}`,
+      guardSwitchCase: "in a switch case",
+      guardSwitchOn: (cond: string) => `switch on ${cond}`,
+      guardSwitch: "in a switch",
+      guardLoopWhile: (cond: string) => `looping while ${cond}`,
+      guardLoop: "in a loop",
+      guardCatch: "on error handling",
+      chainJoiner: " → ",
+    },
+    firstread: {
+      edgesCross: (weight: number) =>
+        `${weight.toLocaleString("en-US")} edges cross the boundary`,
+      linksAreas: (a: string, b: string) =>
+        `links ${a}/ to ${b}/ — different top-level areas`,
+      holdsLoosely: (name: string, cohesion: number) =>
+        `${name} holds together loosely (cohesion ${cohesion.toFixed(2)})`,
+      reasonSeparator: "; ",
+      questionWhyDepend: (a: string, b: string) => `Why does ${a} depend on ${b}?`,
+      questionSplit: (name: string) => `Should ${name} be split into smaller modules?`,
+      whySplit: (pct: string, members: number) =>
+        `only ${pct}% of its edges stay inside the region (${members.toLocaleString("en-US")} symbols)`,
+      questionDeadSafe: (n: number) =>
+        `Are the ${n.toLocaleString("en-US")} functions with no callers safe to delete?`,
+      whyDeadSafe: "zero CALLS and zero USAGE reach them, excluding entry points and tests",
+      questionUnresolved: "Which call sites does the graph fail to resolve, and why?",
+      whyUnresolved: (pct: string) =>
+        `${pct}% of call-ish edges are USAGE (no proven single target)`,
+    },
+    regions: {
+      /* The en messages reproduce layout_regions.c's templates byte-for-byte
+       * — localizeRegionWhy round-trips English through them unchanged. */
+      whyCallCommunity: (files: number, pct: number, dir: string) =>
+        `call community: ${files} files, ${pct}% under ${dir}`,
+      whyFolderGroup: "folder group (not explained by a kept call community)",
+      whyMisc: "files outside every kept community and folder group",
+    },
     control: {
       panel: "Control Panel",
       totalCpu: "Total CPU",
@@ -558,6 +636,79 @@ export const messages = {
       noBoundaries: "未记录跨包调用。",
       inventory: (symbols: string, edges: string, regions: string) =>
         `${symbols} 个符号 · ${edges} 条边 · ${regions} 个区域`,
+    },
+    dashboard: {
+      takeaway: (
+        simplePct: string,
+        simpleMax: number,
+        tail: number,
+        tailMin: number,
+        led: string[],
+      ) =>
+        `${simplePct}% 的函数是简单的（≤${simpleMax}）；${tail.toLocaleString("en-US")} 个超过 ${tailMin}${led.length > 0 ? `——以 ${led.join("、")} 为首` : ""}。`,
+      costSentence: (files: number, filesShare: string, commitShare: string) =>
+        `${files} 个文件——占代码库的 ${filesShare}%，占今年全部提交的 ${commitShare}%`,
+      costConcentrate: "——缺陷就集中在这里的变更中。",
+    },
+    why: {
+      whenRuns: "它何时运行？",
+      whatTriggers: "它会触发什么？",
+      toWhatTriggers: "→ 它触发什么",
+      toWhenRuns: "← 它何时运行",
+      dispatchChip: (n: number) => `◇ ${n} 个候选目标之一`,
+      dispatchTitle:
+        "动态分发：解析器在这个调用点看到多个可能的目标——这是其中之一",
+      guardsUnavailable: "守卫不可用（源码不可读）",
+      unguarded: "无守卫——这条路径上必然执行",
+      loopChip: "⟳ 循环",
+      loopChipTitle: "调用点位于循环内部",
+      guardChipTitle: (kind: string) =>
+        `调用点周围的语法 ${kind} 守卫——不是经过证明的路径条件`,
+      alwaysRunsPrefix: "只要 ",
+      alwaysRunsSuffix: " 运行，它就一定运行——调用点上没有任何条件。",
+      alwaysTriggersPrefix: "总是触发 ",
+      alwaysTriggersSuffix: "——无条件。",
+      alwaysJoiner: " 与 ",
+      honestyFooter:
+        "守卫只是各调用点周围的语法条件——不是经过证明的路径条件。分发、事件与反射在这里不可见。",
+      /* 守卫片段——条件表达式保留代码原文。 */
+      guardWhen: (cond: string) => `当 ${cond} 时`,
+      guardUnless: (cond: string) => `除非 ${cond}`,
+      guardConditionally: "视条件而定",
+      guardElseArm: "在 else 分支中",
+      guardCase: (cond: string) => `匹配 ${cond} 分支`,
+      guardSwitchCase: "在 switch 分支中",
+      guardSwitchOn: (cond: string) => `按 ${cond} 分支`,
+      guardSwitch: "在 switch 中",
+      guardLoopWhile: (cond: string) => `当 ${cond} 时循环`,
+      guardLoop: "在循环中",
+      guardCatch: "在错误处理中",
+      chainJoiner: " → ",
+    },
+    firstread: {
+      edgesCross: (weight: number) =>
+        `${weight.toLocaleString("en-US")} 条边跨越这条边界`,
+      linksAreas: (a: string, b: string) =>
+        `连接 ${a}/ 与 ${b}/——分属不同的顶层目录`,
+      holdsLoosely: (name: string, cohesion: number) =>
+        `${name} 内聚松散（cohesion ${cohesion.toFixed(2)}）`,
+      reasonSeparator: "；",
+      questionWhyDepend: (a: string, b: string) => `为什么 ${a} 依赖 ${b}？`,
+      questionSplit: (name: string) => `${name} 应该拆分成更小的模块吗？`,
+      whySplit: (pct: string, members: number) =>
+        `只有 ${pct}% 的边留在区域内部（${members.toLocaleString("en-US")} 个符号）`,
+      questionDeadSafe: (n: number) =>
+        `这 ${n.toLocaleString("en-US")} 个没有调用者的函数可以安全删除吗？`,
+      whyDeadSafe: "没有任何 CALLS 或 USAGE 到达它们——已排除入口点与测试",
+      questionUnresolved: "图谱未能解析哪些调用点？为什么？",
+      whyUnresolved: (pct: string) =>
+        `${pct}% 的调用类边是 USAGE（没有可证明的唯一目标）`,
+    },
+    regions: {
+      whyCallCommunity: (files: number, pct: number, dir: string) =>
+        `调用社区：${files} 个文件，${pct}% 位于 ${dir} 之下`,
+      whyFolderGroup: "目录分组（未被任何保留的调用社区解释）",
+      whyMisc: "游离于所有保留社区与目录分组之外的文件",
     },
     control: {
       panel: "控制面板",
