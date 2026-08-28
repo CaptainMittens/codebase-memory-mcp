@@ -180,13 +180,45 @@ Host forgejo
     HostName 192.168.1.168
     Port 2222
     User git
-    IdentityFile ~/.ssh/<your key>
+    IdentityFile ~/.ssh/id_ed25519_forgejo
+    IdentitiesOnly yes
 ```
 
-A key still has to be registered on the Forgejo account. The one made on
-2026-08-28 was deleted the same day, so today an unauthenticated
-`ssh -p 2222 git@192.168.1.168` correctly answers
-`Permission denied (publickey)` — the listener is there, the key is not.
+That block is on this Mac. `IdentitiesOnly yes` stops ssh offering the other
+keys in `~/.ssh/` first — four refused offers in a row is what tripped fail2ban
+earlier the same day.
 
-**HTTPS remains the route this document uses**, because it works from anywhere
-and needs no hosts entry, no key, and no LAN.
+### The key on this Mac
+
+Made 2026-08-28 and registered on the account as `mac-2026-08-28`:
+
+| Where | Value |
+|:--|:--|
+| Private key | `~/.ssh/id_ed25519_forgejo` |
+| Fingerprint | `SHA256:K/S0QD6vhW0ZtyNlnL5qNeK0ooENrxiO1PE9Zvb6r70` |
+| Forgejo key id | 2 |
+
+Two checks, both run on 2026-08-28:
+
+```
+$ ssh -T forgejo
+Hi there, CaptainMittens! You've successfully authenticated with the key
+named mac-2026-08-28, but Forgejo does not provide shell access.
+```
+
+Read AND write both work. A throwaway branch went up over SSH, `ls-remote`
+found it, the delete push removed it, and `ls-remote` then found nothing. A
+dry run was not accepted as proof.
+
+The git remote for it is `forgejo-ssh`:
+
+```
+ssh://forgejo/CaptainMittens/codebase-memory-mcp.git
+```
+
+### Which route to use
+
+**HTTPS stays the default, and it is the route the update command above uses.**
+It works from anywhere, needs no LAN, no hosts entry, and no key. SSH is the
+faster route when you are on the LAN or on Tailscale and would rather not go
+out to Cloudflare and back.
