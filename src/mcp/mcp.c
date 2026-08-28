@@ -8353,6 +8353,25 @@ static char *handle_index_repository(cbm_mcp_server_t *srv, const char *args) {
             srv, doc, root, project_name, repo_path, persistence, p, excluded_dirs, excluded_count,
             file_errors, file_error_count, has_logfile ? logfile_path : NULL);
         yyjson_mut_obj_add_str(doc, root, "status", degraded ? "degraded" : "indexed");
+    } else if (rc == CBM_PIPELINE_ABORT_PRESERVE_DB) {
+        /* The truthful abort message: the old generic "check repo_path" hint
+         * sent people debugging a path that was fine, when the run aborted
+         * pre-publication (semantic inputs changed mid-run, or a discovery/
+         * manifest phase failed transiently) and the previous index is
+         * intact. A 99-test cascade on the Windows leg traced back to
+         * exactly this — the response said error, but not which kind. */
+        yyjson_mut_obj_add_str(doc, root, "status", "aborted_previous_preserved");
+        yyjson_mut_obj_add_str(doc, root, "hint",
+                               "Indexing aborted before publication; the previous index is "
+                               "intact and still serving. Causes: files changed while the run "
+                               "was in flight, or a discovery/manifest phase failed "
+                               "transiently. Retry; if it repeats, check the run log.");
+    } else if (rc == CBM_PIPELINE_PERSIST_FAILED) {
+        yyjson_mut_obj_add_str(doc, root, "status", "persist_failed");
+        yyjson_mut_obj_add_str(doc, root, "hint",
+                               "The validated staging database could not be published. Check "
+                               "free disk space and permissions on the cache directory; the "
+                               "previous index may have been rolled back.");
     } else {
         yyjson_mut_obj_add_str(doc, root, "status", "error");
         yyjson_mut_obj_add_str(doc, root, "hint",
