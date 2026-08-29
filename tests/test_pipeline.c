@@ -4627,6 +4627,67 @@ TEST(pipeline_tsjs_receiver_suppresses_weak_method_edge) {
     PASS();
 }
 
+/* Python counterpart to the TS/JS receiver guard (#1276), sequential path.
+ * Pins BOTH directions. NEGATIVE: an attribute call on an unknown receiver
+ * (a parameter) must not bind the lone same-named project method through
+ * unique_name. POSITIVE: an import-bound receiver (helper.compute) and a bare
+ * local call must still produce their CALLS edges.
+ * Fewer than 50 files exercises pass_calls.c. */
+TEST(pipeline_python_receiver_suppresses_weak_method_edge) {
+    char tmp[256];
+    snprintf(tmp, sizeof(tmp), "/tmp/cbm_python_recv_XXXXXX");
+    if (!cbm_mkdtemp(tmp)) {
+        FAIL("tmpdir");
+    }
+
+    write_temp_file(tmp, "worker.py",
+                    "class Worker:\n"
+                    "    def backward(self):\n"
+                    "        return 1\n");
+    write_temp_file(tmp, "pkg/__init__.py", "from .helper import compute\n");
+    write_temp_file(tmp, "pkg/helper.py",
+                    "def compute(value):\n"
+                    "    return value * 2\n");
+    write_temp_file(tmp, "caller.py",
+                    "from pkg import helper\n"
+                    "\n"
+                    "def external_call(accelerator):\n"
+                    "    return accelerator.backward()\n"
+                    "\n"
+                    "def imported_call():\n"
+                    "    return helper.compute(42)\n"
+                    "\n"
+                    "def local_helper():\n"
+                    "    return 1\n"
+                    "\n"
+                    "def bare_call():\n"
+                    "    return local_helper()\n");
+
+    char db_path[512];
+    snprintf(db_path, sizeof(db_path), "%s/python_recv.db", tmp);
+    cbm_pipeline_t *p = cbm_pipeline_new(tmp, db_path, CBM_MODE_FULL);
+    ASSERT_NOT_NULL(p);
+    ASSERT_EQ(cbm_pipeline_run(p), 0);
+    const char *project = cbm_pipeline_project_name(p);
+
+    cbm_store_t *s = cbm_store_open_path(db_path);
+    ASSERT_NOT_NULL(s);
+
+    /* NEGATIVE: `accelerator` is a parameter — Worker.backward must not bind. */
+    ASSERT_FALSE(cross_file_call_exists(s, project, "external_call", "backward"));
+    /* POSITIVE: import-bound receiver and bare local call both survive. */
+    ASSERT_TRUE(cross_file_call_exists(s, project, "imported_call", "compute"));
+    ASSERT_TRUE(cross_file_call_exists(s, project, "bare_call", "local_helper"));
+    /* Tripwire: a run that emitted no edges at all would satisfy the negative
+     * assertion vacuously. */
+    ASSERT_GTE(cbm_store_count_edges_by_type(s, project, "CALLS"), 1);
+
+    cbm_store_close(s);
+    cbm_pipeline_free(p);
+    th_rmtree(tmp);
+    PASS();
+}
+
 /* Count nodes with the given exact name in the project (e.g. a Route path). */
 static int count_nodes_named(cbm_store_t *s, const char *project, const char *name) {
     cbm_node_t *ns = NULL;
@@ -4762,6 +4823,103 @@ TEST(pipeline_tsjs_receiver_parallel_keeps_service_edges) {
      * receiver and the dev.load weak match to ApiThing.load. */
     ASSERT_FALSE(cross_file_call_exists(s, project, "checkFormat", "test"));
     ASSERT_FALSE(cross_file_call_exists(s, project, "callLoad", "load"));
+
+    cbm_store_close(s);
+    cbm_pipeline_free(p);
+    if (saved) {
+        cbm_setenv("CBM_WORKERS", saved, 1);
+        free(saved);
+    } else {
+        cbm_unsetenv("CBM_WORKERS");
+    }
+    th_rmtree(tmp);
+    PASS();
+}
+
+/* Parallel Python regression for #1276. The field-type heuristic capitalizes
+ * the receiver token and previously promoted accelerator.print() to
+ * MockAccelerator.print at 0.85; ordinary suffix matching also selected one
+ * arbitrary backward()/step() implementation. All are unresolved-receiver
+ * calls and must remain absent, while the import-bound call and the bare local
+ * call remain — the same both-directions pin as the sequential test above.
+ * >= 50 files forces pass_parallel.c and try_field_type_hint(), so this is also
+ * the guard against a sequential/parallel divergence. */
+TEST(pipeline_python_receiver_parallel_suppresses_weak_method_edges) {
+    char tmp[256];
+    snprintf(tmp, sizeof(tmp), "/tmp/cbm_python_par_XXXXXX");
+    if (!cbm_mkdtemp(tmp)) {
+        FAIL("tmpdir");
+    }
+
+    write_temp_file(tmp, "targets.py",
+                    "class MockAccelerator:\n"
+                    "    def print(self, value):\n"
+                    "        return value\n"
+                    "\n"
+                    "class OtherPrinter:\n"
+                    "    def print(self, value):\n"
+                    "        return value\n"
+                    "\n"
+                    "class FlashAttentionFunction:\n"
+                    "    def backward(self, loss):\n"
+                    "        return loss\n"
+                    "\n"
+                    "class OtherBackward:\n"
+                    "    def backward(self, loss):\n"
+                    "        return loss\n"
+                    "\n"
+                    "class EulerScheduler:\n"
+                    "    def step(self):\n"
+                    "        return 1\n"
+                    "\n"
+                    "class OtherScheduler:\n"
+                    "    def step(self):\n"
+                    "        return 1\n");
+    write_temp_file(tmp, "pkg/__init__.py", "from .helper import compute\n");
+    write_temp_file(tmp, "pkg/helper.py",
+                    "def compute(value):\n"
+                    "    return value * 2\n");
+    write_temp_file(tmp, "caller.py",
+                    "from pkg import helper\n"
+                    "\n"
+                    "def local_helper():\n"
+                    "    return 1\n"
+                    "\n"
+                    "def train(accelerator, trainer):\n"
+                    "    accelerator.print('hello')\n"
+                    "    accelerator.backward(1)\n"
+                    "    trainer.lr_scheduler.step()\n"
+                    "    helper.compute(42)\n"
+                    "    return local_helper()\n");
+    for (int i = 0; i < 52; i++) {
+        char name[64];
+        char body[128];
+        snprintf(name, sizeof(name), "filler%d.py", i);
+        snprintf(body, sizeof(body), "def filler%d():\n    return %d\n", i, i);
+        write_temp_file(tmp, name, body);
+    }
+
+    char *old_workers = getenv("CBM_WORKERS");
+    char *saved = old_workers ? strdup(old_workers) : NULL;
+    cbm_setenv("CBM_WORKERS", "4", 1);
+
+    char db_path[512];
+    snprintf(db_path, sizeof(db_path), "%s/python_par.db", tmp);
+    cbm_pipeline_t *p = cbm_pipeline_new(tmp, db_path, CBM_MODE_FULL);
+    ASSERT_NOT_NULL(p);
+    ASSERT_EQ(cbm_pipeline_run(p), 0);
+    const char *project = cbm_pipeline_project_name(p);
+
+    cbm_store_t *s = cbm_store_open_path(db_path);
+    ASSERT_NOT_NULL(s);
+
+    /* NEGATIVE: every receiver here is a parameter or an attribute of one. */
+    ASSERT_FALSE(cross_file_call_exists(s, project, "train", "print"));
+    ASSERT_FALSE(cross_file_call_exists(s, project, "train", "backward"));
+    ASSERT_FALSE(cross_file_call_exists(s, project, "train", "step"));
+    /* POSITIVE: import-bound and bare local calls survive the parallel path too. */
+    ASSERT_TRUE(cross_file_call_exists(s, project, "train", "compute"));
+    ASSERT_TRUE(cross_file_call_exists(s, project, "train", "local_helper"));
 
     cbm_store_close(s);
     cbm_pipeline_free(p);
@@ -12457,6 +12615,142 @@ TEST(pipeline_ensemble_routing_method_scoping) {
     PASS();
 }
 
+/* #518/#519 item-7 regression: the DELTA merge is the warm path most users
+ * hit. It used to write nodes_fts with a hand-rolled four-column INSERT of
+ * its own; with a fifth `body` column that literal leaves prose NULL for every
+ * node arriving by delta, invisibly — a full reindex still looks perfect.
+ * Routing the write through cbm_store_fts_rebuild() is what this test binds:
+ * revert pipeline_delta.c to a four-column INSERT and it fails. */
+TEST(pipeline_delta_patch_indexes_docstring_into_fts_body) {
+    char *td = th_mktempdir("cbm_delta_fts");
+    ASSERT_NOT_NULL(td);
+    char dbpath[512];
+    snprintf(dbpath, sizeof(dbpath), "%s/delta.db", td);
+
+    cbm_store_t *store = cbm_store_open_path(dbpath);
+    ASSERT_NOT_NULL(store);
+    const char *proj = "deltafts";
+    ASSERT_EQ(cbm_store_upsert_project(store, proj, td), CBM_STORE_OK);
+
+    /* A previous generation already on disk, so the patch runs against a real
+     * id watermark rather than an empty database. */
+    cbm_node_t existing = {.project = proj,
+                           .label = "Function",
+                           .name = "alreadyThere",
+                           .qualified_name = "deltafts.main.alreadyThere",
+                           .file_path = "main.c"};
+    ASSERT_TRUE(cbm_store_upsert_node(store, &existing) > 0);
+    ASSERT_EQ(cbm_store_fts_rebuild(store, NULL, 0), CBM_STORE_OK);
+
+    /* The delta patch: preseed proxies the resident rows and sets the
+     * watermark, then the NEW node is minted above it. */
+    cbm_gbuf_t *gb = cbm_gbuf_new(proj, td);
+    ASSERT_NOT_NULL(gb);
+    int64_t max_db_id = cbm_delta_preseed(store, proj, gb);
+    ASSERT_TRUE(max_db_id > 0);
+    int64_t new_id = cbm_gbuf_upsert_node(
+        gb, "Section", "Upgrading", "deltafts.README.Upgrading", "README.md", 1, 9,
+        "{\"docstring\":\"migrates the retention ledger before the cutover\"}");
+    ASSERT_TRUE(new_id > max_db_id);
+
+    ASSERT_EQ(cbm_delta_patch(store, proj, gb, max_db_id, NULL, 0), 0);
+    cbm_gbuf_free(gb);
+
+    /* nodes_fts is contentless, so a column-filtered MATCH is the only way to
+     * observe WHICH column a token landed in — and the only assertion that
+     * distinguishes "indexed" from "indexed without its prose". */
+    sqlite3_stmt *st = NULL;
+    ASSERT_EQ(sqlite3_prepare_v2(cbm_store_get_db(store),
+                                 "SELECT rowid FROM nodes_fts WHERE nodes_fts MATCH ?1", -1, &st,
+                                 NULL),
+              SQLITE_OK);
+    sqlite3_bind_text(st, 1, "body:retention", -1, SQLITE_TRANSIENT);
+    ASSERT_EQ(sqlite3_step(st), SQLITE_ROW);
+    ASSERT_EQ((long long)sqlite3_column_int64(st, 0), (long long)new_id);
+    ASSERT_EQ(sqlite3_step(st), SQLITE_DONE);
+    sqlite3_finalize(st);
+
+    /* The identifier columns are still written on the same path. */
+    st = NULL;
+    ASSERT_EQ(sqlite3_prepare_v2(cbm_store_get_db(store),
+                                 "SELECT COUNT(*) FROM nodes_fts WHERE nodes_fts MATCH ?1", -1, &st,
+                                 NULL),
+              SQLITE_OK);
+    sqlite3_bind_text(st, 1, "name:Upgrading", -1, SQLITE_TRANSIENT);
+    ASSERT_EQ(sqlite3_step(st), SQLITE_ROW);
+    ASSERT_EQ(sqlite3_column_int(st, 0), 1);
+    sqlite3_finalize(st);
+
+    cbm_store_close(store);
+    th_rmtree(td);
+    PASS();
+}
+
+
+/* End-to-end for #518/#519: source → docstring → properties JSON → nodes_fts
+ * `body` → findable. Each layer has its own test; this one proves they connect.
+ * It is also the guard on the size budget: build_def_props drops an oversized
+ * field ATOMICALLY, so a 500-byte section body that did not fit the 2 KB
+ * properties buffer would vanish silently and every narrower test would still
+ * pass. */
+TEST(pipeline_markdown_and_config_prose_reaches_fts_body) {
+    char tmp[256];
+    snprintf(tmp, sizeof(tmp), "/tmp/cbm_prose_XXXXXX");
+    ASSERT_NOT_NULL(cbm_mkdtemp(tmp));
+    char path[512];
+    char dbpath[512];
+    snprintf(dbpath, sizeof(dbpath), "%s/prose.db", tmp);
+
+    /* A section body well past the 500-byte cap, so the truncating path — the
+     * one that produces the longest properties JSON — is what gets indexed. */
+    snprintf(path, sizeof(path), "%s/README.md", tmp);
+    FILE *f = fopen(path, "w");
+    ASSERT_NOT_NULL(f);
+    fprintf(f, "# Installation\n\nThe phlogiston bootstrap provisions a workstation.\n");
+    for (int i = 0; i < 40; i++) {
+        fprintf(f, "Filler prose line %d that pads the section well past the cap.\n", i);
+    }
+    fclose(f);
+
+    snprintf(path, sizeof(path), "%s/META.yaml", tmp);
+    f = fopen(path, "w");
+    ASSERT_NOT_NULL(f);
+    fprintf(f, "name: widget\ndescription: Aggregates quicksilver telemetry per shard.\n");
+    fclose(f);
+
+    /* One code file so the run is a normal index rather than a docs-only edge. */
+    snprintf(path, sizeof(path), "%s/main.go", tmp);
+    f = fopen(path, "w");
+    ASSERT_NOT_NULL(f);
+    fprintf(f, "package main\n\nfunc main() {}\n");
+    fclose(f);
+
+    cbm_pipeline_t *p = cbm_pipeline_new(tmp, dbpath, CBM_MODE_FULL);
+    ASSERT_NOT_NULL(p);
+    ASSERT_EQ(cbm_pipeline_run(p), 0);
+    cbm_pipeline_free(p);
+
+    cbm_store_t *s = cbm_store_open_path(dbpath);
+    ASSERT_NOT_NULL(s);
+    sqlite3_stmt *st = NULL;
+    ASSERT_EQ(sqlite3_prepare_v2(cbm_store_get_db(s),
+                                 "SELECT COUNT(*) FROM nodes_fts WHERE nodes_fts MATCH ?1", -1, &st,
+                                 NULL),
+              SQLITE_OK);
+    const char *cases[] = {"body:phlogiston", "body:quicksilver"};
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        sqlite3_reset(st);
+        sqlite3_bind_text(st, 1, cases[i], -1, SQLITE_TRANSIENT);
+        ASSERT_EQ(sqlite3_step(st), SQLITE_ROW);
+        ASSERT_GT(sqlite3_column_int(st, 0), 0);
+    }
+    sqlite3_finalize(st);
+    cbm_store_close(s);
+
+    th_rmtree(tmp);
+    PASS();
+}
+
 SUITE(pipeline) {
     RUN_TEST(pipeline_lsp_surface_persisted_and_body_edit_invariant);
     /* Index lock */
@@ -12510,7 +12804,9 @@ SUITE(pipeline) {
     RUN_TEST(pipeline_incremental_parallel_result_cache_alloc_failure_preserves_db_and_retries);
 #endif
     RUN_TEST(pipeline_tsjs_receiver_suppresses_weak_method_edge);
+    RUN_TEST(pipeline_python_receiver_suppresses_weak_method_edge);
     RUN_TEST(pipeline_tsjs_receiver_parallel_keeps_service_edges);
+    RUN_TEST(pipeline_python_receiver_parallel_suppresses_weak_method_edges);
     RUN_TEST(pipeline_parallel_python_cross_only_dunder_gets_synthetic_carrier);
     RUN_TEST(pipeline_parallel_rust_cross_only_macro_hidden_gets_synthetic_carrier);
     RUN_TEST(pipeline_native_fetch_classified_as_http_calls);
@@ -12774,6 +13070,8 @@ SUITE(pipeline) {
     RUN_TEST(pipeline_ensemble_routing_attr_does_not_leak_across_items);
     RUN_TEST(pipeline_ensemble_routing_settings_targets);
     RUN_TEST(pipeline_ensemble_routing_unterminated_item_is_safe);
+    RUN_TEST(pipeline_delta_patch_indexes_docstring_into_fts_body);
+    RUN_TEST(pipeline_markdown_and_config_prose_reaches_fts_body);
 }
 
 /* Focused semantic-manifest and publication contracts. Kept separate from the
