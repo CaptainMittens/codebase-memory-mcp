@@ -2859,6 +2859,50 @@ TEST(cypher_exec_return_star) {
     PASS();
 }
 
+TEST(cypher_return_star_dedups_repeated_pattern_var) {
+    /* RETURN * collected its column variables from every pattern in turn and
+     * never deduped, so a variable named in two patterns got its four columns
+     * twice. Here f is named in the MATCH and again in the OPTIONAL MATCH, so
+     * eight columns is right and twelve is the fault. */
+    cbm_store_t *s = setup_cypher_store();
+    cbm_cypher_result_t r = {0};
+    int rc = cbm_cypher_execute(s, "MATCH (f:Function) OPTIONAL MATCH (f)-[:CALLS]->(g) RETURN *",
+                                "test", 0, &r);
+    ASSERT_EQ(rc, 0);
+    ASSERT_EQ(r.col_count, 8);
+    ASSERT_STR_EQ(r.columns[0], "f.name");
+    ASSERT_STR_EQ(r.columns[4], "g.name");
+    cbm_cypher_result_free(&r);
+    cbm_store_close(s);
+    PASS();
+}
+
+TEST(cypher_return_star_after_with_names_aliases) {
+    /* RETURN * built its columns from the query pattern, never from the
+     * bindings it was about to project. After a WITH the live scope is the
+     * aliases the WITH made, so the old code asked for f and g, found neither,
+     * and answered every value empty with no error. */
+    cbm_store_t *s = setup_cypher_store();
+    cbm_cypher_result_t r = {0};
+    int rc = cbm_cypher_execute(s,
+                                "MATCH (f:Function)-[:CALLS]->(g) "
+                                "WITH f.name AS caller, g.name AS callee RETURN *",
+                                "test", 0, &r);
+    ASSERT_EQ(rc, 0);
+    ASSERT_EQ(r.col_count, 2);
+    ASSERT_STR_EQ(r.columns[0], "caller");
+    ASSERT_STR_EQ(r.columns[1], "callee");
+    /* Three CALLS edges in the fixture. */
+    ASSERT_EQ(r.row_count, 3);
+    for (int i = 0; i < r.row_count; i++) {
+        ASSERT_TRUE(r.rows[i][0][0] != '\0');
+        ASSERT_TRUE(r.rows[i][1][0] != '\0');
+    }
+    cbm_cypher_result_free(&r);
+    cbm_store_close(s);
+    PASS();
+}
+
 TEST(cypher_parse_neq) {
     cbm_query_t *q = NULL;
     char *err = NULL;
@@ -4161,6 +4205,8 @@ SUITE(cypher) {
     RUN_TEST(cypher_exec_where_is_null);
     RUN_TEST(cypher_exec_where_is_not_null);
     RUN_TEST(cypher_exec_return_star);
+    RUN_TEST(cypher_return_star_dedups_repeated_pattern_var);
+    RUN_TEST(cypher_return_star_after_with_names_aliases);
     RUN_TEST(cypher_parse_neq);
     RUN_TEST(cypher_parse_in);
     RUN_TEST(cypher_parse_is_null);
