@@ -53,6 +53,7 @@ int cbm_cli_checksum_manifest_digest(const char *manifest_path, const char *arch
 void cbm_cli_set_activation_cleanup_failure_for_test(bool enabled);
 int cbm_cli_activation_abort_cleanup_probe_for_test(void);
 bool cbm_cli_activation_test_ops_installed(void);
+bool cbm_cli_activation_runtime_parent_installed(void);
 int cbm_cli_build_yaml_stdio_mcp_block_for_test(const char *binary_path, bool goose_schema,
                                                 char *block, size_t block_size);
 bool cbm_cli_stdin_allowed_for_schema_for_test(const char *schema_str);
@@ -550,10 +551,53 @@ static cbm_cli_activation_ops_t cli_activation_fake_ops(cli_activation_fake_t *f
  * Windows a test that has not installed its own activation ops gets a default
  * fake for the duration of the command: without the seam, `update` (correctly)
  * hands off to install.ps1 before the shared agent-config logic these tests
- * verify ever runs. POSIX behavior is untouched — tests without ops keep
- * exercising the real activation machinery. */
+ * verify ever runs. On POSIX the real activation machinery still runs for
+ * tests without ops; only the directory it inspects changes — see below. */
 static cli_activation_fake_t g_cli_test_seam_fake;
 static cbm_cli_activation_ops_t g_cli_test_seam_ops;
+
+/* The real activation guard looks for live CBM processes in a runtime
+ * directory shared by the whole machine and the whole account. A daemon the
+ * developer already runs therefore sits in the way of every install and
+ * uninstall below, and the guard correctly refuses them. Give the guard a
+ * private runtime directory instead. It still runs, and it still refuses when
+ * one of these tests leaves something of its own running; it just no longer
+ * sees processes that have nothing to do with the test.
+ *
+ * One directory serves the whole process: the cli suite runs alone in its own
+ * runner process (see SERIAL_SUITES in scripts/run-tests-parallel.sh), so no
+ * two tests share it at the same moment. */
+static char g_cli_test_runtime_parent[512];
+static bool g_cli_test_runtime_parent_ready = false;
+static bool g_cli_test_runtime_parent_failed = false;
+
+static void cli_test_runtime_parent_cleanup(void) {
+    if (!g_cli_test_runtime_parent_ready) {
+        return;
+    }
+    g_cli_test_runtime_parent_ready = false;
+    th_cleanup(g_cli_test_runtime_parent);
+}
+
+/* Make the private runtime directory on first use. Returns NULL if it cannot
+ * be made, which leaves the command on the shared directory — a test that then
+ * fails reports the real problem instead of hiding it. */
+static const char *cli_test_runtime_parent(void) {
+    if (g_cli_test_runtime_parent_ready) {
+        return g_cli_test_runtime_parent;
+    }
+    if (g_cli_test_runtime_parent_failed) {
+        return NULL;
+    }
+    if (!th_secure_runtime_parent_new(g_cli_test_runtime_parent,
+                                      sizeof(g_cli_test_runtime_parent), "cli-suite")) {
+        g_cli_test_runtime_parent_failed = true;
+        return NULL;
+    }
+    g_cli_test_runtime_parent_ready = true;
+    atexit(cli_test_runtime_parent_cleanup);
+    return g_cli_test_runtime_parent;
+}
 
 static int cli_test_cmd_dispatch(int (*command)(int, char **), int argc, char **argv) {
 #ifdef _WIN32
@@ -567,7 +611,20 @@ static int cli_test_cmd_dispatch(int (*command)(int, char **), int argc, char **
         g_cli_test_seam_ops = cli_activation_fake_ops(&g_cli_test_seam_fake);
         cbm_cli_set_activation_ops_for_test(&g_cli_test_seam_ops);
     }
+    /* Fake ops never read the runtime directory, and a test that set its own
+     * runtime directory keeps it. Only the remaining case needs isolating. */
+    const char *isolated = NULL;
+    if (!cbm_cli_activation_test_ops_installed() &&
+        !cbm_cli_activation_runtime_parent_installed()) {
+        isolated = cli_test_runtime_parent();
+        if (isolated) {
+            cbm_cli_set_activation_runtime_parent_for_test(isolated);
+        }
+    }
     int rc = command(argc, argv);
+    if (isolated) {
+        cbm_cli_set_activation_runtime_parent_for_test(NULL);
+    }
     if (engage) {
         cbm_cli_set_activation_ops_for_test(NULL);
     }
