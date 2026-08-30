@@ -492,7 +492,8 @@ static const tool_def_t TOOLS[] = {
      "File nodes with CONTAINS_FOLDER/CONTAINS_FILE edges; each File carries kind "
      "(\"parse_partial\" = indexed but constructs in the flagged line ranges MAY be missing; "
      "\"parse_unusable\" = indexed but the ranges cover nearly the whole file, so read the "
-     "source; or a skip phase) and detail (the line ranges / reason)). Example: MATCH (f:File) WHERE "
+     "source; or a skip phase) and detail (the line ranges / reason)). "
+     "Example: MATCH (f:File) WHERE "
      "f.kind = \\\"parse_partial\\\" RETURN f.file_path, f.detail. Absence from this graph is "
      "NOT a completeness guarantee.",
      "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Cypher "
@@ -645,8 +646,8 @@ static const tool_def_t TOOLS[] = {
      "indexing-COVERAGE report — which files the indexer could NOT fully cover (best-effort "
      "signal): 'parse_partial' files WERE indexed but contain line ranges tree-sitter could not "
      "parse — constructs there MAY be missing from the graph (some are still recovered); "
-     "'parse_unusable' files WERE indexed too, but one range covers 80 percent or more of the file, so "
-     "the ranges are useless advice — read the source; "
+     "'parse_unusable' files WERE indexed too, but one range covers 80 percent or more of "
+     "the file, so the ranges are useless advice — read the source; "
      "'skipped' files were not indexed at all (oversized/read/parse failure). Use this before "
      "trusting graph completeness on a file: if a file is listed, ALSO grep it (especially the "
      "flagged ranges). IMPORTANT: absence from these lists is NOT a completeness guarantee — the "
@@ -4855,8 +4856,8 @@ static void coverage_add_row_json(yyjson_mut_doc *doc, yyjson_mut_val *array,
             doc, item, "match",
             row->rel_path && strcmp(row->rel_path, requested_path) == 0 ? "exact" : "ancestor");
     }
-    if (row->kind && (strcmp(row->kind, "parse_partial") == 0 ||
-                      strcmp(row->kind, "parse_unusable") == 0)) {
+    if (row->kind &&
+        (strcmp(row->kind, "parse_partial") == 0 || strcmp(row->kind, "parse_unusable") == 0)) {
         coverage_add_ranges(doc, item, row->detail);
     }
     yyjson_mut_arr_add_val(array, item);

@@ -561,9 +561,9 @@ static int objectscript_export_split_range_marker(const char *ranges, size_t *bo
     if (i == len || i == 0 || ranges[i - 1] != '+') {
         return 0;
     }
-    size_t marker = i - 1;              /* index of '+' */
+    size_t marker = i - 1; /* index of '+' */
     if (marker > 0 && ranges[marker - 1] == ',') {
-        marker--;                       /* drop the separator too */
+        marker--; /* drop the separator too */
     }
     *body_len = marker;
     return atoi(ranges + i);
@@ -612,8 +612,8 @@ static bool objectscript_export_append_error_ranges(CBMFileResult *aggregate,
         return false;
     }
     if (dropped > 0) {
-        combined = cbm_arena_sprintf(&aggregate->arena, "%s%s+%d", combined,
-                                     combined[0] ? "," : "", dropped);
+        combined = cbm_arena_sprintf(&aggregate->arena, "%s%s+%d", combined, combined[0] ? "," : "",
+                                     dropped);
         if (!combined) {
             return false;
         }
@@ -621,6 +621,16 @@ static bool objectscript_export_append_error_ranges(CBMFileResult *aggregate,
     aggregate->error_ranges = combined;
     return true;
 }
+
+#if defined(CBM_COVERAGE_MARKER_TEST_API) && CBM_COVERAGE_MARKER_TEST_API
+/* Test seam. This join only fires for a Studio Export file holding several
+ * <Class> elements where a class overruns the 256-region cap — hard to reach
+ * through the pipeline, easy to get wrong, and a wrong result hides ranges
+ * without saying so. Expose the join so the marker rules can be pinned. */
+bool cbm_pipeline_coverage_marker_test_join(CBMFileResult *aggregate, const CBMFileResult *part) {
+    return objectscript_export_append_error_ranges(aggregate, part);
+}
+#endif
 
 /* Studio Export files may contain multiple <Class> elements, while the
  * pipeline cache has one slot per physical file. Extract each generated UDL
@@ -842,10 +852,9 @@ int cbm_pipeline_pass_definitions(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t
         } else if (result->parse_incomplete) {
             /* Best-effort parse-coverage signal (#963): indexed, but with
              * ERROR/MISSING regions — see pass_parallel.c (keep in sync). */
-            cbm_pipeline_add_file_error(ctx->pipeline, rel,
-                                        result->error_ranges ? result->error_ranges : "unknown",
-                                        result->parse_unusable ? "parse_unusable"
-                                                               : "parse_partial");
+            cbm_pipeline_add_file_error(
+                ctx->pipeline, rel, result->error_ranges ? result->error_ranges : "unknown",
+                result->parse_unusable ? "parse_unusable" : "parse_partial");
         }
 
         /* Create nodes for each definition */
