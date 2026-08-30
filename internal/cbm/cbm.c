@@ -1801,16 +1801,15 @@ static CBMFileResult *extract_file_ex_body(const char *source, int source_len, C
                                 orig_lines++;
                             }
                         }
-                        uint8_t *map =
-                            (uint8_t *)cbm_arena_alloc(a, (size_t)orig_lines + 2);
+                        uint8_t *map = (uint8_t *)cbm_arena_alloc(a, (size_t)orig_lines + 2);
                         int exp_lines = preprocessed->expanded_line_count;
                         uint8_t *bad_rows =
                             exp_lines > 0 ? (uint8_t *)calloc((size_t)exp_lines + 2, 1) : NULL;
                         if (map && bad_rows) {
                             memset(map, 0, (size_t)orig_lines + 2);
                             cbm_mark_no_code_lines(source, source_len, map, orig_lines);
-                            cbm_mark_pp_error_rows(pp_root, bad_rows, (uint32_t)exp_lines,
-                                                   expanded, expanded_len);
+                            cbm_mark_pp_error_rows(pp_root, bad_rows, (uint32_t)exp_lines, expanded,
+                                                   expanded_len);
                             /* Walk the expanded text once. An expanded line
                              * only vouches for its original line when it
                              * actually HAS content: the preprocessor emits a

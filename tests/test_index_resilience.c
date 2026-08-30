@@ -337,8 +337,16 @@ TEST(index_parse_partial_reported) {
     ASSERT_STR_EQ("indexed", status);
     ASSERT_EQ(yyjson_get_int(yyjson_obj_get(sc, "skipped_count")), 0);
 
-    /* The coverage signal is surfaced with ranges + the best-effort note. */
+    /* The coverage signal is surfaced with ranges + the best-effort note.
+     * Both bounds matter. The floor catches the signal going missing. The
+     * ceiling catches the opposite failure: exactly one of the two files has
+     * a gap, so a count above 1 means the clean Python neighbour got flagged
+     * as well, which is how over-flagging looks from the outside. */
     ASSERT_GTE(yyjson_get_int(yyjson_obj_get(sc, "parse_partial_count")), 1);
+    ASSERT_EQ(yyjson_get_int(yyjson_obj_get(sc, "parse_partial_count")), 1);
+    /* A local gap is not a whole-file failure, so the other coverage kind
+     * must stay empty here. */
+    ASSERT_EQ(yyjson_get_int(yyjson_obj_get(sc, "parse_unusable_count")), 0);
     yyjson_val *pp = yyjson_obj_get(sc, "parse_partial");
     ASSERT_NOT_NULL(pp);
     yyjson_val *files = yyjson_obj_get(pp, "files");
@@ -354,7 +362,13 @@ TEST(index_parse_partial_reported) {
             found_split = 1;
             ASSERT_NOT_NULL(ranges);
             ASSERT_GT((int)strlen(ranges), 0);
+            /* The gap is the two-header block, not the whole file. An
+             * 8-line file reported as 1-8 would be the old whole-file
+             * blame coming back. */
+            ASSERT_NULL(strstr(ranges, "1-8"));
         }
+        /* The clean file must not appear in the list at all. */
+        ASSERT_NULL(fp ? strstr(fp, "good.py") : NULL);
     }
     ASSERT_TRUE(found_split);
     const char *note = yyjson_get_str(yyjson_obj_get(pp, "note"));
