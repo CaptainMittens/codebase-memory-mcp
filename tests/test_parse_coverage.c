@@ -33,6 +33,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 
 /* Convenience extract wrapper (same shape as test_extraction_imports.c). */
 static CBMFileResult *do_extract(const char *src, CBMLanguage lang, const char *path) {
@@ -237,12 +238,22 @@ TEST(py_clean_file_not_flagged) {
     PASS();
 }
 
+/* Read the trailing "+<N>" truncation marker off a range string. Returns N, or
+ * 0 when the string carries no marker. */
+static int ranges_dropped_marker(const char *ranges) {
+    const char *plus = ranges ? strrchr(ranges, '+') : NULL;
+    if (!plus || !isdigit((unsigned char)plus[1])) {
+        return 0;
+    }
+    return atoi(plus + 1);
+}
+
 TEST(error_region_cap_is_honored) {
     /* Pathological input: many separate unrecoverable garbage blocks
      * interleaved with valid defs. The collector must stay bounded by its
-     * 64-region cap (matches CBM_MAX_ERROR_REGIONS in cbm.c) — pathological
+     * 256-region cap (matches CBM_MAX_ERROR_REGIONS in cbm.c) — pathological
      * input can't blow up the report, and the flag itself still fires. */
-    enum { GARBAGE_BLOCKS = 200, LINE_CAP = 64 };
+    enum { GARBAGE_BLOCKS = 400, LINE_CAP = 256 };
     char *src = (char *)malloc(GARBAGE_BLOCKS * 96 + 1);
     ASSERT_NOT_NULL(src);
     size_t off = 0;
@@ -257,6 +268,55 @@ TEST(error_region_cap_is_honored) {
     ASSERT_GTE(r->error_region_count, 1);
     ASSERT_LTE(r->error_region_count, LINE_CAP);
     ASSERT_NOT_NULL(r->error_ranges);
+    cbm_free_result(r);
+    PASS();
+}
+
+/* A clipped range list must say so. 400 garbage blocks overrun the 256-region
+ * cap, so the report keeps 256 ranges and ends with a "+<N>" marker naming the
+ * number thrown away. Without the marker the short list reads as a complete
+ * one, which is the whole defect this guards. */
+TEST(error_region_cap_reports_what_it_dropped) {
+    enum { GARBAGE_BLOCKS = 400, LINE_CAP = 256 };
+    char *src = (char *)malloc(GARBAGE_BLOCKS * 96 + 1);
+    ASSERT_NOT_NULL(src);
+    size_t off = 0;
+    for (int i = 0; i < GARBAGE_BLOCKS; i++) {
+        off += (size_t)snprintf(
+            src + off, 96, "def ok%d():\n    return %d\n%%%%%% garbage%d ((( %%%%%%\n", i, i, i);
+    }
+    CBMFileResult *r = do_extract(src, CBM_LANG_PYTHON, "cap_marker.py");
+    free(src);
+    ASSERT_NOT_NULL(r);
+    ASSERT_NOT_NULL(r->error_ranges);
+    /* The cap bound, so the kept list is full and the marker is present. */
+    ASSERT_EQ(r->error_region_count, LINE_CAP);
+    int dropped = ranges_dropped_marker(r->error_ranges);
+    ASSERT_GTE(dropped, 1);
+    /* Every block produces at most one region, so the total cannot exceed the
+     * number of blocks — a marker that overcounts would fail here. */
+    ASSERT_LTE(r->error_region_count + dropped, GARBAGE_BLOCKS);
+    /* The marker is a SUFFIX: nothing follows it, or a reader stops early and
+     * silently loses every range after it. */
+    const char *plus = strrchr(r->error_ranges, '+');
+    ASSERT_NOT_NULL(plus);
+    for (const char *c = plus + 1; *c; c++) {
+        ASSERT_TRUE(isdigit((unsigned char)*c));
+    }
+    cbm_free_result(r);
+    PASS();
+}
+
+/* Inverse guard: a file that stays under the cap must carry NO marker, or
+ * every ordinary report would look clipped. */
+TEST(uncapped_ranges_carry_no_marker) {
+    const char *src = "def ok():\n    return 1\n%%% garbage (((\ndef ok2():\n    return 2\n";
+    CBMFileResult *r = do_extract(src, CBM_LANG_PYTHON, "small.py");
+    ASSERT_NOT_NULL(r);
+    ASSERT_TRUE(r->parse_incomplete);
+    ASSERT_NOT_NULL(r->error_ranges);
+    ASSERT_EQ(ranges_dropped_marker(r->error_ranges), 0);
+    ASSERT_NULL(strchr(r->error_ranges, '+'));
     cbm_free_result(r);
     PASS();
 }
@@ -604,6 +664,62 @@ TEST(c_clean_file_stays_unflagged_after_refinement) {
 }
 
 
+/* The whole-file class, and the reason the parse_unusable kind exists.
+ *
+ * The Phase 2 refinement that narrows a whole-file range using the
+ * preprocessed parse only runs for C, C++ and CUDA. A Python file whose root
+ * node is ERROR gets no such help, so it still reports one range covering
+ * every line — and one range over 80% of a file is not advice worth printing. */
+TEST(python_whole_file_error_is_unusable) {
+    const char *src = ")))\n((( \n]]] [[[\ndef x(:\n";
+    CBMFileResult *r = do_extract(src, CBM_LANG_PYTHON, "unparseable.py");
+    ASSERT_NOT_NULL(r);
+    ASSERT_TRUE(r->parse_incomplete);
+    ASSERT_TRUE(r->parse_unusable);
+    ASSERT_EQ(r->error_region_count, 1);
+    ASSERT_NOT_NULL(r->error_ranges);
+    cbm_free_result(r);
+    PASS();
+}
+
+/* Inverse guard, and the one that keeps the kind meaningful: a file with a
+ * real but LOCAL parse failure must stay parse_partial. If this flipped, every
+ * flagged file would say "read the source" and the ranges would stop earning
+ * their keep. */
+TEST(local_error_stays_partial_not_unusable) {
+    const char *src = "def ok():\n    return 1\n%%% garbage (((\ndef ok2():\n    return 2\n"
+                      "def ok3():\n    return 3\ndef ok4():\n    return 4\n"
+                      "def ok5():\n    return 5\ndef ok6():\n    return 6\n";
+    CBMFileResult *r = do_extract(src, CBM_LANG_PYTHON, "local_error.py");
+    ASSERT_NOT_NULL(r);
+    ASSERT_TRUE(r->parse_incomplete);
+    ASSERT_FALSE(r->parse_unusable);
+    cbm_free_result(r);
+    PASS();
+}
+
+/* A clean file is neither. */
+TEST(clean_file_is_neither_partial_nor_unusable) {
+    CBMFileResult *r = do_extract(C_CLEAN, CBM_LANG_C, "clean_kinds.c");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->parse_incomplete);
+    ASSERT_FALSE(r->parse_unusable);
+    cbm_free_result(r);
+    PASS();
+}
+
+/* The C file that started this work must NOT land in the unusable class. Its
+ * whole-file range is exactly what Phase 2 broke up, so if this ever flips
+ * back to true the refinement has stopped working. */
+TEST(c_ifdef_split_is_partial_never_unusable) {
+    CBMFileResult *r = do_extract(C_IFDEF_SPLIT, CBM_LANG_C, "split_kind.c");
+    ASSERT_NOT_NULL(r);
+    ASSERT_TRUE(r->parse_incomplete);
+    ASSERT_FALSE(r->parse_unusable);
+    cbm_free_result(r);
+    PASS();
+}
+
 SUITE(parse_coverage) {
     RUN_TEST(c_ifdef_split_brace_sets_parse_incomplete);
     RUN_TEST(c_ifdef_split_brace_neighbors_still_extracted);
@@ -613,6 +729,12 @@ SUITE(parse_coverage) {
     RUN_TEST(py_recovered_def_not_flagged);
     RUN_TEST(py_clean_file_not_flagged);
     RUN_TEST(error_region_cap_is_honored);
+    RUN_TEST(error_region_cap_reports_what_it_dropped);
+    RUN_TEST(uncapped_ranges_carry_no_marker);
+    RUN_TEST(python_whole_file_error_is_unusable);
+    RUN_TEST(local_error_stays_partial_not_unusable);
+    RUN_TEST(clean_file_is_neither_partial_nor_unusable);
+    RUN_TEST(c_ifdef_split_is_partial_never_unusable);
     RUN_TEST(c_trailing_recovered_defs_keep_flag);
     RUN_TEST(dockerfile_missing_final_newline_not_flagged_issue1610);
     RUN_TEST(dockerfile_with_final_newline_still_clean_issue1610);
