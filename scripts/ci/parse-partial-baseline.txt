@@ -1,0 +1,7 @@
+# Ceiling for parse_partial_count when this repo indexes itself.
+#
+# The number below is what the gate allows. It complements the FLOOR asserted
+# in tests/test_index_resilience.c, which stops the signal being switched off
+# by accident. Raising this number is allowed but should be explained in the
+# commit that does it.
+58
