@@ -1,0 +1,15 @@
+# Files the self-index coverage gate skips, one repo-relative path per line.
+#
+# Adding a line here is a deliberate decision, not a convenience. It says:
+# "we know this file reports a wide parse-coverage range, we have looked at
+# why, and we accept it." Write the reason above the path. A line with no
+# reason should be removed rather than trusted.
+#
+# Blank lines and lines starting with # are ignored.
+
+# One range covers lines 245-327 of a 326-line file (25.5%). The tree-sitter
+# PowerShell grammar cannot parse the `} else {` branch that runs to the end
+# of the file, so those 83 lines really are absent from the graph. This is a
+# genuine grammar gap, not a reporting error. Every other file of 200+ lines
+# in this repo sits at 3.9% or below.
+scripts/setup-windows.ps1
