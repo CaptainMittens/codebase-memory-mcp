@@ -778,16 +778,24 @@ static bool cbm_source_nesting_exceeds(const char *source, int source_len, int c
  * nodes (does not descend into an error subtree — one range per failed region).
  * Bounded by CBM_MAX_ERROR_REGIONS so pathological input can't blow up the
  * output. The ranges mark where constructs were dropped; they are a detection
- * aid, never a completeness proof. */
-#define CBM_MAX_ERROR_REGIONS 64
+ * aid, never a completeness proof.
+ *
+ * `dropped` counts the ranges the cap threw away. It exists so a clipped list
+ * cannot read as a complete one: cbm_error_ranges_str turns a non-zero count
+ * into a trailing "+<N>" marker. Phase 2 split one whole-file range into many
+ * small ones, which pushed real files straight into a cap that used to be
+ * unreachable, so the clip is live behaviour and not a theoretical limit. */
+#define CBM_MAX_ERROR_REGIONS 256
 typedef struct {
     uint32_t starts[CBM_MAX_ERROR_REGIONS];
     uint32_t ends[CBM_MAX_ERROR_REGIONS];
     int count;
+    int dropped;
 } cbm_error_regions_t;
 
 static void cbm_error_regions_push(cbm_error_regions_t *acc, TSNode n) {
     if (acc->count >= CBM_MAX_ERROR_REGIONS) {
+        acc->dropped++;
         return;
     }
     acc->starts[acc->count] = ts_node_start_point(n).row + 1;
@@ -851,13 +859,14 @@ static bool cbm_is_eof_terminator_miss(TSNode n, const char *source, int source_
     return true;
 }
 
+/* Walks to the end even after the cap is full, so `dropped` is the real number
+ * of ranges lost rather than a lower bound. This costs little: the walk never
+ * descends into an ERROR subtree — it records the top-most node and moves on —
+ * so it only visits the spine of nodes that contain an error, plus one level. */
 static void cbm_collect_error_regions(TSNode n, cbm_error_regions_t *acc, const char *source,
                                       int source_len) {
-    if (acc->count >= CBM_MAX_ERROR_REGIONS) {
-        return;
-    }
     uint32_t k = ts_node_child_count(n);
-    for (uint32_t i = 0; i < k && acc->count < CBM_MAX_ERROR_REGIONS; i++) {
+    for (uint32_t i = 0; i < k; i++) {
         TSNode c = ts_node_child(n, i);
         if (ts_node_is_missing(c) || strcmp(ts_node_type(c), "ERROR") == 0) {
             if (cbm_is_eof_terminator_miss(c, source, source_len)) {
@@ -1298,7 +1307,11 @@ static void cbm_push_trimmed_run(cbm_error_regions_t *out, uint32_t start, uint3
     while (end >= start && end <= line_count && (map[end] & CBM_LINE_NO_CODE)) {
         end--;
     }
-    if (start > end || out->count >= CBM_MAX_ERROR_REGIONS) {
+    if (start > end) {
+        return; /* nothing but blank, comment or directive lines — no construct lost */
+    }
+    if (out->count >= CBM_MAX_ERROR_REGIONS) {
+        out->dropped++;
         return;
     }
     out->starts[out->count] = start;
@@ -1330,7 +1343,7 @@ static bool cbm_line_is_toplevel_macro_call(const char *src, int src_len, uint32
 static void cbm_refine_regions_with_pp_lines(cbm_error_regions_t *regs, const uint8_t *map,
                                              uint32_t line_count, const char *src, int src_len,
                                              const CBMDefArray *defs) {
-    cbm_error_regions_t out = {{0}, {0}, 0};
+    cbm_error_regions_t out = {{0}, {0}, 0, regs->dropped};
     for (int i = 0; i < regs->count; i++) {
         uint32_t run_start = 0;
         uint32_t run_end = 0;
@@ -1357,12 +1370,40 @@ static void cbm_refine_regions_with_pp_lines(cbm_error_regions_t *regs, const ui
 }
 
 /* Serialize collected regions as "start-end,start-end,..." into the arena. */
+/* Share of a file one range must cover before the range stops being advice and
+ * becomes noise. 80% is well clear of anything real: the widest single range in
+ * this repo covers 25.5% of its file, and the next widest 3.9%. */
+#define CBM_UNUSABLE_PCT 80
+
+/* Number of 1-based lines in `src`. A file that does not end with a newline
+ * still has a last line, so the count is separators plus one. */
+static uint32_t cbm_count_lines(const char *src, int src_len) {
+    uint32_t n = 1;
+    for (int i = 0; i < src_len; i++) {
+        if (src[i] == '\n' && i + 1 < src_len) {
+            n++;
+        }
+    }
+    return n;
+}
+
+/* Serialize collected regions as "start-end,start-end,...", with a trailing
+ * ",+<N>" when the cap threw N ranges away.
+ *
+ * The marker must stay a SUFFIX and nothing else. Every reader stops at the
+ * first token that is not a range, so a marker in the middle of a string
+ * silently hides everything after it. objectscript_export_append_error_ranges
+ * strips markers before joining two parts for exactly that reason.
+ *
+ * N can be non-zero while the kept list is short, because the recovery and
+ * macro rules run after collection and remove ranges the cap never saw. That
+ * still reports honestly: the cap bound, so what was lost is unknown. */
 static const char *cbm_error_ranges_str(CBMArena *a, const cbm_error_regions_t *regs) {
-    if (regs->count <= 0) {
+    if (regs->count <= 0 && regs->dropped <= 0) {
         return NULL;
     }
     enum { RANGE_MAX = 24 }; /* "4294967295-4294967295," */
-    char *buf = (char *)cbm_arena_alloc(a, (size_t)regs->count * RANGE_MAX);
+    char *buf = (char *)cbm_arena_alloc(a, (size_t)(regs->count + 1) * RANGE_MAX);
     if (!buf) {
         return NULL;
     }
@@ -1370,6 +1411,9 @@ static const char *cbm_error_ranges_str(CBMArena *a, const cbm_error_regions_t *
     for (int i = 0; i < regs->count; i++) {
         off += (size_t)snprintf(buf + off, RANGE_MAX, "%s%u-%u", i ? "," : "", regs->starts[i],
                                 regs->ends[i]);
+    }
+    if (regs->dropped > 0) {
+        snprintf(buf + off, RANGE_MAX, "%s+%d", off ? "," : "", regs->dropped);
     }
     return buf;
 }
@@ -1706,7 +1750,7 @@ static CBMFileResult *extract_file_ex_body(const char *source, int source_len, C
                      * the raw source line, and whose QN the raw pass did not
                      * already extract. */
                     if (ts_node_has_error(root)) {
-                        cbm_error_regions_t raw_regs = {{0}, {0}, 0};
+                        cbm_error_regions_t raw_regs = {{0}, {0}, 0, 0};
                         cbm_collect_error_regions(root, &raw_regs, source, source_len);
                         if (raw_regs.count > 0) {
                             int defs_before = result->defs.count;
@@ -1915,7 +1959,7 @@ static CBMFileResult *extract_file_ex_body(const char *source, int source_len, C
      * miss, and a fully recovered file is not flagged at all. Detection aid
      * only: the absence of this flag is NOT a completeness guarantee. */
     if (ts_node_has_error(root)) {
-        cbm_error_regions_t regs = {{0}, {0}, 0};
+        cbm_error_regions_t regs = {{0}, {0}, 0, 0};
         if (strcmp(ts_node_type(root), "ERROR") == 0) {
             cbm_error_regions_push(&regs, root); /* whole file unparseable */
         } else {
@@ -1940,10 +1984,25 @@ static CBMFileResult *extract_file_ex_body(const char *source, int source_len, C
          * refinement, because its evidence is per-line: a narrow range points at
          * the call itself instead of the whole blob around it. */
         cbm_subtract_macro_invocation_regions(&regs, &result->defs, source, source_len);
-        if (regs.count > 0) {
+        /* A file whose kept list is empty but whose cap still bound is NOT clean:
+         * the ranges the cap threw away were never judged by the two rules
+         * above, so nothing proves they were recovered. Flag it. */
+        if (regs.count > 0 || regs.dropped > 0) {
             result->parse_incomplete = true;
             result->error_region_count = regs.count;
             result->error_ranges = cbm_error_ranges_str(a, &regs);
+            /* One range covering nearly the whole file is not advice, it is
+             * noise: "look at lines 1 to 13047" of a 13046-line file tells a
+             * reader nothing they did not already know. Mark those separately
+             * so the report can say "read the source" instead. See
+             * parse_unusable in cbm.h for which files land here and why. */
+            if (regs.count == 1 && regs.dropped == 0) {
+                uint32_t total = cbm_count_lines(source, source_len);
+                uint32_t span = regs.ends[0] - regs.starts[0] + 1;
+                if (total > 0 && span * 100 >= total * CBM_UNUSABLE_PCT) {
+                    result->parse_unusable = true;
+                }
+            }
         }
     }
 
