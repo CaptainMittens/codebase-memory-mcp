@@ -10690,7 +10690,14 @@ static void uninstall_agent_mcp_instr(mcp_uninstall_args_t paths, bool dry_run,
     if (!dry_run) {
         char binary_path[CLI_BUF_1K];
         cbm_agent_installed_binary_path(cbm_get_home_dir(), binary_path, sizeof(binary_path));
-        int remove_result = remove_fn(binary_path, paths.config_path);
+        /* No config file means there is no entry left to remove, so the work
+         * this call would do is already done. An agent is detected from its own
+         * command on PATH, which says nothing about whether its config file was
+         * ever written — and the user may simply have deleted it. Reporting a
+         * failure here stops the whole uninstall before the executable and the
+         * indexes come out, over a file whose absence is the wanted end state. */
+        bool config_present = paths.config_path && cbm_file_exists(paths.config_path);
+        int remove_result = config_present ? remove_fn(binary_path, paths.config_path) : CLI_OK;
         if (remove_result < CLI_OK) {
             record_agent_config_error(true, name, "mcp_uninstall", paths.config_path);
         } else if (remove_result > CLI_OK) {
