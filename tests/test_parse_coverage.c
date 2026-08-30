@@ -20,7 +20,7 @@
  *   GREEN (fixed):  cbm_extract_file sets parse_incomplete=true iff the tree
  *                   contains ERROR/MISSING nodes, records the 1-based line
  *                   ranges of the TOP-MOST error regions ("start-end,..."),
- *                   bounded by the 64-region cap, and clean files stay
+ *                   bounded by the 256-region cap, and clean files stay
  *                   completely unflagged (no false positives).
  *
  * BEST-EFFORT framing (must never be weakened the other way): a flag means
@@ -668,6 +668,49 @@ TEST(c_ifdef_split_is_partial_never_unusable) {
     PASS();
 }
 
+/* Phase 0 finding 2, pinned so a tree-sitter bump cannot change it quietly.
+ *
+ * The C grammar handles `_Thread_local` unevenly, and these are the three
+ * forms measured on the grammar shipped today:
+ *
+ *   static _Thread_local int x = 0;   parses clean
+ *   static _Thread_local int *p;      parses clean
+ *   static _Thread_local char b[8];   fails — flagged as range 1-1
+ *
+ * The array line really is missing from the graph, so flagging it is the
+ * honest answer, not a false positive. This test exists to make a grammar
+ * bump visible: if a newer grammar fixes the array form, this goes red and
+ * says so, instead of leaving a wrong note in the plan. (The plan's Phase 0
+ * also listed the pointer form as failing. It does not fail today.) */
+TEST(c_thread_local_grammar_limit_is_pinned_issue963) {
+    CBMFileResult *ok = do_extract("static _Thread_local int x = 0;\n"
+                                   "void f(void) { x = 1; }\n",
+                                   CBM_LANG_C, "tls_init.c");
+    ASSERT_NOT_NULL(ok);
+    ASSERT_FALSE(ok->parse_incomplete);
+    cbm_free_result(ok);
+
+    CBMFileResult *ptr = do_extract("static _Thread_local int *p;\n"
+                                    "void f(void) { p = 0; }\n",
+                                    CBM_LANG_C, "tls_ptr.c");
+    ASSERT_NOT_NULL(ptr);
+    ASSERT_FALSE(ptr->parse_incomplete);
+    cbm_free_result(ptr);
+
+    CBMFileResult *arr = do_extract("static _Thread_local char b[8];\n"
+                                    "void f(void) { b[0] = 0; }\n",
+                                    CBM_LANG_C, "tls_arr.c");
+    ASSERT_NOT_NULL(arr);
+    ASSERT_TRUE(arr->parse_incomplete);
+    ASSERT_NOT_NULL(arr->error_ranges);
+    /* The range names the one broken line, not the whole file. */
+    ASSERT_STR_EQ("1-1", arr->error_ranges);
+    /* The clean function below it still reaches the graph. */
+    ASSERT_TRUE(has_def(arr, "f"));
+    cbm_free_result(arr);
+    PASS();
+}
+
 SUITE(parse_coverage) {
     RUN_TEST(c_ifdef_split_brace_sets_parse_incomplete);
     RUN_TEST(c_ifdef_split_brace_neighbors_still_extracted);
@@ -698,4 +741,5 @@ SUITE(parse_coverage) {
     RUN_TEST(c_ifdef_split_range_never_starts_on_a_directive);
     RUN_TEST(c_refinement_does_not_suppress_real_garbage);
     RUN_TEST(c_clean_file_stays_unflagged_after_refinement);
+    RUN_TEST(c_thread_local_grammar_limit_is_pinned_issue963);
 }
