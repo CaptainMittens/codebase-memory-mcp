@@ -104,6 +104,29 @@ static const char *PY_CLEAN = "def ok():\n"
                               "def ok2():\n"
                               "    return 2\n";
 
+/* #1610 fixtures follow. Refinement fixtures live here so they sit beside the
+ * split-brace fixture they build on. */
+
+/* Same split-brace shape as C_IFDEF_SPLIT, plus real garbage further down.
+ * Guards against over-suppression: the preprocessor explains the guarded
+ * region but explains nothing about the garbage, so BOTH must stay flagged
+ * and they must be reported as two separate ranges, not one big one. */
+static const char *C_IFDEF_SPLIT_PLUS_GARBAGE = "#include <stdio.h>\n"           /* 1 */
+                                                "\n"                            /* 2 */
+                                                "void ok_before(void) { }\n"    /* 3 */
+                                                "\n"                            /* 4 */
+                                                "#ifdef FEATURE_A\n"            /* 5 */
+                                                "static int guarded(int x) {\n" /* 6 */
+                                                "#else\n"                       /* 7 */
+                                                "static int guarded_alt(int x) {\n" /* 8 */
+                                                "#endif\n"                      /* 9 */
+                                                "    return x + 1;\n"           /* 10 */
+                                                "}\n"                           /* 11 */
+                                                "\n"                            /* 12 */
+                                                "%%% ((( &&& ))) %%%\n"         /* 13 */
+                                                "\n"                            /* 14 */
+                                                "void ok_after(void) { }\n";    /* 15 */
+
 /* ── Tests ────────────────────────────────────────────────────────────────── */
 
 TEST(c_ifdef_split_brace_sets_parse_incomplete) {
@@ -418,6 +441,117 @@ TEST(width_bearing_error_at_eof_still_flagged_issue1610) {
     PASS();
 }
 
+/* ── Phase 2: refine raw ranges with the preprocessed tree ──────────────────
+ *
+ * The raw parse sees both #ifdef branches at once, so its ERROR node covers
+ * the whole guarded construct (lines 5-11). The PREPROCESSED parse sees only
+ * the branch the preprocessor picked, and parses it clean. Every original
+ * line that shows up clean in that second parse is therefore accounted for,
+ * and reporting it as unparsed is false.
+ *
+ * What is left is the branch the preprocessor threw away — line 6 here. That
+ * one really is missing from the graph, so it stays flagged. Directive lines
+ * (#ifdef / #else / #endif) hold no construct, so a range never starts or
+ * ends on one.
+ */
+
+/* Return 1 if the "a-b,c-d" range string covers 1-based `line`. */
+static int ranges_cover_line(const char *ranges, unsigned int line) {
+    const char *p = ranges;
+    while (p && *p) {
+        unsigned int s = 0, e = 0;
+        if (sscanf(p, "%u-%u", &s, &e) == 2 && line >= s && line <= e) {
+            return 1;
+        }
+        p = strchr(p, ',');
+        if (p) {
+            p++;
+        }
+    }
+    return 0;
+}
+
+/* Total lines covered by every range in the string. */
+static unsigned int ranges_total_span(const char *ranges) {
+    const char *p = ranges;
+    unsigned int total = 0;
+    while (p && *p) {
+        unsigned int s = 0, e = 0;
+        if (sscanf(p, "%u-%u", &s, &e) == 2 && e >= s) {
+            total += e - s + 1;
+        }
+        p = strchr(p, ',');
+        if (p) {
+            p++;
+        }
+    }
+    return total;
+}
+
+TEST(c_ifdef_split_range_narrows_to_dropped_branch) {
+    /* RED before the refinement: the raw range covers the whole 5-11
+     * construct. GREEN after: only line 6, the branch the preprocessor did
+     * not pick, is still reported. */
+    CBMFileResult *r = do_extract(C_IFDEF_SPLIT, CBM_LANG_C, "split.c");
+    ASSERT_NOT_NULL(r);
+    ASSERT_TRUE(r->parse_incomplete);
+    ASSERT_NOT_NULL(r->error_ranges);
+    ASSERT_TRUE(ranges_cover_line(r->error_ranges, 6u)); /* dropped branch */
+    ASSERT_LTE(ranges_total_span(r->error_ranges), 3u);  /* was 7 lines */
+    cbm_free_result(r);
+    PASS();
+}
+
+TEST(c_ifdef_split_range_excludes_lines_the_preprocessor_explained) {
+    /* Lines 10 and 11 are the shared body and closing brace. They parse
+     * clean once a branch is chosen, so pointing an agent at them is wrong. */
+    CBMFileResult *r = do_extract(C_IFDEF_SPLIT, CBM_LANG_C, "split.c");
+    ASSERT_NOT_NULL(r);
+    ASSERT_NOT_NULL(r->error_ranges);
+    ASSERT_FALSE(ranges_cover_line(r->error_ranges, 10u));
+    ASSERT_FALSE(ranges_cover_line(r->error_ranges, 11u));
+    ASSERT_FALSE(ranges_cover_line(r->error_ranges, 3u)); /* ok_before */
+    cbm_free_result(r);
+    PASS();
+}
+
+TEST(c_ifdef_split_range_never_starts_on_a_directive) {
+    /* Lines 5, 7 and 9 are bare #ifdef / #else / #endif. No construct can
+     * live on them, so they must not appear in a range. */
+    CBMFileResult *r = do_extract(C_IFDEF_SPLIT, CBM_LANG_C, "split.c");
+    ASSERT_NOT_NULL(r);
+    ASSERT_NOT_NULL(r->error_ranges);
+    ASSERT_FALSE(ranges_cover_line(r->error_ranges, 5u));
+    ASSERT_FALSE(ranges_cover_line(r->error_ranges, 7u));
+    ASSERT_FALSE(ranges_cover_line(r->error_ranges, 9u));
+    cbm_free_result(r);
+    PASS();
+}
+
+TEST(c_refinement_does_not_suppress_real_garbage) {
+    /* Anti-over-suppression. The preprocessor cannot explain line 13, so it
+     * stays flagged even though the guarded region above it narrowed. */
+    CBMFileResult *r = do_extract(C_IFDEF_SPLIT_PLUS_GARBAGE, CBM_LANG_C, "both.c");
+    ASSERT_NOT_NULL(r);
+    ASSERT_TRUE(r->parse_incomplete);
+    ASSERT_NOT_NULL(r->error_ranges);
+    ASSERT_TRUE(ranges_cover_line(r->error_ranges, 13u)); /* the garbage */
+    ASSERT_FALSE(ranges_cover_line(r->error_ranges, 3u)); /* ok_before */
+    cbm_free_result(r);
+    PASS();
+}
+
+TEST(c_clean_file_stays_unflagged_after_refinement) {
+    /* The refinement must never invent a range on a file that parses. */
+    CBMFileResult *r = do_extract(C_CLEAN, CBM_LANG_C, "clean.c");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->parse_incomplete);
+    ASSERT_NULL(r->error_ranges);
+    cbm_free_result(r);
+    PASS();
+}
+
+
 SUITE(parse_coverage) {
     RUN_TEST(c_ifdef_split_brace_sets_parse_incomplete);
     RUN_TEST(c_ifdef_split_brace_neighbors_still_extracted);
@@ -437,4 +571,9 @@ SUITE(parse_coverage) {
     RUN_TEST(missing_final_newline_not_flagged_across_grammars_issue1610);
     RUN_TEST(real_error_before_eof_still_flagged_without_final_newline_issue1610);
     RUN_TEST(width_bearing_error_at_eof_still_flagged_issue1610);
+    RUN_TEST(c_ifdef_split_range_narrows_to_dropped_branch);
+    RUN_TEST(c_ifdef_split_range_excludes_lines_the_preprocessor_explained);
+    RUN_TEST(c_ifdef_split_range_never_starts_on_a_directive);
+    RUN_TEST(c_refinement_does_not_suppress_real_garbage);
+    RUN_TEST(c_clean_file_stays_unflagged_after_refinement);
 }
