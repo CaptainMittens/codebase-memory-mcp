@@ -1992,6 +1992,13 @@ static int parse_post_where(parser_t *p, cbm_query_t *q, // NOLINT(misc-no-recur
         q->union_next = sub.query;
         sub.query = NULL;
         cbm_parse_free(&sub);
+        /* The branch after UNION was parsed by a SEPARATE parser over a slice
+         * of these tokens, so this parser's cursor never moved past the UNION
+         * keyword. That sub-parse now refuses to succeed with anything left
+         * over, so everything from here to the end is accounted for. Move the
+         * cursor to the end to say so, or cbm_parse's end-of-input check reads
+         * a fully parsed UNION query as unfinished. */
+        p->pos = p->count;
     }
     return 0;
 }
@@ -2051,6 +2058,23 @@ int cbm_parse(const cbm_token_t *tokens, int token_count, // NOLINT(misc-no-recu
 
     if (parse_post_where(&p, q, &pat_cap) < 0) {
         out->error = heap_strdup(p.error[0] ? p.error : "failed to parse query");
+        cbm_query_free(q);
+        return CBM_NOT_FOUND;
+    }
+
+    /* Every token must be consumed. The grammar accepts at most one WITH and
+     * treats RETURN as optional, so a query with a second WITH stage — or any
+     * typo after RETURN — used to stop parsing there and succeed anyway. The
+     * dropped tail took the filter and the RETURN with it, and the engine
+     * answered from the fragment it had parsed, using its default projection.
+     * That reported success and returned wrong rows, which is worse than a
+     * refusal because nothing tells the caller to look. Refuse instead. */
+    if (peek(&p)->type != TOK_EOF) {
+        snprintf(p.error, sizeof(p.error),
+                 "unexpected input at pos %d ('%s') — the query was not fully "
+                 "parsed. Note that only one WITH clause is supported.",
+                 peek(&p)->pos, peek(&p)->text ? peek(&p)->text : "");
+        out->error = heap_strdup(p.error);
         cbm_query_free(q);
         return CBM_NOT_FOUND;
     }
