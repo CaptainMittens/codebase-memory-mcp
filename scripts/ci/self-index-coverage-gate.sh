@@ -17,7 +17,52 @@
 # on ONE CI leg and asserts proportions rather than exact line numbers.
 set -euo pipefail
 
-BIN="${1:?usage: self-index-coverage-gate.sh <path-to-binary>}"
+usage() {
+    cat <<'EOF'
+Usage: scripts/ci/self-index-coverage-gate.sh <path-to-codebase-memory-mcp-binary>
+
+Index THIS repository with the given binary and fail if the repository's own
+parse-coverage report stops being useful advice (#963).
+
+Four checks, all read from index_status:
+  1. No file reports a whole-file parse failure (parse_unusable).
+  2. No range list was clipped without saying so (a trailing "+<N>" marker).
+  3. No single range covers more than 25% of a file of 200 lines or more.
+  4. The flagged-file count stays at or below the checked-in ceiling.
+
+Data files, both beside this script:
+  coverage-gate-allowlist.txt   paths the checks skip, each with a written
+                                reason above it.
+  parse-partial-baseline.txt    the ceiling for check 4.
+
+Environment:
+  MAX_SINGLE_RANGE_PCT   Share limit for check 3 (default 25).
+  MIN_FILE_LINES         Files below this are exempt from check 3 (default 200).
+
+Exit 0 when every check passes, 1 when any fails, 2 on a bad argument.
+
+Options:
+  -h, --help        This text.
+EOF
+}
+
+BIN=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+    -h | --help) usage; exit 0 ;;
+    -*) echo "self-index-coverage-gate: unknown argument '$1'. Please consult --help." >&2; exit 2 ;;
+    *)
+        [ -z "$BIN" ] || {
+            echo "self-index-coverage-gate: one binary path only. Please consult --help." >&2
+            exit 2
+        }
+        BIN="$1"
+        ;;
+    esac
+    shift
+done
+[ -n "$BIN" ] || { echo "self-index-coverage-gate: need a binary path. Please consult --help." >&2; exit 2; }
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ALLOWLIST="${REPO_ROOT}/scripts/ci/coverage-gate-allowlist.txt"
 BASELINE_FILE="${REPO_ROOT}/scripts/ci/parse-partial-baseline.txt"
@@ -62,17 +107,32 @@ ALLOWED="${WORK}/allowed.txt"
 FAILURES=0
 note_failure() { echo "FAIL: $*"; FAILURES=$((FAILURES + 1)); }
 
+# ── 0. The report's own file list must be complete ────────────────────────
+# index_status lists at most 500 files per class and sets "truncated" when it
+# drops the rest. Checks 2 and 3 below read that list file by file, so a
+# clipped list means they judge only part of the repo and still print PASS.
+# That is the same silent clipping this gate exists to catch, so stop instead.
+for cls in parse_partial parse_unusable; do
+    clipped="$(jq -r --arg c "$cls" '.structuredContent[$c].truncated // false' "${WORK}/status.json")"
+    if [ "$clipped" = "true" ]; then
+        note_failure "index_status clipped its ${cls} file list — the checks below would see only part of it"
+    fi
+done
+
 # ── 1. Nothing may fail across a whole file ────────────────────────────────
 # parse_unusable means one range covers 80%+ of the file, so the report tells
 # a reader to go read the source. Zero today; a new one is a real regression.
-UNUSABLE="$(jq -r '.structuredContent.parse_unusable.count // 0' "${WORK}/status.json")"
 UNUSABLE_LISTED="$(jq -r '[.structuredContent.parse_unusable.files[]?.path]|join(" ")' \
     "${WORK}/status.json")"
+UNUSABLE=0
+UNUSABLE_KEPT=""
 for p in $UNUSABLE_LISTED; do
-    grep -qxF "$p" "$ALLOWED" && UNUSABLE=$((UNUSABLE - 1))
+    grep -qxF "$p" "$ALLOWED" && continue
+    UNUSABLE=$((UNUSABLE + 1))
+    UNUSABLE_KEPT="${UNUSABLE_KEPT}${p} "
 done
 if [ "$UNUSABLE" -gt 0 ]; then
-    note_failure "${UNUSABLE} file(s) report a whole-file parse failure: ${UNUSABLE_LISTED}"
+    note_failure "${UNUSABLE} file(s) report a whole-file parse failure: ${UNUSABLE_KEPT}"
 fi
 
 # ── 2. No range list may be silently clipped ──────────────────────────────
@@ -104,7 +164,12 @@ done < <(jq -r '.structuredContent.parse_partial.files[]?
     | "\(.path)\t\(.error_ranges // "")"' "${WORK}/status.json")
 
 # ── 4. The flagged-file count must not drift upward unnoticed ─────────────
-CEILING="$(sed -e 's/#.*//' "$BASELINE_FILE" | grep -oE '[0-9]+' | head -1)"
+# One awk, not `grep | head -1`: under `set -o pipefail` head closes the pipe
+# early, grep dies of SIGPIPE, and the whole gate aborts with no message. It
+# does not bite on today's short file, and it would bite the day someone adds
+# a few comment lines.
+CEILING="$(awk '{ sub(/#.*/, "") } match($0, /[0-9]+/) { print substr($0, RSTART, RLENGTH); exit }' \
+    "$BASELINE_FILE")"
 PARTIAL="$(jq -r '.structuredContent.parse_partial.count // 0' "${WORK}/status.json")"
 if [ "$PARTIAL" -gt "$CEILING" ]; then
     note_failure "parse_partial_count is ${PARTIAL}, above the ceiling ${CEILING} in $(basename "$BASELINE_FILE")"
