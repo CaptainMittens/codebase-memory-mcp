@@ -4,4 +4,8 @@
 # in tests/test_index_resilience.c, which stops the signal being switched off
 # by accident. Raising this number is allowed but should be explained in the
 # commit that does it.
-58
+#
+# 58 -> 59 on 2026-08-31. main gained src/daemon/runtime.c, whose line 47 the
+# tree-sitter C grammar cannot parse. The rise came from main, not from a
+# branch. See the commit for the measurement.
+59
