@@ -488,6 +488,94 @@ TEST(index_parse_partial_reported) {
     PASS();
 }
 
+/* The whole-file class as index_status prints it, and what its number means.
+ *
+ * Each parse_unusable entry reports the END of the file's one range. The field
+ * was called "lines", which reads as the length of the file, and the two are
+ * not the same number — a grammar can end an error node past the last line,
+ * which this repo has already seen (a 326-line PowerShell file whose range
+ * ended at 327). "lines" also already means a definition's line span in the
+ * rest of this response, so the old name collided as well.
+ *
+ * The end line is checked against the persisted coverage row rather than a
+ * constant, so the test states the property and not a measurement. */
+TEST(index_parse_unusable_names_the_range_end) {
+    RProj lp;
+    memset(&lp, 0, sizeof(lp));
+    snprintf(lp.tmpdir, sizeof(lp.tmpdir), "/tmp/cbm_resil_XXXXXX");
+    if (!cbm_mkdtemp(lp.tmpdir)) {
+        FAIL("mkdtemp failed");
+    }
+    rh_to_fwd_slashes(lp.tmpdir);
+
+    /* Python gets no C preprocessor refinement, so a root-level ERROR still
+     * reports one range over the whole file — the parse_unusable class. */
+    ri_write_text(lp.tmpdir, "unparseable.py", ")))\n((( \n]]] [[[\ndef x(:\n");
+    ri_write_text(lp.tmpdir, "good.py", "def alpha():\n    return 1\n");
+
+    char *resp = NULL;
+    cbm_store_t *store = ri_index_capture(&lp, &resp);
+    if (!resp) {
+        FAIL("no MCP response");
+    }
+    if (!store) {
+        free(resp);
+        FAIL("store did not open");
+    }
+
+    /* The end line the report should be naming, read from the persisted row. */
+    cbm_coverage_row_t *rows = NULL;
+    int cov_count = 0;
+    ASSERT_EQ(cbm_store_coverage_get(store, lp.project, &rows, &cov_count), CBM_STORE_OK);
+    int want_end = 0;
+    for (int i = 0; i < cov_count; i++) {
+        if (rows[i].rel_path && strstr(rows[i].rel_path, "unparseable.py") && rows[i].detail) {
+            const char *dash = strchr(rows[i].detail, '-');
+            if (dash) {
+                want_end = atoi(dash + 1);
+            }
+        }
+    }
+    cbm_store_free_coverage(rows, cov_count);
+    ASSERT_GT(want_end, 0);
+
+    yyjson_doc *d = yyjson_read(resp, strlen(resp), 0);
+    ASSERT_NOT_NULL(d);
+    yyjson_val *sc = yyjson_obj_get(yyjson_doc_get_root(d), "structuredContent");
+    ASSERT_NOT_NULL(sc);
+    ASSERT_EQ(yyjson_get_int(yyjson_obj_get(sc, "parse_unusable_count")), 1);
+
+    yyjson_val *pu = yyjson_obj_get(sc, "parse_unusable");
+    ASSERT_NOT_NULL(pu);
+    yyjson_val *files = yyjson_obj_get(pu, "files");
+    ASSERT_NOT_NULL(files);
+    int found = 0;
+    size_t idx = 0;
+    size_t fmax = 0;
+    yyjson_val *fe = NULL;
+    yyjson_arr_foreach(files, idx, fmax, fe) {
+        const char *fp = yyjson_get_str(yyjson_obj_get(fe, "path"));
+        /* The clean neighbour must not be listed at all. */
+        ASSERT_NULL(fp ? strstr(fp, "good.py") : NULL);
+        if (!fp || !strstr(fp, "unparseable.py")) {
+            continue;
+        }
+        found = 1;
+        yyjson_val *range_end = yyjson_obj_get(fe, "range_end");
+        ASSERT_NOT_NULL(range_end);
+        ASSERT_EQ(yyjson_get_int(range_end), want_end);
+        ASSERT_TRUE(yyjson_get_bool(yyjson_obj_get(fe, "whole_file")));
+        /* The old name is gone, not kept beside the new one. */
+        ASSERT_NULL(yyjson_obj_get(fe, "lines"));
+    }
+    ASSERT_TRUE(found);
+
+    yyjson_doc_free(d);
+    free(resp);
+    rh_cleanup(&lp, store);
+    PASS();
+}
+
 /* INV(parse-partial-clears-on-fix, #963): the persisted coverage signal must
  * stay FRESH — after the broken file is fixed and the project re-indexed
  * (incremental route: the DB already exists), its parse_partial row is gone
@@ -813,6 +901,7 @@ SUITE(index_resilience) {
     RUN_TEST(index_clean_run_no_logfile);
     RUN_TEST(index_parse_partial_reported);
     RUN_TEST(index_parse_partial_clears_on_fix);
+    RUN_TEST(index_parse_unusable_names_the_range_end);
     RUN_TEST(index_not_indexed_by_design_reported);
     RUN_TEST(index_relative_repo_path_canonicalized);
 }
