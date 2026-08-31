@@ -929,8 +929,18 @@ echo "OK: clean shutdown"
 if command -v pgrep &>/dev/null && [ "$(uname)" != "MINGW64_NT" ] 2>/dev/null; then
   # Give a moment for any child processes to clean up
   sleep 1
-  RESIDUAL=$(pgrep -f "codebase-memory-mcp.*cli" 2>/dev/null | wc -l | tr -d ' \n' || echo "0")
-  RESIDUAL="${RESIDUAL:-0}"
+  # Count only processes that ARE the binary under test and were started as
+  # `<binary> cli ...`. A plain `pgrep -f` substring match also counts any
+  # shell whose own arguments happen to mention the product — including this
+  # script, whenever it runs from a directory whose path contains the product
+  # name, which is the normal case inside this repository. `pgrep -x` matches
+  # the process name only, never its arguments, so a wrapper cannot match it.
+  RESIDUAL=0
+  for RESIDUAL_PID in $(pgrep -x "$(basename "$BINARY")" 2>/dev/null); do
+    case "$(ps -o command= -p "$RESIDUAL_PID" 2>/dev/null)" in
+    "$BINARY cli"*) RESIDUAL=$((RESIDUAL + 1)) ;;
+    esac
+  done
   if [ "$RESIDUAL" -gt 0 ]; then
     echo "WARNING: $RESIDUAL residual codebase-memory-mcp process(es) found"
   else
