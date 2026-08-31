@@ -4579,8 +4579,11 @@ static void add_coverage_report(yyjson_mut_doc *doc, yyjson_mut_val *root, cbm_s
                 yyjson_mut_val *fe = yyjson_mut_obj(doc);
                 yyjson_mut_obj_add_strcpy(doc, fe, "path", rows[i].rel_path);
                 yyjson_mut_obj_add_bool(doc, fe, "whole_file", true);
+                /* The end of the range, not the length of the file. A grammar
+                 * can end an error node past the last line, so this number can
+                 * be larger than the file. See range_end_is_not_file_length. */
                 const char *dash = rows[i].detail ? strchr(rows[i].detail, '-') : NULL;
-                yyjson_mut_obj_add_int(doc, fe, "lines", dash ? atoi(dash + 1) : 0);
+                yyjson_mut_obj_add_int(doc, fe, "range_end", dash ? atoi(dash + 1) : 0);
                 yyjson_mut_arr_add_val(pu_files, fe);
             }
             pu_n++;
@@ -7971,13 +7974,13 @@ static void add_parse_partial_summary(yyjson_mut_doc *doc, yyjson_mut_val *root,
 /* Attach the whole-file half of the coverage summary. Always emits a top-level
  * "parse_unusable_count" (0 on clean runs) so the CI coverage gate can read it
  * without parsing anything else. When files were flagged:
- *   "parse_unusable": {"files":[{path,lines,whole_file}..(<=50)], "count":N,
+ *   "parse_unusable": {"files":[{path,range_end,whole_file}..(<=50)], "count":N,
  *                      "truncated":bool, "note":"..."}
  *
  * These files WERE indexed, exactly like parse_partial ones. The difference is
  * that their range covers 80% or more of the file, so the range is not worth
- * printing — "lines" gives the size and "whole_file" says plainly that reading
- * the ranges is the same as reading the file. */
+ * printing — "range_end" gives the last line the range names and "whole_file"
+ * says plainly that reading the ranges is the same as reading the file. */
 static void add_parse_unusable_summary(yyjson_mut_doc *doc, yyjson_mut_val *root,
                                        const cbm_file_error_t *errs, int count) {
     int unusable = 0;
@@ -8000,9 +8003,11 @@ static void add_parse_unusable_summary(yyjson_mut_doc *doc, yyjson_mut_val *root
         yyjson_mut_val *fe = yyjson_mut_obj(doc);
         yyjson_mut_obj_add_strcpy(doc, fe, "path", errs[i].path ? errs[i].path : "");
         yyjson_mut_obj_add_bool(doc, fe, "whole_file", true);
-        /* The range string is "start-end"; its end line is the file length. */
+        /* The end of the range, not the length of the file. A grammar can end
+         * an error node past the last line, so this number can be larger than
+         * the file. See range_end_is_not_file_length. */
         const char *dash = errs[i].reason ? strchr(errs[i].reason, '-') : NULL;
-        yyjson_mut_obj_add_int(doc, fe, "lines", dash ? atoi(dash + 1) : 0);
+        yyjson_mut_obj_add_int(doc, fe, "range_end", dash ? atoi(dash + 1) : 0);
         yyjson_mut_arr_add_val(files, fe);
         shown++;
     }
