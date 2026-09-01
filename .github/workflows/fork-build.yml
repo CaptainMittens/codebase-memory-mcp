@@ -1,0 +1,91 @@
+# Fork-only build. Never send this file upstream.
+#
+# It builds the binaries we actually run from the all-fixes branch, so we do
+# not have to run the full release pipeline to get one. Start it by hand from
+# the Actions tab, or with:
+#   gh workflow run fork-build.yml --repo CaptainMittens/codebase-memory-mcp --ref local/all-fixes-v2
+name: fork-build
+
+on:
+  workflow_dispatch:
+    inputs:
+      with_ui:
+        description: "Embed the web UI (needs node, adds a few minutes)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANG64
+          path-type: inherit
+          install: >-
+            mingw-w64-clang-x86_64-clang
+            mingw-w64-clang-x86_64-zlib
+            make
+            python
+            unzip
+            zip
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build
+        shell: msys2 {0}
+        run: |
+          if [ "${{ inputs.with_ui }}" = "true" ]; then
+            scripts/build.sh --with-ui CC=clang CXX=clang++
+          else
+            scripts/build.sh CC=clang CXX=clang++
+          fi
+
+      - name: Show what we built
+        shell: msys2 {0}
+        run: |
+          ls -la build/c/codebase-memory-mcp.exe
+          ./build/c/codebase-memory-mcp.exe --version || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codebase-memory-mcp-windows-amd64
+          path: build/c/codebase-memory-mcp.exe
+          if-no-files-found: error
+
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build
+        run: |
+          if [ "${{ inputs.with_ui }}" = "true" ]; then
+            scripts/build.sh --with-ui
+          else
+            scripts/build.sh
+          fi
+
+      - name: Show what we built
+        run: |
+          ls -la build/c/codebase-memory-mcp
+          ./build/c/codebase-memory-mcp --version || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codebase-memory-mcp-darwin-arm64
+          path: build/c/codebase-memory-mcp
+          if-no-files-found: error
