@@ -3026,6 +3026,45 @@ TEST(cypher_return_star_after_with_names_aliases) {
     PASS();
 }
 
+TEST(cypher_wide_with_refused_not_truncated) {
+    /* Every item a WITH projects becomes one variable of the binding that
+     * carries the rest of the query, and a binding holds CYP_MAX_VARS (16) of
+     * them. A 20-alias WITH used to parse, drop aliases 17 to 20 inside
+     * with_add_vbinding_var, and answer RETURN * with 16 columns and no error —
+     * a short result the caller could not tell from a complete one. It has to
+     * be refused at parse time instead. */
+    char query[1024];
+    int off = snprintf(query, sizeof(query), "MATCH (f:Function) WITH ");
+    for (int i = 0; i < 20; i++) { /* 20 > CYP_MAX_VARS (16) */
+        off += snprintf(query + off, sizeof(query) - (size_t)off, "%sf.name AS c%d", i ? ", " : "",
+                        i);
+    }
+    snprintf(query + off, sizeof(query) - (size_t)off, " RETURN *");
+
+    cbm_store_t *s = setup_cypher_store();
+    cbm_cypher_result_t r = {0};
+    int rc = cbm_cypher_execute(s, query, "test", 0, &r);
+    ASSERT_TRUE(rc != 0); /* refused, not silently narrowed to 16 columns */
+    cbm_cypher_result_free(&r);
+
+    /* The width just under the bound still works, so the guard rejects only
+     * what the binding genuinely cannot carry. */
+    char ok_query[1024];
+    off = snprintf(ok_query, sizeof(ok_query), "MATCH (f:Function) WITH ");
+    for (int i = 0; i < 16; i++) {
+        off += snprintf(ok_query + off, sizeof(ok_query) - (size_t)off, "%sf.name AS c%d",
+                        i ? ", " : "", i);
+    }
+    snprintf(ok_query + off, sizeof(ok_query) - (size_t)off, " RETURN *");
+    cbm_cypher_result_t r16 = {0};
+    ASSERT_EQ(cbm_cypher_execute(s, ok_query, "test", 0, &r16), 0);
+    ASSERT_EQ(r16.col_count, 16);
+    cbm_cypher_result_free(&r16);
+
+    cbm_store_close(s);
+    PASS();
+}
+
 TEST(cypher_parse_neq) {
     cbm_query_t *q = NULL;
     char *err = NULL;
@@ -4336,6 +4375,7 @@ SUITE(cypher) {
     RUN_TEST(cypher_exec_return_star);
     RUN_TEST(cypher_return_star_dedups_repeated_pattern_var);
     RUN_TEST(cypher_return_star_after_with_names_aliases);
+    RUN_TEST(cypher_wide_with_refused_not_truncated);
     RUN_TEST(cypher_parse_neq);
     RUN_TEST(cypher_parse_in);
     RUN_TEST(cypher_parse_is_null);

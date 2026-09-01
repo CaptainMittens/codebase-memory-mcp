@@ -1802,8 +1802,16 @@ static int parse_return_or_with(parser_t *p, cbm_return_clause_t **out, bool is_
     /* Projection is materialized per row into fixed-width stack arrays sized at
      * CBM_SZ_32 columns (execute_return_simple and its siblings). Bound the
      * parsed item count to that width so an over-wide RETURN is rejected here
-     * instead of writing past those arrays downstream. */
-    if (r->count > CBM_SZ_32) {
+     * instead of writing past those arrays downstream.
+     *
+     * WITH is bounded tighter, by CYP_MAX_VARS. Every item a WITH projects
+     * becomes one variable of the binding that carries the rest of the query,
+     * and binding_t holds exactly CYP_MAX_VARS variables. A wider WITH used to
+     * parse, then lose every alias past the 16th in with_add_vbinding_var and
+     * answer with silently blank columns. Refuse it here, the same way an
+     * over-wide RETURN is refused, so the caller sees an error instead of a
+     * short or empty result. */
+    if (r->count > (is_with ? CYP_MAX_VARS : CBM_SZ_32)) {
         free_return_clause(r);
         return CBM_NOT_FOUND;
     }
@@ -4286,6 +4294,8 @@ static void execute_return_star_after_with(cbm_query_t *q, binding_t *bindings, 
     cbm_return_clause_t *wc = q->with_clause;
     char name_bufs[CYP_MAX_VARS][CBM_SZ_128];
     const char *cols[CYP_MAX_VARS];
+    /* parse_return_or_with refuses a WITH wider than CYP_MAX_VARS, so this
+     * clamp cannot fire. It stays as the bound this function relies on. */
     int col_n = wc->count < CYP_MAX_VARS ? wc->count : CYP_MAX_VARS;
     for (int i = 0; i < col_n; i++) {
         cols[i] = resolve_item_alias(&wc->items[i], name_bufs[i], sizeof(name_bufs[i]));
