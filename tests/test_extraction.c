@@ -4045,6 +4045,51 @@ TEST(extract_blazor_component_without_page_has_no_route) {
     PASS();
 }
 
+/* Razor Pages: `@page` is what turns a .cshtml view INTO a page — it is the
+ * defining directive of the model, not an optional annotation as it is on a
+ * Blazor component. So an ASP.NET Core app's routable surface lives entirely
+ * in file types that were unmapped until now, and every one of those routes
+ * was invisible.
+ *
+ * Same mechanism as the .razor case: the directive sits in markup above any
+ * code block, where the C# grammar never reaches, so it is read from raw
+ * source and hangs off the file's Module definition. */
+TEST(extract_razor_page_directive_routes_cshtml_view) {
+    CBMFileResult *r = extract("@page \"/orders\"\n"
+                               "@model OrderIndexModel\n"
+                               "\n"
+                               "<h1>Orders</h1>\n"
+                               "<table><tr><td>@Model.Count</td></tr></table>\n",
+                               CBM_LANG_CSHARP, "t", "Pages/Orders/Index.cshtml");
+    ASSERT_NOT_NULL(r);
+    const CBMDefinition *mod = find_module_def(r);
+    ASSERT_NOT_NULL(mod);
+    ASSERT_NOT_NULL(mod->route_path);
+    ASSERT_STR_EQ(mod->route_path, "/orders");
+    /* A Razor Page is reached by navigation, i.e. GET — same as a component. */
+    ASSERT_NOT_NULL(mod->route_method);
+    ASSERT_STR_EQ(mod->route_method, "GET");
+    cbm_free_result(r);
+    PASS();
+}
+
+/* The overwhelming majority of .cshtml files are layouts, partials and views
+ * with no `@page` at all. If the scan fired on those, an ASP.NET app would
+ * gain a bogus Route node per view — worse than the missing routes it set out
+ * to fix, because a wrong route looks authoritative. */
+TEST(extract_razor_layout_without_page_has_no_route) {
+    CBMFileResult *r = extract("@model LayoutModel\n"
+                               "<!DOCTYPE html>\n"
+                               "<html><body>@RenderBody()</body></html>\n",
+                               CBM_LANG_CSHARP, "t", "Pages/Shared/_Layout.cshtml");
+    ASSERT_NOT_NULL(r);
+    const CBMDefinition *mod = find_module_def(r);
+    ASSERT_NOT_NULL(mod);
+    ASSERT_NULL(mod->route_path);
+    cbm_free_result(r);
+    PASS();
+}
+
 /* A comment between decorators must not drop the decorators above it.
  * Comments are NAMED tree-sitter nodes, so the prev-sibling walk used to stop
  * at one — a documented route (@Post + @HttpCode above an explanatory comment)
@@ -7171,6 +7216,8 @@ SUITE(extraction) {
     RUN_TEST(extract_java_jaxrs_path_composition_issue1005);
     RUN_TEST(extract_blazor_page_directive_routes_component);
     RUN_TEST(extract_blazor_component_without_page_has_no_route);
+    RUN_TEST(extract_razor_page_directive_routes_cshtml_view);
+    RUN_TEST(extract_razor_layout_without_page_has_no_route);
     RUN_TEST(extract_ts_template_string_url_issue1006);
     RUN_TEST(extract_go_binary_concat_url_issue1249);
     RUN_TEST(extract_go_binary_concat_url_no_literal_suffix_issue1249);
