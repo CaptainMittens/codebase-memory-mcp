@@ -29,6 +29,11 @@
 #   meaningful. Exit 0 = every assertion passed, 1 = at least one failed,
 #   2 = usage error, missing tool, or nothing checkable was found (a vacuous
 #   run is a failure, not a pass).
+#   CBM_COMPOSITION_FIXTURE=1 declares the target a packaging FIXTURE (a stub
+#   compiled by a contract test, not a release link): A1d-bind-now is then
+#   reported n/a instead of asserted, because eager binding is a property of
+#   the release link flags, not of the packaging path the fixture exercises.
+#   Only contract tests set it; release derivation never does.
 set -euo pipefail
 
 case "${1:-}" in
@@ -409,7 +414,19 @@ check_file() {
     # writes the GOT after the loader has already re-protected it. A static
     # binary has no PT_DYNAMIC and nothing to bind at runtime, so GOT coverage
     # is the whole property there — a distinct reported outcome, never a skip.
-    if [ "$fmt" != elf ]; then
+    #
+    # Scope: this is a property of the RELEASE link (-z now in Makefile.cbm).
+    # Contract tests hand the gate a stub compiled straight from a .c file to
+    # exercise packaging, format detection and the needle scans; a stub is not
+    # linked with -z now and never ships, so asserting eager binding on it
+    # tests the fixture's compiler defaults, not the artifact. Such a caller
+    # declares itself with CBM_COMPOSITION_FIXTURE=1 and A1d is reported n/a —
+    # a named exemption, printed on every run, never a silent skip. Every
+    # other assertion still runs on the fixture unchanged.
+    if [ "${CBM_COMPOSITION_FIXTURE:-0}" = 1 ]; then
+        printf 'n/a  %-22s %s: packaging fixture (CBM_COMPOSITION_FIXTURE=1) — eager binding is asserted on release links only\n' \
+            A1d-bind-now "$token"
+    elif [ "$fmt" != elf ]; then
         printf 'n/a  %-22s %s: BIND_NOW is an ELF dynamic-section property\n' \
             A1d-bind-now "$token"
     elif [ "$relro_window" = unsupported ]; then
