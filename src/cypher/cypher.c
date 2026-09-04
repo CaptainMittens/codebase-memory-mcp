@@ -3241,6 +3241,10 @@ static void expand_var_length(cbm_store_t *store, cbm_rel_pattern_t *rel,
      * clamp — never a silent truncation. */
     int depth_cap = cbm_cypher_max_depth();
     int max_depth = rel->max_hops > 0 ? rel->max_hops : depth_cap;
+    /* A range clamped to the engine ceiling (or an unbounded one) is probed one
+     * hop beyond it: a candidate out there means the clamp hid real rows, so the
+     * result is reported truncated; a clamp on a shallow graph stays a warning. */
+    bool probe_beyond_depth_cap = rel->max_hops <= 0 || max_depth > depth_cap;
     if (max_depth > depth_cap) {
         char req_buf[16];
         char cap_buf[16];
@@ -3252,8 +3256,9 @@ static void expand_var_length(cbm_store_t *store, cbm_rel_pattern_t *rel,
     }
     cbm_traverse_result_t tr = {0};
     const char *dir = rel->direction ? rel->direction : "outbound";
-    cbm_store_bfs_trail(store, src->id, dir, rel->types, rel->type_count, max_depth, CBM_PERCENT,
-                        &tr);
+    int traversal_depth = probe_beyond_depth_cap ? depth_cap + SKIP_ONE : max_depth;
+    cbm_store_bfs_trail(store, src->id, dir, rel->types, rel->type_count, traversal_depth,
+                        CBM_PERCENT, &tr);
     if (tr.truncated) {
         g_cypher_trail_truncated = 1;
     }
@@ -3264,6 +3269,10 @@ static void expand_var_length(cbm_store_t *store, cbm_rel_pattern_t *rel,
      * fabricated OPTIONAL "no match" row. */
     for (int v = 0; v < tr.visited_count; v++) {
         cbm_node_hop_t *hop = &tr.visited[v];
+        if (hop->hop > max_depth) {
+            g_cypher_truncated = true; /* the probe hop found a candidate past the cap */
+            continue;
+        }
         if (hop->hop < rel->min_hops) {
             continue;
         }
@@ -5291,6 +5300,8 @@ int cbm_cypher_execute(cbm_store_t *store, const char *query, const char *projec
     out->col_count = rb.col_count;
     out->rows = rb.rows;
     out->row_count = rb.row_count;
+    /* Any internal ceiling that prevented exhaustive evaluation: a candidate or
+     * traversal budget, or a variable-length range clamped to the engine cap. */
     out->truncated = g_cypher_truncated || g_cypher_trail_truncated != 0;
     if (g_cypher_depth_clamped > 0 || g_cypher_trail_truncated) {
         char wbuf[CBM_SZ_256];

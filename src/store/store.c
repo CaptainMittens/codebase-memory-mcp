@@ -5792,6 +5792,8 @@ static int store_bfs(cbm_store_t *s, int64_t start_id, const char *direction,
         next_id = "e.target_id";
     }
 
+    /* One extra row makes max_results saturation observable on both branches. */
+    int probe_limit = max_results < INT_MAX ? max_results + SKIP_ONE : max_results;
     int cte_row_limit = 0;
     if (trail) {
         cte_row_limit = bfs_cte_row_limit_for_depth(max_results, max_depth);
@@ -5820,7 +5822,7 @@ static int store_bfs(cbm_store_t *s, int64_t start_id, const char *direction,
                  "FROM bfs JOIN nodes n ON n.id = bfs.node_id "
                  "WHERE bfs.hop > 0 ORDER BY bfs.hop, n.id LIMIT %d;",
                  (long long)start_id, next_id, join_cond, types_clause, max_depth,
-                 cte_row_limit + SKIP_ONE, max_results);
+                 cte_row_limit + SKIP_ONE, probe_limit);
     } else {
         snprintf(sql, sizeof(sql),
                  /* SHORTEST-PATH semantics: the UNION dedupes (node, hop) pairs.
@@ -5843,9 +5845,7 @@ static int store_bfs(cbm_store_t *s, int64_t start_id, const char *direction,
                  "GROUP BY n.id "
                  "ORDER BY hop, n.id "
                  "LIMIT %d;",
-                 /* One extra row makes max_results saturation observable. */
-                 (long long)start_id, next_id, join_cond, types_clause, max_depth,
-                 max_results < INT_MAX ? max_results + SKIP_ONE : max_results);
+                 (long long)start_id, next_id, join_cond, types_clause, max_depth, probe_limit);
     }
 
     sqlite3_stmt *stmt = NULL;
@@ -5898,7 +5898,7 @@ static int store_bfs(cbm_store_t *s, int64_t start_id, const char *direction,
         snprintf(limit_buf, sizeof(limit_buf), "%d", cte_row_limit);
         cbm_log_warn("cypher.trail_truncated", "cte_rows", limit_buf, "result", "partial");
     }
-    if (!trail && n > max_results) {
+    if (n > max_results) {
         /* The extra probe row fired: drop it and report the ceiling honestly. */
         n = max_results;
         cbm_node_free_fields(&visited[n].node);

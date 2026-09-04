@@ -810,9 +810,9 @@ TEST(cypher_exec_optional_saturated_does_not_fabricate_no_match) {
     /* The discriminator: C has 5 callees, so claiming it has none is a
      * fabrication. Pre-fix this is exactly what the saturated path emitted. */
     ASSERT_FALSE(saw_c);
-    /* Late filtering leaves fewer than max_rows output rows, but the earlier
-     * relationship materialization still saturated its candidate budget. */
-    ASSERT_TRUE(r.truncated);
+    /* Relationship expansion materializes every matched row (a cap here once
+     * falsified aggregates), so nothing was left unevaluated. */
+    ASSERT_FALSE(r.truncated);
 
     cbm_cypher_result_free(&r);
     cbm_store_close(s);
@@ -2151,9 +2151,10 @@ TEST(cypher_optional_match_target_still_allowed_issue1919) {
 TEST(cypher_with_alias_stays_in_scope_issue1919) {
     cbm_store_t *s = setup_cypher_store();
     cbm_cypher_result_t r = {0};
-    int rc = cbm_cypher_execute(
-        s, "MATCH (f:Function)-[:CALLS]->(g) WITH f.name AS caller, g AS callee RETURN caller, callee.name",
-        "test", 0, &r);
+    int rc = cbm_cypher_execute(s,
+                                "MATCH (f:Function)-[:CALLS]->(g) WITH f.name AS caller, g AS "
+                                "callee RETURN caller, callee.name",
+                                "test", 0, &r);
     ASSERT_EQ(rc, 0);
     ASSERT_NULL(r.error);
     ASSERT_TRUE(r.row_count > 0);
@@ -2871,9 +2872,10 @@ TEST(cypher_result_reports_max_rows_saturation) {
     PASS();
 }
 
-/* An unlabeled scan has a max_rows*10 candidate budget. Aggregation can hide
- * that loss behind one output row, so row_count alone cannot report it. */
-TEST(cypher_result_reports_scan_saturation_before_aggregation) {
+/* An unlabeled MATCH scans every candidate before aggregation: the count is
+ * exact for any max_rows, and no internal ceiling is reported (a bounded scan
+ * here once made count(*) depend on the requested row budget). */
+TEST(cypher_result_unlabeled_scan_is_exhaustive_before_aggregation) {
     cbm_store_t *s = cbm_store_open_memory();
     cbm_store_upsert_project(s, "scan_sat", "/tmp/scan_sat");
 
@@ -2891,8 +2893,8 @@ TEST(cypher_result_reports_scan_saturation_before_aggregation) {
     int rc = cbm_cypher_execute(s, "MATCH (n) RETURN count(*) AS n", "scan_sat", 1, &r);
     ASSERT_EQ(rc, 0);
     ASSERT_EQ(r.row_count, 1);
-    ASSERT_STR_EQ(r.rows[0][0], "10");
-    ASSERT_TRUE(r.truncated);
+    ASSERT_STR_EQ(r.rows[0][0], "11");
+    ASSERT_FALSE(r.truncated);
     cbm_cypher_result_free(&r);
 
     memset(&r, 0, sizeof(r));
@@ -3176,8 +3178,8 @@ TEST(cypher_wide_with_refused_not_truncated) {
     char query[1024];
     int off = snprintf(query, sizeof(query), "MATCH (f:Function) WITH ");
     for (int i = 0; i < 20; i++) { /* 20 > CYP_MAX_VARS (16) */
-        off += snprintf(query + off, sizeof(query) - (size_t)off, "%sf.name AS c%d", i ? ", " : "",
-                        i);
+        off +=
+            snprintf(query + off, sizeof(query) - (size_t)off, "%sf.name AS c%d", i ? ", " : "", i);
     }
     snprintf(query + off, sizeof(query) - (size_t)off, " RETURN *");
 
@@ -4501,7 +4503,7 @@ SUITE(cypher) {
     RUN_TEST(cypher_edge_builtin_type_filter);
     RUN_TEST(cypher_apply_limit);
     RUN_TEST(cypher_result_reports_max_rows_saturation);
-    RUN_TEST(cypher_result_reports_scan_saturation_before_aggregation);
+    RUN_TEST(cypher_result_unlabeled_scan_is_exhaustive_before_aggregation);
     RUN_TEST(cypher_result_reports_variable_length_candidate_saturation);
     /* Phase 1: Simple operators */
     RUN_TEST(cypher_lex_neq_operators);

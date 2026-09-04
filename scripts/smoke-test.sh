@@ -842,7 +842,7 @@ fi
 
 # B4: STDIN + --json is the generated-client transport. It must return the
 # complete MCP result envelope and must NOT emit a deprecation warning.
-IM_STDIN=$(printf '%s' "{\"project\":\"$PROJECT\"}" | "$BINARY" cli --json get_graph_schema 2>"$CLI_STDERR")
+IM_STDIN=$(printf '%s' "{\"project\":\"$PROJECT\",\"format\":\"json\"}" | "$BINARY" cli --json get_graph_schema 2>"$CLI_STDERR")
 if ! printf '%s' "$IM_STDIN" | python3 -c "import json,sys; d=json.loads(sys.stdin.read()); c=d.get('content'); p=json.loads(c[0].get('text','')) if isinstance(c,list) and c and c[0].get('type') == 'text' else None; sys.exit(0 if d.get('isError') is not True and isinstance(p,dict) and isinstance(p.get('node_labels'),list) else 1)" 2>/dev/null; then
   echo "FAIL B4: compact stdin + --json did not return a successful get_graph_schema MCP payload"; echo "$IM_STDIN" | head -c 300; cat "$CLI_STDERR"; exit 1
 fi

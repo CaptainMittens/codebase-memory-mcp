@@ -1358,7 +1358,10 @@ TEST(mcp_metadata_byte_budget) {
 
     char *json = cbm_mcp_tools_list();
     ASSERT_NOT_NULL(json);
-    ASSERT_LT((int)strlen(json), 15 * 1024);
+    /* 15 KiB covered the lean surface at the branch point; get_file_outline,
+     * compare_graphs, manage_adr set_sections, and the search_code debug and
+     * list_projects include_details parameters landed on main since. */
+    ASSERT_LT((int)strlen(json), 18 * 1024);
 
     yyjson_doc *doc = yyjson_read(json, strlen(json), 0);
     ASSERT_NOT_NULL(doc);
@@ -5555,7 +5558,8 @@ TEST(tool_check_index_coverage_accepts_truncated_ignored_catalog_for_fresh_path_
 
     char *response = cbm_mcp_handle_tool(
         srv, "check_index_coverage",
-        "{\"project\":\"test-project\",\"paths\":[\"main.go\"],\"scopes\":[\".\"]}");
+        "{\"project\":\"test-project\",\"paths\":[\"main.go\"],\"scopes\":[\".\"],"
+        "\"format\":\"json\"}");
     ASSERT_NOT_NULL(response);
     char *inner = extract_text_content(response);
     ASSERT_NOT_NULL(inner);
@@ -6850,9 +6854,10 @@ TEST(tool_trace_path_unreadable_confidence_reports_not_recorded) {
     ASSERT_GT(cbm_store_insert_edge(st, &e), 0);
 
     char *ev = cbm_mcp_server_handle(
-        srv, "{\"jsonrpc\":\"2.0\",\"id\":93,\"method\":\"tools/call\","
-             "\"params\":{\"name\":\"trace_path\",\"arguments\":{\"function_name\":\"caller\","
-             "\"project\":\"badconf-proj\",\"direction\":\"outbound\",\"include_evidence\":true}}}");
+        srv,
+        "{\"jsonrpc\":\"2.0\",\"id\":93,\"method\":\"tools/call\","
+        "\"params\":{\"name\":\"trace_path\",\"arguments\":{\"function_name\":\"caller\","
+        "\"project\":\"badconf-proj\",\"direction\":\"outbound\",\"include_evidence\":true}}}");
     ASSERT_NOT_NULL(ev);
     char *ev_txt = extract_text_content(ev);
     ASSERT_NOT_NULL(ev_txt);
@@ -7060,11 +7065,11 @@ TEST(tool_trace_path_edge_details_use_canonical_predecessor) {
     yyjson_val *row = trace_grouped_row_named(callers, "caller", NULL);
     ASSERT_NOT_NULL(row);
     ASSERT_EQ(yyjson_get_int(yyjson_arr_get(row, 1)), 1);
-    yyjson_val *args = yyjson_arr_get(row, 2);
+    yyjson_val *args = yyjson_arr_get(row, 4);
     ASSERT_TRUE(yyjson_is_arr(args));
     ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(yyjson_arr_get(args, 0), "e")), "correct");
-    ASSERT_STR_EQ(yyjson_get_str(yyjson_arr_get(row, 3)), "lsp");
-    ASSERT_EQ((int)(yyjson_get_real(yyjson_arr_get(row, 4)) * 10.0), 9);
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_arr_get(row, 2)), "lsp");
+    ASSERT_EQ((int)(yyjson_get_real(yyjson_arr_get(row, 3)) * 10.0), 9);
     ASSERT_NULL(strstr(inner, "decoy"));
     yyjson_doc_free(doc);
     free(inner);
@@ -7144,8 +7149,8 @@ TEST(tool_trace_path_evidence_columns_align_across_optional_modes) {
                   "qn = qn_prefix == \"\" ? name : qn_prefix + \".\" + name");
     yyjson_val *cols = yyjson_obj_get(callees, "cols");
     ASSERT_NOT_NULL(cols);
-    static const char *const expected_cols[] = {"name", "hop",      "risk",      "test",
-                                                "args", "strategy", "confidence"};
+    static const char *const expected_cols[] = {"name",     "hop",        "risk", "test",
+                                                "strategy", "confidence", "args"};
     ASSERT_EQ(yyjson_arr_size(cols), sizeof(expected_cols) / sizeof(expected_cols[0]));
     for (size_t i = 0; i < sizeof(expected_cols) / sizeof(expected_cols[0]); i++) {
         ASSERT_STR_EQ(yyjson_get_str(yyjson_arr_get(cols, i)), expected_cols[i]);
@@ -7157,12 +7162,12 @@ TEST(tool_trace_path_evidence_columns_align_across_optional_modes) {
     ASSERT_EQ(yyjson_get_int(yyjson_arr_get(target_row, 1)), 1);
     ASSERT_STR_EQ(yyjson_get_str(yyjson_arr_get(target_row, 2)), "CRITICAL");
     ASSERT_FALSE(yyjson_get_bool(yyjson_arr_get(target_row, 3)));
-    yyjson_val *target_args = yyjson_arr_get(target_row, 4);
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_arr_get(target_row, 4)), "lsp");
+    ASSERT_EQ((int)(yyjson_get_real(yyjson_arr_get(target_row, 5)) * 100.0), 95);
+    yyjson_val *target_args = yyjson_arr_get(target_row, 6);
     ASSERT_TRUE(yyjson_is_arr(target_args));
     ASSERT_EQ(yyjson_arr_size(target_args), 1);
     ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(yyjson_arr_get(target_args, 0), "e")), "payload");
-    ASSERT_STR_EQ(yyjson_get_str(yyjson_arr_get(target_row, 5)), "lsp");
-    ASSERT_EQ((int)(yyjson_get_real(yyjson_arr_get(target_row, 6)) * 100.0), 95);
 
     const char *dotless_prefix = NULL;
     yyjson_val *dotless_row = trace_grouped_row_named(callees, "dotless_target", &dotless_prefix);
@@ -7172,8 +7177,8 @@ TEST(tool_trace_path_evidence_columns_align_across_optional_modes) {
     ASSERT_EQ(yyjson_arr_size(dotless_row), yyjson_arr_size(cols));
     ASSERT_STR_EQ(yyjson_get_str(yyjson_arr_get(dotless_row, 0)), "dotless_target");
     ASSERT_TRUE(yyjson_get_bool(yyjson_arr_get(dotless_row, 3)));
-    ASSERT_STR_EQ(yyjson_get_str(yyjson_arr_get(dotless_row, 5)), "heuristic");
-    ASSERT_EQ((int)(yyjson_get_real(yyjson_arr_get(dotless_row, 6)) * 10.0), 5);
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_arr_get(dotless_row, 4)), "heuristic");
+    ASSERT_EQ((int)(yyjson_get_real(yyjson_arr_get(dotless_row, 5)) * 10.0), 5);
     yyjson_doc_free(doc);
     free(inner);
     free(response);
@@ -7214,7 +7219,7 @@ TEST(tool_trace_path_evidence_columns_align_across_optional_modes) {
         "\"mode\":\"data_flow\",\"include_tests\":true,\"include_evidence\":true}");
     inner = extract_text_content(response);
     ASSERT_NOT_NULL(inner);
-    ASSERT_NOT_NULL(strstr(inner, "(cols: qn hop test args strategy confidence)"));
+    ASSERT_NOT_NULL(strstr(inner, "(cols: qn hop test strategy confidence args)"));
     ASSERT_NOT_NULL(strstr(inner, "lsp 0.95"));
     ASSERT_NOT_NULL(strstr(inner, "heuristic 0.5"));
     free(inner);
@@ -8476,16 +8481,33 @@ TEST(search_code_fails_closed_when_complete_scan_is_impossible) {
     cbm_mcp_server_set_project(srv, project);
     ASSERT_EQ(cbm_store_upsert_project(store, project, tmp), CBM_STORE_OK);
 
-    /* The graph snapshot names a file that is no longer readable by grep.
-     * Returning zero exact matches would be a false completeness claim. */
-    cbm_node_t missing = {.project = project,
-                          .label = "Function",
-                          .name = "missing",
-                          .qualified_name = "search-incomplete.missing",
-                          .file_path = "missing.c",
-                          .start_line = 1,
-                          .end_line = 1};
-    ASSERT_GT(cbm_store_upsert_node(store, &missing), 0);
+    /* The graph snapshot names a regular file that grep cannot read. Returning
+     * zero exact matches would be a false completeness claim. (A path that no
+     * longer exists, or is not a regular file, is deliberately NOT a scan
+     * operand: the scoped file list skips it — see
+     * search_code_scoped_scan_skips_non_regular_indexed_paths.) */
+#ifdef _WIN32
+    cbm_mcp_server_free(srv);
+    ASSERT_EQ(th_rmtree(tmp), 0);
+    SKIP("POSIX permission bits drive the unreadable-operand scenario");
+#else
+    if (geteuid() == 0) {
+        cbm_mcp_server_free(srv);
+        ASSERT_EQ(th_rmtree(tmp), 0);
+        SKIP("root reads mode-0 files; the unreadable-operand scenario needs an unprivileged uid");
+    }
+    char unreadable_path[512];
+    snprintf(unreadable_path, sizeof(unreadable_path), "%s/unreadable.c", tmp);
+    ASSERT_EQ(th_write_file(unreadable_path, "int never_scanned(void) { return 0; }\n"), 0);
+    ASSERT_EQ(chmod(unreadable_path, 0), 0);
+    cbm_node_t unreadable = {.project = project,
+                             .label = "Function",
+                             .name = "never_scanned",
+                             .qualified_name = "search-incomplete.never_scanned",
+                             .file_path = "unreadable.c",
+                             .start_line = 1,
+                             .end_line = 1};
+    ASSERT_GT(cbm_store_upsert_node(store, &unreadable), 0);
 
     char *response =
         cbm_mcp_handle_tool(srv, "search_code",
@@ -8493,7 +8515,9 @@ TEST(search_code_fails_closed_when_complete_scan_is_impossible) {
                             "\"format\":\"json\"}");
     ASSERT_NOT_NULL(response);
     ASSERT_NOT_NULL(strstr(response, "\"isError\":true"));
-    ASSERT_NOT_NULL(strstr(response, "complete result set was scanned"));
+    ASSERT_NOT_NULL(strstr(response, "search failed"));
+    (void)chmod(unreadable_path, 0644);
+#endif
 
     free(response);
     cbm_mcp_server_free(srv);
@@ -8626,10 +8650,10 @@ TEST(search_code_scoped_file_pattern_is_busybox_portable) {
     ASSERT_TRUE(forced_length > 0 && (size_t)forced_length < sizeof(forced_path));
     ASSERT_EQ(cbm_setenv("PATH", forced_path, 1), 0);
 
-    char *response = cbm_mcp_handle_tool(
-        srv, "search_code",
-        "{\"pattern\":\"BUSYBOX_GREP_NEEDLE\",\"project\":\"search-busybox\","
-        "\"file_pattern\":\"*R&D*.c\",\"format\":\"json\"}");
+    char *response =
+        cbm_mcp_handle_tool(srv, "search_code",
+                            "{\"pattern\":\"BUSYBOX_GREP_NEEDLE\",\"project\":\"search-busybox\","
+                            "\"file_pattern\":\"*R&D*.c\",\"format\":\"json\"}");
     mcp_test_restore_env(&path_backup, 1U);
     char *inner = extract_text_content(response);
     bool portable_success = response && !strstr(response, "\"isError\":true") && inner &&
@@ -9562,6 +9586,20 @@ TEST(search_code_match_locations_are_explicitly_bounded_and_expandable) {
     PASS();
 }
 
+/* The search_code json row layout is column-ordered; find a cell by its
+ * declared column name rather than by a fixed index. */
+static yyjson_val *sc_json_cell(yyjson_val *root, yyjson_val *row, const char *column) {
+    yyjson_val *cols = yyjson_obj_get(root, "cols");
+    size_t n = cols ? yyjson_arr_size(cols) : 0;
+    for (size_t i = 0; i < n; i++) {
+        const char *name = yyjson_get_str(yyjson_arr_get(cols, i));
+        if (name && strcmp(name, column) == 0) {
+            return yyjson_arr_get(row, i);
+        }
+    }
+    return NULL;
+}
+
 /* Regression guard: search_code full results must preserve valid UTF-8 source. */
 static bool is_valid_json_response(const char *json);
 
@@ -9618,7 +9656,7 @@ TEST(search_code_full_preserves_utf8_source) {
     ASSERT_NOT_NULL(rows);
     ASSERT_TRUE(yyjson_arr_size(rows) > 0);
     yyjson_val *row = yyjson_arr_get(rows, 0);
-    yyjson_val *source_obj = yyjson_arr_get(row, 7);
+    yyjson_val *source_obj = sc_json_cell(yyjson_doc_get_root(doc), row, "source");
     yyjson_val *source_val = yyjson_obj_get(source_obj, "source");
     ASSERT_NOT_NULL(source_val);
     ASSERT_STR_EQ(yyjson_get_str(source_val), source);
@@ -9791,7 +9829,8 @@ TEST(search_code_invalid_utf8_still_returns_valid_json) {
     yyjson_val *rows = yyjson_obj_get(yyjson_doc_get_root(doc), "rows");
     ASSERT_NOT_NULL(rows);
     ASSERT_TRUE(yyjson_arr_size(rows) > 0);
-    yyjson_val *source_obj = yyjson_arr_get(yyjson_arr_get(rows, 0), 7);
+    yyjson_val *source_obj =
+        sc_json_cell(yyjson_doc_get_root(doc), yyjson_arr_get(rows, 0), "source");
     ASSERT_NOT_NULL(source_obj);
     const char *safe_source = yyjson_get_str(yyjson_obj_get(source_obj, "source"));
     ASSERT_NOT_NULL(safe_source);
@@ -10600,6 +10639,25 @@ TEST(search_code_scoped_scan_skips_non_regular_indexed_paths) {
                                .start_line = 1,
                                .end_line = 1};
     ASSERT_GT(cbm_store_upsert_node(store, &missing_node), 0);
+    /* Scoped scans list the project's canonical File nodes whenever it has
+     * any, so the real sources need theirs too — as every indexed project
+     * has — for the decoys above to be tested alongside them. */
+    cbm_node_t handler_file = {.project = "prefilter-search",
+                               .label = "File",
+                               .name = "handler.go",
+                               .qualified_name = "prefilter-search.src.handler.go",
+                               .file_path = "src/handler.go",
+                               .start_line = 1,
+                               .end_line = 1};
+    ASSERT_GT(cbm_store_upsert_node(store, &handler_file), 0);
+    cbm_node_t vendor_file = {.project = "prefilter-search",
+                              .label = "File",
+                              .name = "other.go",
+                              .qualified_name = "prefilter-search.vendor.other.go",
+                              .file_path = "vendor/other.go",
+                              .start_line = 1,
+                              .end_line = 1};
+    ASSERT_GT(cbm_store_upsert_node(store, &vendor_file), 0);
 
     char *response = cbm_mcp_handle_tool(
         srv, "search_code", "{\"pattern\":\"HandleRequest\",\"project\":\"prefilter-search\"}");
@@ -12650,9 +12708,9 @@ TEST(tool_corrupt_store_cleanup_rechecks_generation_after_guard_wait) {
     };
     cbm_mcp_server_set_project_mutation_guard(srv, mcp_replacing_mutation_guard_begin,
                                               mcp_replacing_mutation_guard_end, &replacement);
-    char *resp = cbm_mcp_handle_tool(
-        srv, "manage_adr",
-        "{\"project\":\"guard-corrupt-recheck\",\"mode\":\"update\",\"content\":\"# ADR\\n\\nPending replacement.\"}");
+    char *resp = cbm_mcp_handle_tool(srv, "manage_adr",
+                                     "{\"project\":\"guard-corrupt-recheck\",\"mode\":\"update\","
+                                     "\"content\":\"# ADR\\n\\nPending replacement.\"}");
     bool response_used_replacement =
         resp && !response_contains_json_fragment(resp, "\"isError\":true");
     free(resp);
@@ -12727,9 +12785,9 @@ TEST(tool_corrupt_store_cleanup_preserves_existing_backup_and_uses_unique_name) 
     mcp_mutation_guard_probe_t probe = {0};
     cbm_mcp_server_set_project_mutation_guard(srv, mcp_mutation_guard_probe_begin,
                                               mcp_mutation_guard_probe_end, &probe);
-    char *resp = cbm_mcp_handle_tool(
-        srv, "manage_adr",
-        "{\"project\":\"guard-corrupt-unique\",\"mode\":\"update\",\"content\":\"# ADR\\n\\nPending quarantine.\"}");
+    char *resp = cbm_mcp_handle_tool(srv, "manage_adr",
+                                     "{\"project\":\"guard-corrupt-unique\",\"mode\":\"update\","
+                                     "\"content\":\"# ADR\\n\\nPending quarantine.\"}");
     free(resp);
     cbm_mcp_server_free(srv);
 
@@ -12802,9 +12860,9 @@ TEST(tool_corrupt_store_cleanup_publish_failure_preserves_db_and_wal) {
                                               mcp_mutation_guard_probe_end, &guard);
     mcp_quarantine_hook_probe_t hook = {.deny_step = "before_snapshot_publish"};
     cbm_mcp_server_set_quarantine_test_hook(srv, mcp_quarantine_hook_probe, &hook);
-    char *resp = cbm_mcp_handle_tool(
-        srv, "manage_adr",
-        "{\"project\":\"guard-corrupt-publish-fail\",\"mode\":\"update\",\"content\":\"# ADR\\n\\nPending publish.\"}");
+    char *resp = cbm_mcp_handle_tool(srv, "manage_adr",
+                                     "{\"project\":\"guard-corrupt-publish-fail\",\"mode\":"
+                                     "\"update\",\"content\":\"# ADR\\n\\nPending publish.\"}");
 
     bool db_unchanged = mcp_file_matches_snapshot(db_path, db_before, db_len);
     bool wal_unchanged = mcp_file_matches_snapshot(wal_path, wal_before, wal_len);
@@ -12876,9 +12934,9 @@ TEST(tool_corrupt_store_cleanup_publishes_complete_wal_snapshot_before_delete) {
                                               mcp_mutation_guard_probe_end, &guard);
     mcp_quarantine_hook_probe_t hook = {.deny_step = "after_snapshot_publish"};
     cbm_mcp_server_set_quarantine_test_hook(srv, mcp_quarantine_hook_probe, &hook);
-    char *resp = cbm_mcp_handle_tool(
-        srv, "manage_adr",
-        "{\"project\":\"guard-corrupt-after-publish\",\"mode\":\"update\",\"content\":\"# ADR\\n\\nPending publish.\"}");
+    char *resp = cbm_mcp_handle_tool(srv, "manage_adr",
+                                     "{\"project\":\"guard-corrupt-after-publish\",\"mode\":"
+                                     "\"update\",\"content\":\"# ADR\\n\\nPending publish.\"}");
 
     bool db_unchanged = mcp_file_matches_snapshot(db_path, db_before, db_len);
     bool wal_unchanged = mcp_file_matches_snapshot(wal_path, wal_before, wal_len);
@@ -16760,9 +16818,14 @@ TEST(tool_resolve_store_by_internal_name_issue704) {
     char *page =
         cbm_mcp_server_handle(srv, "{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"tools/call\","
                                    "\"params\":{\"name\":\"list_projects\","
-                                   "\"arguments\":{\"offset\":0,\"limit\":1}}}");
+                                   "\"arguments\":{\"offset\":0,\"limit\":1,"
+                                   "\"format\":\"json\"}}}");
     ASSERT_NOT_NULL(page);
-    ASSERT_NOT_NULL(strstr(page, "\\\"total\\\":3"));
+    /* total counts the projects the listing can actually return: alpha704 and
+     * the drifted beta704. The 0-byte ghost is never a row, so it is not a
+     * page either — a total that included it would leave has_more true on the
+     * last page. */
+    ASSERT_NOT_NULL(strstr(page, "\\\"total\\\":2"));
     ASSERT_NOT_NULL(strstr(page, "\\\"limit\\\":1"));
     ASSERT_NOT_NULL(strstr(page, "\\\"returned\\\":1"));
     ASSERT_NOT_NULL(strstr(page, "\\\"has_more\\\":true"));
@@ -16784,7 +16847,8 @@ TEST(tool_resolve_store_by_internal_name_issue704) {
     char *details = cbm_mcp_server_handle(
         srv, "{\"jsonrpc\":\"2.0\",\"id\":13,\"method\":\"tools/call\","
              "\"params\":{\"name\":\"list_projects\","
-             "\"arguments\":{\"offset\":0,\"limit\":1,\"include_details\":true}}}");
+             "\"arguments\":{\"offset\":0,\"limit\":1,\"include_details\":true,"
+             "\"format\":\"json\"}}}");
     ASSERT_NOT_NULL(details);
     ASSERT_NOT_NULL(strstr(details, "\\\"nodes\\\""));
     free(details);

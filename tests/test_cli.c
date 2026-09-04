@@ -7283,8 +7283,7 @@ TEST(cli_registry_routes_omp_via_profile_and_pi_coding_agent_dir) {
         FAIL("cbm_mkdtemp failed");
 
     const char *const env_names[] = {
-        "HOME",           "PATH",     "OMP_PROFILE",    "PI_CODING_AGENT_DIR",
-        "XDG_CONFIG_HOME", "APPDATA",
+        "HOME", "PATH", "OMP_PROFILE", "PI_CODING_AGENT_DIR", "XDG_CONFIG_HOME", "APPDATA",
     };
     char *saved_env[sizeof(env_names) / sizeof(env_names[0])];
     for (size_t i = 0U; i < sizeof(env_names) / sizeof(env_names[0]); i++) {
@@ -7369,8 +7368,7 @@ TEST(cli_registry_routes_omp_via_profile_and_pi_coding_agent_dir) {
         relocated_plan && strstr(relocated_plan, "\"omp\"") &&
         test_json_string_array_contains(relocated_root, "config_files_planned",
                                         omp_relocated_mcp) &&
-        test_json_string_array_contains(relocated_root, "agent_files_planned",
-                                        omp_relocated_agent);
+        test_json_string_array_contains(relocated_root, "agent_files_planned", omp_relocated_agent);
     yyjson_doc_free(relocated_doc);
     free(relocated_plan);
     cbm_unsetenv("PI_CODING_AGENT_DIR");
@@ -7393,12 +7391,9 @@ TEST(cli_registry_routes_omp_via_profile_and_pi_coding_agent_dir) {
     /* None of the plan-only invocations may have written OMP-owned content. */
     struct stat state;
     bool plan_did_not_mutate =
-        (stat(omp_default_mcp, &state) != 0) &&
-        (stat(omp_default_agent, &state) != 0) &&
-        (stat(omp_profile_mcp, &state) != 0) &&
-        (stat(omp_profile_agent, &state) != 0) &&
-        (stat(omp_relocated_mcp, &state) != 0) &&
-        (stat(omp_relocated_agent, &state) != 0);
+        (stat(omp_default_mcp, &state) != 0) && (stat(omp_default_agent, &state) != 0) &&
+        (stat(omp_profile_mcp, &state) != 0) && (stat(omp_profile_agent, &state) != 0) &&
+        (stat(omp_relocated_mcp, &state) != 0) && (stat(omp_relocated_agent, &state) != 0);
 
     for (size_t i = 0U; i < sizeof(env_names) / sizeof(env_names[0]); i++) {
         restore_test_env(env_names[i], saved_env[i]);
@@ -7406,8 +7401,7 @@ TEST(cli_registry_routes_omp_via_profile_and_pi_coding_agent_dir) {
     test_rmdir_r(tmpdir);
     if (!default_plan_ok || !profile_plan_ok || !relocated_plan_ok || !fallback_plan_ok ||
         !plan_did_not_mutate) {
-        fprintf(stderr,
-                "omp diag default=%d profile=%d relocated=%d fallback=%d plan_clean=%d\n",
+        fprintf(stderr, "omp diag default=%d profile=%d relocated=%d fallback=%d plan_clean=%d\n",
                 default_plan_ok, profile_plan_ok, relocated_plan_ok, fallback_plan_ok,
                 plan_did_not_mutate);
         FAIL("OMP must resolve ~/.omp/agent under the documented fallback, honor OMP_PROFILE "
@@ -7417,15 +7411,14 @@ TEST(cli_registry_routes_omp_via_profile_and_pi_coding_agent_dir) {
     PASS();
 }
 
-
 TEST(cli_registry_omp_named_profile_install_and_uninstall_preserve_user_content) {
     char tmpdir[256];
     snprintf(tmpdir, sizeof(tmpdir), "/tmp/cli-registry-omp-lifecycle-XXXXXX");
     if (!cbm_mkdtemp(tmpdir))
         FAIL("cbm_mkdtemp failed");
 
-    const char *const env_names[] = {"HOME", "PATH", "OMP_PROFILE", "PI_CODING_AGENT_DIR",
-                                     "XDG_CONFIG_HOME", "APPDATA"};
+    const char *const env_names[] = {
+        "HOME", "PATH", "OMP_PROFILE", "PI_CODING_AGENT_DIR", "XDG_CONFIG_HOME", "APPDATA"};
     char *saved_env[sizeof(env_names) / sizeof(env_names[0])];
     for (size_t i = 0U; i < sizeof(env_names) / sizeof(env_names[0]); i++) {
         saved_env[i] = save_test_env(env_names[i]);
@@ -7466,22 +7459,22 @@ TEST(cli_registry_omp_named_profile_install_and_uninstall_preserve_user_content)
         install_rc == 0 && installed_mcp && strstr(installed_mcp, "codebase-memory-mcp") &&
         strstr(installed_mcp, binary_path) && installed_instructions &&
         strcmp(installed_instructions, user_instructions) == 0 &&
-        test_file_contains_all(skill_path,
-                               (const char *const[]){"search_graph", "trace_path",
-                                                   "Sessions and Subagents"},
-                               3U) &&
+        test_file_contains_all(
+            skill_path,
+            (const char *const[]){"search_graph", "trace_path", "Sessions and Subagents"}, 3U) &&
         test_file_contains_all(scout_path,
                                (const char *const[]){"autoloadSkills: [codebase-memory]",
-                                                   "mcp__codebase_memory_mcp_search_graph"},
+                                                     "mcp__codebase_memory_mcp_search_graph"},
                                2U) &&
-        test_file_contains_all(verify_path,
-                               (const char *const[]){"read-summarize: false",
-                                                   "mcp__codebase_memory_mcp_trace_path"},
-                               2U) &&
-        test_file_contains_all(auditor_path,
-                               (const char *const[]){"autoloadSkills: [codebase-memory]",
-                                                   "mcp__codebase_memory_mcp_check_index_coverage"},
-                               2U);
+        test_file_contains_all(
+            verify_path,
+            (const char *const[]){"read-summarize: false", "mcp__codebase_memory_mcp_trace_path"},
+            2U) &&
+        test_file_contains_all(
+            auditor_path,
+            (const char *const[]){"autoloadSkills: [codebase-memory]",
+                                  "mcp__codebase_memory_mcp_check_index_coverage"},
+            2U);
     free(installed_mcp);
     free(installed_instructions);
 
@@ -7494,12 +7487,12 @@ TEST(cli_registry_omp_named_profile_install_and_uninstall_preserve_user_content)
     char *preserved_instructions = read_test_file_alloc(instructions_path);
     char *preserved_verify = read_test_file_alloc(verify_path);
     char *mcp_after = read_test_file_alloc(mcp_path);
-    bool uninstalled =
-        uninstall_rc == 0 && preserved_instructions &&
-        strcmp(preserved_instructions, user_instructions) == 0 && preserved_verify &&
-        strcmp(preserved_verify, modified_verify) == 0 && stat(skill_path, &state) != 0 &&
-        stat(scout_path, &state) != 0 && stat(auditor_path, &state) != 0 &&
-        (!mcp_after || !strstr(mcp_after, "codebase-memory-mcp"));
+    bool uninstalled = uninstall_rc == 0 && preserved_instructions &&
+                       strcmp(preserved_instructions, user_instructions) == 0 && preserved_verify &&
+                       strcmp(preserved_verify, modified_verify) == 0 &&
+                       stat(skill_path, &state) != 0 && stat(scout_path, &state) != 0 &&
+                       stat(auditor_path, &state) != 0 &&
+                       (!mcp_after || !strstr(mcp_after, "codebase-memory-mcp"));
     free(preserved_instructions);
     free(preserved_verify);
     free(mcp_after);
@@ -7522,8 +7515,8 @@ TEST(cli_registry_omp_relocated_dry_run_is_non_mutating) {
     if (!cbm_mkdtemp(tmpdir))
         FAIL("cbm_mkdtemp failed");
 
-    const char *const env_names[] = {"HOME", "PATH", "OMP_PROFILE", "PI_CODING_AGENT_DIR",
-                                     "XDG_CONFIG_HOME", "APPDATA"};
+    const char *const env_names[] = {
+        "HOME", "PATH", "OMP_PROFILE", "PI_CODING_AGENT_DIR", "XDG_CONFIG_HOME", "APPDATA"};
     char *saved_env[sizeof(env_names) / sizeof(env_names[0])];
     for (size_t i = 0U; i < sizeof(env_names) / sizeof(env_names[0]); i++) {
         saved_env[i] = save_test_env(env_names[i]);
