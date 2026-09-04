@@ -1650,11 +1650,15 @@ static char *main_local_cli_daemon_execute(const char *tool_name, const char *ar
                                            : "no CBM daemon connection for CLI execution");
         return NULL;
     }
-    if (bootstrap.daemon_spawned) {
+    if (bootstrap.daemon_spawned && cbm_log_get_level() <= CBM_LOG_INFO) {
         /* Routine cold-start advice is informational. Default one-shot CLI
-         * output stays pipe-clean; `cli --verbose ...` opts into this detail. */
-        cbm_log_info("cli.daemon.spawned", "hint",
-                     "codebase-memory-mcp daemon start keeps one warm");
+         * output stays pipe-clean; `cli --verbose ...` (or CBM_LOG_LEVEL=info)
+         * opts into this detail. It is advice for a person, so it is a plain
+         * stderr line rather than a structured record whose value escaping
+         * would turn `daemon start` into `daemon_start`. */
+        (void)fprintf(stderr, "hint: this command started a temporary CBM daemon. "
+                              "`codebase-memory-mcp daemon start` keeps one warm and removes this "
+                              "startup cost from every CLI command.\n");
     }
     char session_root[MAIN_PATH_CAP];
     char allowed_root[MAIN_PATH_CAP];
