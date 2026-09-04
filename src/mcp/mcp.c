@@ -1010,17 +1010,6 @@ const char *cbm_mcp_tool_name(int index) {
     return TOOLS[index].name;
 }
 
-const char *cbm_mcp_tool_title(const char *tool_name) {
-    if (!tool_name) {
-        return NULL;
-    }
-    for (int i = 0; i < TOOL_COUNT; i++) {
-        if (strcmp(TOOLS[i].name, tool_name) == 0) {
-            return TOOLS[i].title;
-        }
-    }
-    return NULL;
-}
 
 const char *cbm_mcp_tool_description(const char *tool_name) {
     if (!tool_name) {
