@@ -10046,7 +10046,7 @@ TEST(cli_claude_hook_commands_use_exec_form_with_custom_config_dir) {
     yyjson_doc *document = settings ? yyjson_read(settings, strlen(settings), 0) : NULL;
     yyjson_val *root = document ? yyjson_doc_get_root(document) : NULL;
     static const char *const matchers[] = {"startup", "resume", "clear", "compact"};
-    size_t owned = test_count_exec_hook(root, "PreToolUse", "Grep|Glob", binary, "hook-augment") +
+    size_t owned = test_count_exec_hook(root, "PreToolUse", "Grep|Glob|Bash", binary, "hook-augment") +
                    test_count_exec_hook(root, "PostToolUse", "Read", binary, "hook-augment") +
                    test_count_exec_hook(root, "SubagentStart", "*", binary, "hook-augment");
     for (size_t i = 0U; i < sizeof(matchers) / sizeof(matchers[0]); i++) {
@@ -10914,7 +10914,7 @@ TEST(cli_upgrade_migrates_released_claude_hook_scripts) {
     yyjson_val *settings_root = settings_doc ? yyjson_doc_get_root(settings_doc) : NULL;
     static const char *const matchers[] = {"startup", "resume", "clear", "compact"};
     size_t registered =
-        test_count_exec_hook(settings_root, "PreToolUse", "Grep|Glob", binary, "hook-augment") +
+        test_count_exec_hook(settings_root, "PreToolUse", "Grep|Glob|Bash", binary, "hook-augment") +
         test_count_exec_hook(settings_root, "PostToolUse", "Read", binary, "hook-augment") +
         test_count_exec_hook(settings_root, "SubagentStart", "*", binary, "hook-augment");
     for (size_t i = 0U; i < sizeof(matchers) / sizeof(matchers[0]); i++) {
@@ -12124,8 +12124,13 @@ TEST(cli_windows_claude_lifecycle_migrates_only_exact_owned_legacy_state) {
     snprintf(settings_path, sizeof(settings_path), "%s/settings.json", config_dir);
     snprintf(appdata, sizeof(appdata), "%s/AppData/Roaming", tmpdir);
     snprintf(binary_path, sizeof(binary_path), "%s/.local/bin/codebase-memory-mcp.exe", tmpdir);
+    /* cbm_mkdtemp hands back a native '\\' temp root; the product normalizes
+     * the install directory before any registration (cbm_cmd_install), so the
+     * exact-owned exec command is the '/'-spelled path uninstall derives. */
+    cbm_normalize_path_sep(binary_path);
     test_mkdirp(hooks_dir);
 
+    static const char *const matchers[] = {"startup", "resume", "clear", "compact"};
     const char *const script_names[] = {
         "cbm-code-discovery-gate",
         "cbm-session-reminder",
@@ -12199,13 +12204,21 @@ TEST(cli_windows_claude_lifecycle_migrates_only_exact_owned_legacy_state) {
     yyjson_doc *installed_doc =
         installed_settings ? yyjson_read(installed_settings, strlen(installed_settings), 0) : NULL;
     yyjson_val *installed_root = installed_doc ? yyjson_doc_get_root(installed_doc) : NULL;
+    /* Every owned shell spelling (current .cmd, previous, released) converges
+     * on one exec-form registration per matcher; foreign hooks are untouched. */
+    size_t installed_exec =
+        test_count_exec_hook(installed_root, "SubagentStart", "*", binary_path, "hook-augment");
+    for (size_t i = 0U; i < sizeof(matchers) / sizeof(matchers[0]); i++) {
+        installed_exec += test_count_exec_hook(installed_root, "SessionStart", matchers[i],
+                                               binary_path, "hook-augment");
+    }
     bool commands_migrated =
-        install_rc == 0 &&
-        test_count_hook_command(installed_root, "SessionStart", session_current) == 4U &&
+        install_rc == 0 && installed_exec == 5U &&
+        test_count_hook_command(installed_root, "SessionStart", session_current) == 0U &&
         test_count_hook_command(installed_root, "SessionStart", session_previous) == 0U &&
         test_count_hook_command(installed_root, "SessionStart", session_released) == 0U &&
         test_count_hook_command(installed_root, "SessionStart", foreign_command) == 1U &&
-        test_count_hook_command(installed_root, "SubagentStart", subagent_current) == 1U &&
+        test_count_hook_command(installed_root, "SubagentStart", subagent_current) == 0U &&
         test_count_hook_command(installed_root, "SubagentStart", subagent_previous) == 0U &&
         test_count_hook_command(installed_root, "SubagentStart", subagent_released) == 0U &&
         test_count_hook_command(installed_root, "SubagentStart", foreign_command) == 1U;
@@ -12229,8 +12242,14 @@ TEST(cli_windows_claude_lifecycle_migrates_only_exact_owned_legacy_state) {
         uninstalled_settings ? yyjson_read(uninstalled_settings, strlen(uninstalled_settings), 0)
                              : NULL;
     yyjson_val *uninstalled_root = uninstalled_doc ? yyjson_doc_get_root(uninstalled_doc) : NULL;
+    size_t uninstalled_exec =
+        test_count_exec_hook(uninstalled_root, "SubagentStart", "*", binary_path, "hook-augment");
+    for (size_t i = 0U; i < sizeof(matchers) / sizeof(matchers[0]); i++) {
+        uninstalled_exec += test_count_exec_hook(uninstalled_root, "SessionStart", matchers[i],
+                                                 binary_path, "hook-augment");
+    }
     bool commands_clean =
-        uninstall_rc == 0 &&
+        uninstall_rc == 0 && uninstalled_exec == 0U &&
         test_count_hook_command(uninstalled_root, "SessionStart", session_current) == 0U &&
         test_count_hook_command(uninstalled_root, "SessionStart", session_previous) == 0U &&
         test_count_hook_command(uninstalled_root, "SessionStart", session_released) == 0U &&
@@ -12453,7 +12472,7 @@ TEST(cli_claude_hooks_use_exec_form_across_shells_issue1733) {
         yyjson_doc *doc = settings ? yyjson_read(settings, strlen(settings), 0) : NULL;
         yyjson_val *root = doc ? yyjson_doc_get_root(doc) : NULL;
         size_t owned =
-            test_count_exec_hook(root, "PreToolUse", "Grep|Glob", binary_path, "hook-augment") +
+            test_count_exec_hook(root, "PreToolUse", "Grep|Glob|Bash", binary_path, "hook-augment") +
             test_count_exec_hook(root, "PostToolUse", "Read", binary_path, "hook-augment") +
             test_count_exec_hook(root, "SubagentStart", "*", binary_path, "hook-augment");
         for (size_t i = 0U; i < sizeof(matchers) / sizeof(matchers[0]); i++) {
@@ -12516,7 +12535,7 @@ TEST(cli_claude_exec_hooks_custom_dir_uninstall_issue1733) {
     yyjson_val *installed_root = installed_doc ? yyjson_doc_get_root(installed_doc) : NULL;
     const char *const matchers[] = {"startup", "resume", "clear", "compact"};
     size_t before_owned =
-        test_count_exec_hook(installed_root, "PreToolUse", "Grep|Glob", binary_path,
+        test_count_exec_hook(installed_root, "PreToolUse", "Grep|Glob|Bash", binary_path,
                              "hook-augment") +
         test_count_exec_hook(installed_root, "PostToolUse", "Read", binary_path,
                              "hook-augment") +
