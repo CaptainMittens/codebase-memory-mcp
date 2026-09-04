@@ -9456,6 +9456,78 @@ TEST(registry_confidence_suffix_match) {
     PASS();
 }
 
+/* Issue #1893: a call on a library type bound to a same-named project member.
+ * URLSession is Foundation's, not this project's, so PickedFile.data is the
+ * wrong target — and with one candidate it won the top name-only confidence. */
+TEST(registry_receiver_chain_refuses_library_unique_name_issue1893) {
+    cbm_registry_t *reg = cbm_registry_new();
+    cbm_registry_add(reg, "data", "HomeboxUI.PickedFile.data", "Variable");
+
+    cbm_resolution_t r =
+        cbm_registry_resolve(reg, "URLSession.shared.data", "HomeboxUI.Net", NULL, NULL, 0);
+    ASSERT_NULL(r.qualified_name);
+
+    cbm_registry_free(reg);
+    PASS();
+}
+
+/* The same refusal on the other name-only exit, where several candidates share
+ * the final name and import distance picks the winner. */
+TEST(registry_receiver_chain_refuses_library_suffix_match_issue1893) {
+    cbm_registry_t *reg = cbm_registry_new();
+    cbm_registry_add(reg, "data", "HomeboxUI.PickedFile.data", "Variable");
+    cbm_registry_add(reg, "data", "HomeboxUI.Payload.data", "Variable");
+
+    cbm_resolution_t r =
+        cbm_registry_resolve(reg, "URLSession.shared.data", "HomeboxUI.Net", NULL, NULL, 0);
+    ASSERT_NULL(r.qualified_name);
+
+    cbm_registry_free(reg);
+    PASS();
+}
+
+/* The true positive the gate must not eat: the project extends Calendar itself,
+ * so Calendar really is in the receiver chain. */
+TEST(registry_receiver_chain_keeps_project_extension_issue1893) {
+    cbm_registry_t *reg = cbm_registry_new();
+    cbm_registry_add(reg, "startOfDayUTC", "AuthDTOs.Calendar.startOfDayUTC", "Method");
+
+    cbm_resolution_t r = cbm_registry_resolve(reg, "Calendar.utcGregorian.startOfDayUTC",
+                                              "HomeboxUI.Stats", NULL, NULL, 0);
+    ASSERT_STR_EQ(r.qualified_name, "AuthDTOs.Calendar.startOfDayUTC");
+    ASSERT_STR_EQ(r.strategy, "unique_name");
+
+    cbm_registry_free(reg);
+    PASS();
+}
+
+/* A lower-case root names a value, whose type the chain does not show. The gate
+ * must not look at it, or every ordinary vm.load style call would be refused. */
+TEST(registry_receiver_chain_ignores_lowercase_root_issue1893) {
+    cbm_registry_t *reg = cbm_registry_new();
+    cbm_registry_add(reg, "load", "HomeboxUI.EntityListViewModel.load", "Method");
+
+    cbm_resolution_t r = cbm_registry_resolve(reg, "vm.load", "HomeboxUI.Views", NULL, NULL, 0);
+    ASSERT_STR_EQ(r.qualified_name, "HomeboxUI.EntityListViewModel.load");
+    ASSERT_STR_EQ(r.strategy, "unique_name");
+
+    cbm_registry_free(reg);
+    PASS();
+}
+
+/* An unqualified callee has no chain at all and must pass through unchanged. */
+TEST(registry_receiver_chain_ignores_bare_name_issue1893) {
+    cbm_registry_t *reg = cbm_registry_new();
+    cbm_registry_add(reg, "helper", "proj.pkg.helper", "Function");
+
+    cbm_resolution_t r = cbm_registry_resolve(reg, "helper", "proj.other", NULL, NULL, 0);
+    ASSERT_STR_EQ(r.qualified_name, "proj.pkg.helper");
+    ASSERT_STR_EQ(r.strategy, "unique_name");
+
+    cbm_registry_free(reg);
+    PASS();
+}
+
 TEST(registry_fuzzy_confidence_single) {
     cbm_registry_t *reg = cbm_registry_new();
     cbm_registry_add(reg, "Handler", "proj.svc.Handler", "Function");
@@ -13491,6 +13563,11 @@ SUITE(pipeline) {
     RUN_TEST(registry_confidence_same_module);
     RUN_TEST(registry_confidence_unique_name);
     RUN_TEST(registry_confidence_suffix_match);
+    RUN_TEST(registry_receiver_chain_refuses_library_unique_name_issue1893);
+    RUN_TEST(registry_receiver_chain_refuses_library_suffix_match_issue1893);
+    RUN_TEST(registry_receiver_chain_keeps_project_extension_issue1893);
+    RUN_TEST(registry_receiver_chain_ignores_lowercase_root_issue1893);
+    RUN_TEST(registry_receiver_chain_ignores_bare_name_issue1893);
     RUN_TEST(registry_fuzzy_confidence_single);
     RUN_TEST(registry_fuzzy_confidence_distance);
     RUN_TEST(registry_negative_import_rejects);
