@@ -1793,12 +1793,22 @@ static void detect_url_in_args(cbm_gbuf_t *gbuf, const cbm_gbuf_node_t *source,
                                const CBMCall *call) {
     for (int ai = 0; ai < call->arg_count; ai++) {
         const CBMCallArg *ca = &call->args[ai];
+        /* A slash-prefixed raw expression is not a URL string. In JS/TS this
+         * is notably a regex literal (`/<table/i`); genuine string literals
+         * and propagated constants are carried in `value`, while template
+         * literals keep their leading backtick in `expr`. */
+        if (!ca->value && ca->expr && ca->expr[0] == '/') {
+            continue;
+        }
         const char *url = ca->value ? ca->value : ca->expr;
         if (!url || (url[0] != '/' && url[0] != '`')) {
             continue;
         }
         char norm[CBM_SZ_256];
         if (!normalize_url_arg(url, norm, (int)sizeof(norm))) {
+            continue;
+        }
+        if (!cbm_service_pattern_is_http_route_literal(norm, call->callee_name)) {
             continue;
         }
         char route_qn[CBM_ROUTE_QN_SIZE];
@@ -2483,8 +2493,13 @@ static void resolve_file_calls(resolve_ctx_t *rc, resolve_worker_state_t *ws, CB
         bool suppress_weak_member = lang == CBM_LANG_PYTHON || lang == CBM_LANG_JAVASCRIPT ||
                                     lang == CBM_LANG_TYPESCRIPT || lang == CBM_LANG_TSX ||
                                     lang == CBM_LANG_ARKTS;
+        /* Bare-call local-binding suppression — see the note in pass_calls.c.
+         * This gate MUST stay identical to the one there. */
+        bool suppress_weak_local_binding = lang == CBM_LANG_PYTHON;
         bool drop_plain_call =
-            cbm_suppress_weak_member_match(suppress_weak_member, call->is_method, res.strategy);
+            cbm_suppress_weak_member_match(suppress_weak_member, call->is_method, res.strategy) ||
+            cbm_suppress_weak_local_binding_call(suppress_weak_local_binding,
+                                                 call->callee_is_locally_bound, res.strategy);
 
         /* Service-pattern HTTP/ASYNC client call (`requests.get(url)`): the
          * service signal lives in the callee_name. The registry can mis-resolve
@@ -2655,6 +2670,18 @@ static void resolve_file_usages(resolve_ctx_t *rc, resolve_worker_state_t *ws,
                 continue;
             }
             tgt = cbm_gbuf_find_by_qn(rc->main_gbuf, res.qualified_name);
+            /* #1928: the registry fallback is a bare-name guess — never let it
+             * bind a reference across a language boundary. Mirrors the
+             * sequential twin (pass_usages.c). */
+            if (tgt && cbm_suppress_cross_language_ref(lang, tgt->file_path)) {
+                continue;
+            }
+            /* #1942/#1962: a bare Go reference can never denote a struct
+             * field; the member half of a selector may. */
+            if (tgt && cbm_go_suppress_bare_field_ref(lang == CBM_LANG_GO, usage->is_member_access,
+                                                      tgt->label)) {
+                continue;
+            }
             if (usage->semantic_reference_blocked && (usage->semantic_reference_local_shadow ||
                                                       cbm_pipeline_node_is_callable_target(tgt))) {
                 continue;
@@ -2714,7 +2741,7 @@ static void resolve_file_throws(resolve_ctx_t *rc, resolve_worker_state_t *ws,
 /* Resolve reads/writes for one file. */
 static void resolve_file_rw(resolve_ctx_t *rc, resolve_worker_state_t *ws, CBMFileResult *result,
                             const char *rel, const char *module_qn, const char **imp_keys,
-                            const char **imp_vals, int imp_count) {
+                            const char **imp_vals, int imp_count, CBMLanguage lang) {
     for (int r = 0; r < result->rw.count; r++) {
         CBMReadWrite *rw = &result->rw.items[r];
         if (!rw->var_name) {
@@ -2732,6 +2759,17 @@ static void resolve_file_rw(resolve_ctx_t *rc, resolve_worker_state_t *ws, CBMFi
         }
         const cbm_gbuf_node_t *tgt = cbm_gbuf_find_by_qn(rc->main_gbuf, res.qualified_name);
         if (!tgt || src->id == tgt->id) {
+            continue;
+        }
+        /* #1928: every resolution here is a bare-name registry guess — never
+         * let it bind a read/write across a language boundary. Mirrors the
+         * sequential twin (pass_usages.c). */
+        if (cbm_suppress_cross_language_ref(lang, tgt->file_path)) {
+            continue;
+        }
+        /* #1942/#1962: a bare Go reference can never denote a struct field;
+         * a selector-LHS write (`t.err = x`) may bind it. */
+        if (cbm_go_suppress_bare_field_ref(lang == CBM_LANG_GO, rw->is_member_access, tgt->label)) {
             continue;
         }
         const char *etype = rw->is_write ? "WRITES" : "READS";
@@ -3180,7 +3218,7 @@ static void resolve_worker(int worker_id, void *ctx_ptr) {
 
         /* ── READS / WRITES ────────────────────────────────────── */
         _ph_t0 = extract_now_ns();
-        resolve_file_rw(rc, ws, result, rel, module_qn, imp_keys, imp_vals, imp_count);
+        resolve_file_rw(rc, ws, result, rel, module_qn, imp_keys, imp_vals, imp_count, lang);
         atomic_fetch_add_explicit(&rc->time_ns_rw, extract_now_ns() - _ph_t0, memory_order_relaxed);
 
         /* ── INHERITS + DECORATES + IMPLEMENTS ──────────────────── */

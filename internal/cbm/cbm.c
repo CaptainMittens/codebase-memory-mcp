@@ -1,3 +1,7 @@
+/* Full declaration set for the same CBMArena, and it must precede cbm.h:
+ * internal/cbm/arena.h declares a subset and the two share the CBM_ARENA_H
+ * guard, so whichever is included first is the one this file sees. */
+#include "foundation/arena.h" // cbm_arena_init_sized
 #include "cbm.h"
 #include "arena.h" // CBMArena, cbm_arena_init/alloc/strdup/destroy
 #include "helpers.h"
@@ -803,16 +807,25 @@ static void cbm_error_regions_push(cbm_error_regions_t *acc, TSNode n) {
         end_line = end.row;
     }
 
-    /* One line can carry several error nodes, and a line range says nothing
-     * new the second time. Line 113 of scripts/setup-windows.ps1 has two, and
-     * the report read "113-113,113-113". Extend the range already open instead
-     * of repeating it. The walk visits children in source order, so a region
-     * that starts at or before the open range's end really does overlap it.
-     * This runs BEFORE the cap check, so a merge never counts as a drop. */
-    if (acc->count > 0 && start_line <= acc->ends[acc->count - 1]) {
-        if (end_line > acc->ends[acc->count - 1]) {
-            acc->ends[acc->count - 1] = end_line;
-        }
+    /* One line can carry several error nodes, and repeating the same line range
+     * says nothing new. Line 113 of scripts/setup-windows.ps1 has two error
+     * nodes, at columns 25-29 and 31-32, and the report read "113-113,113-113".
+     * Drop the repeat.
+     *
+     * Only an EXACT repeat of the range already open is dropped. Do not merge
+     * ranges that merely overlap. Each range is judged separately later by
+     * cbm_region_is_recovered, which asks whether definitions starting inside
+     * that range cover it. Two ranges with the same numbers always get the same
+     * verdict, so collapsing them changes nothing. Two DIFFERENT ranges do not:
+     * merging 3-3 into 2-3 hands the wider range's covering definition to an
+     * error the definition does not explain, and a real parse failure then
+     * disappears from the report. tests/test_parse_coverage.c pins that case in
+     * perl_malformed_source_remains_partial_issue1838.
+     *
+     * This runs BEFORE the cap check, so a dropped repeat never counts as a
+     * range the cap threw away. */
+    if (acc->count > 0 && start_line == acc->starts[acc->count - 1] &&
+        end_line == acc->ends[acc->count - 1]) {
         return;
     }
 
@@ -851,9 +864,13 @@ static void cbm_error_regions_push(cbm_error_regions_t *acc, TSNode n) {
  * untouched.
  *
  * #1746: the Dockerfile grammar places that zero-width missing newline before
- * trailing horizontal whitespace rather than at raw EOF. Preserve the broad
- * exact-EOF rule above; only extend it past spaces/tabs when the missing token
- * is specifically a newline. */
+ * trailing whitespace rather than at raw EOF. Preserve the broad exact-EOF
+ * rule above; only extend it past blanks when the missing token is specifically
+ * a newline. */
+static bool cbm_is_blank_not_newline(char c) {
+    return c == ' ' || c == '\t' || c == '\v' || c == '\f' || c == '\r';
+}
+
 static bool cbm_is_eof_terminator_miss(TSNode n, const char *source, int source_len) {
     if (!ts_node_is_missing(n) || source_len < 0) {
         return false;
@@ -870,7 +887,7 @@ static bool cbm_is_eof_terminator_miss(TSNode n, const char *source, int source_
         return false;
     }
     for (uint32_t i = end; i < (uint32_t)source_len; i++) {
-        if (source[i] != ' ' && source[i] != '\t') {
+        if (!cbm_is_blank_not_newline(source[i])) {
             return false;
         }
     }
@@ -1449,11 +1466,27 @@ CBMFileResult *cbm_extract_file(const char *source, int source_len, CBMLanguage 
     return r;
 }
 
-CBMFileResult *cbm_extract_file_ex(const char *source, int source_len, CBMLanguage language,
-                                   const char *project, const char *rel_path,
-                                   int64_t timeout_micros, const char **extra_defines,
-                                   const char **include_paths, const CBMMacroTable *macro_table,
-                                   const CBMReturnTypeTable *return_type_table) {
+/* Initial block for the per-file traversal scratch arena, chosen by measuring
+ * arena_grow on a 14k-file TypeScript tree: it fires on one file in 12,000 at
+ * both this size and at 1 MB, and on most files at 256 KB, where the two
+ * channel walks alone are exactly 262144 bytes. 512 KB therefore buys the same
+ * growth behaviour as 1 MB for half the resident block per worker. It is also
+ * exactly MI_LARGE_MAX_OBJ_SIZE in the vendored mimalloc
+ * (vendored/mimalloc/include/mimalloc/types.h:426, MI_LARGE_PAGE_SIZE/8 with
+ * MI_ENABLE_LARGE_PAGES defaulting to 1 at :115 and not overridden here), so
+ * the block is still bin-allocated from a large page. Growth is not free at
+ * this size for the same reason: arena_grow doubles to 1 MiB, which is above
+ * that bound and so a singleton OS allocation. One file in twelve thousand
+ * pays it, which is why the cost is accepted. */
+enum { CBM_EXTRACT_SCRATCH_BLOCK = CBM_SZ_512 * CBM_SZ_1K };
+
+static CBMFileResult *extract_file_ex_body(const char *source, int source_len, CBMLanguage language,
+                                           const char *project, const char *rel_path,
+                                           int64_t timeout_micros, const char **extra_defines,
+                                           const char **include_paths,
+                                           const CBMMacroTable *macro_table,
+                                           const CBMReturnTypeTable *return_type_table,
+                                           CBMArena *scratch) {
     // Allocate result on heap (arena inside for all string data)
     enum { SINGLE = 1 };
     CBMFileResult *result = (CBMFileResult *)calloc(SINGLE, sizeof(CBMFileResult));
@@ -1564,6 +1597,7 @@ CBMFileResult *cbm_extract_file_ex(const char *source, int source_len, CBMLangua
     // Build extraction context
     CBMExtractCtx ctx = {
         .arena = a,
+        .scratch = scratch,
         .result = result,
         .source = source,
         .source_len = source_len,
@@ -1700,6 +1734,7 @@ CBMFileResult *cbm_extract_file_ex(const char *source, int source_len, CBMLangua
                     // Build context for expanded source — extract only calls via unified extractor
                     CBMExtractCtx pp_ctx = {
                         .arena = a,
+                        .scratch = scratch,
                         .result = result,
                         .source = expanded,
                         .source_len = expanded_len,
@@ -2016,6 +2051,26 @@ CBMFileResult *cbm_extract_file_ex(const char *source, int source_len, CBMLangua
     result->cached_tree = tree;
     result->cached_lang = language;
     cbm_index_mark_done(rel_path);
+    return result;
+}
+
+/* Public entry. Owns the traversal scratch arena for the whole of one file's
+ * extraction: created here, handed to the body as ctx->scratch, destroyed on
+ * the way out. The body has seven early returns, so bracketing it in a wrapper
+ * is what keeps that to one create and one destroy. If the arena cannot be
+ * created, the body is handed NULL and the traversal stacks fall back to the
+ * result arena, which is what shipped before #1997. */
+CBMFileResult *cbm_extract_file_ex(const char *source, int source_len, CBMLanguage language,
+                                   const char *project, const char *rel_path,
+                                   int64_t timeout_micros, const char **extra_defines,
+                                   const char **include_paths, const CBMMacroTable *macro_table,
+                                   const CBMReturnTypeTable *return_type_table) {
+    CBMArena scratch;
+    cbm_arena_init_sized(&scratch, CBM_EXTRACT_SCRATCH_BLOCK);
+    CBMFileResult *result = extract_file_ex_body(
+        source, source_len, language, project, rel_path, timeout_micros, extra_defines,
+        include_paths, macro_table, return_type_table, scratch.nblocks > 0 ? &scratch : NULL);
+    cbm_arena_destroy(&scratch);
     return result;
 }
 

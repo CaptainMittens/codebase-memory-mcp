@@ -220,6 +220,11 @@ TEST(cypher_parse_rejects_trailing_tokens) {
     ASSERT_NOT_NULL(err);
     ASSERT_NULL(q);
 
+    /* The message must name what actually stopped the parse, and must not
+     * mention WITH: this query has no WITH in it anywhere. */
+    ASSERT(strstr(err, "BANANA") != NULL);
+    ASSERT(strstr(err, "WITH") == NULL);
+
     free(err);
     PASS();
 }
@@ -241,6 +246,11 @@ TEST(cypher_parse_rejects_second_with_clause) {
     ASSERT_NEQ(rc, 0);
     ASSERT_NOT_NULL(err);
     ASSERT_NULL(q);
+
+    /* Here the note earns its place. The parse stops at OPTIONAL, and the
+     * reason is the second WITH further along, which the reader cannot see
+     * from the stopping point alone. */
+    ASSERT(strstr(err, "only one WITH clause is supported") != NULL);
 
     free(err);
     PASS();

@@ -2070,10 +2070,23 @@ int cbm_parse(const cbm_token_t *tokens, int token_count, // NOLINT(misc-no-recu
      * That reported success and returned wrong rows, which is worse than a
      * refusal because nothing tells the caller to look. Refuse instead. */
     if (peek(&p)->type != TOK_EOF) {
+        /* Only mention the one-WITH limit when a standalone WITH really is
+         * sitting in the part we could not read. Saying it every time points
+         * a reader at WITH when the problem is a typo. A WITH straight after
+         * STARTS is the STARTS WITH operator rather than a clause, the same
+         * guard parse_post_where uses. */
+        const char *hint = "";
+        for (int i = p.pos; i < p.count; i++) {
+            if (p.tokens[i].type == TOK_WITH &&
+                (i == 0 || p.tokens[i - SKIP_ONE].type != TOK_STARTS)) {
+                hint = " Note that only one WITH clause is supported.";
+                break;
+            }
+        }
         snprintf(p.error, sizeof(p.error),
                  "unexpected input at pos %d ('%s') — the query was not fully "
-                 "parsed. Note that only one WITH clause is supported.",
-                 peek(&p)->pos, peek(&p)->text ? peek(&p)->text : "");
+                 "parsed.%s",
+                 peek(&p)->pos, peek(&p)->text ? peek(&p)->text : "", hint);
         out->error = heap_strdup(p.error);
         cbm_query_free(q);
         return CBM_NOT_FOUND;
