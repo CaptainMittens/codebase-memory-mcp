@@ -8517,12 +8517,12 @@ TEST(search_code_fails_closed_when_complete_scan_is_impossible) {
     ASSERT_NOT_NULL(strstr(response, "\"isError\":true"));
     ASSERT_NOT_NULL(strstr(response, "search failed"));
     (void)chmod(unreadable_path, 0644);
-#endif
 
     free(response);
     cbm_mcp_server_free(srv);
     ASSERT_EQ(th_rmtree(tmp), 0);
     PASS();
+#endif
 }
 
 TEST(search_code_scoped_scan_uses_canonical_file_nodes) {

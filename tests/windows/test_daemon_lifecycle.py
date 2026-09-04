@@ -25,9 +25,22 @@ import sys
 import tempfile
 
 
+def runtime_for(cache):
+    """A private daemon rendezvous parent, a sibling of the cache directory."""
+    head, tail = os.path.split(cache)
+    runtime = "runtime" + tail[len("cache"):] if tail.startswith("cache") else tail + "-runtime"
+    path = os.path.join(head, runtime)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
 def run_cli(binary, cache, args, timeout=60, extra_env=None):
     env = dict(os.environ)
     env["CBM_CACHE_DIR"] = cache
+    # Daemon coordination is account-wide and CBM_CACHE_DIR does not move the
+    # rendezvous; a private CBM_RUNTIME_DIR per cache is what isolates a call
+    # from every other daemon on the account (and makes a cold call cold).
+    env["CBM_RUNTIME_DIR"] = runtime_for(cache)
     if extra_env:
         env.update(extra_env)
     return subprocess.run([binary] + args, capture_output=True, timeout=timeout, env=env)
