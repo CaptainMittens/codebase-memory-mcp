@@ -233,6 +233,7 @@ TEST(cli_progress_sink_accepts_worker_json_logs) {
 }
 
 TEST(cli_progress_sink_enables_lifecycle_info_then_restores_quiet_default) {
+    CBMLogLevel saved = cbm_log_get_level();
     FILE *out = tmpfile();
     ASSERT_NOT_NULL(out);
     cbm_log_set_level(CBM_LOG_WARN);
@@ -249,10 +250,15 @@ TEST(cli_progress_sink_enables_lifecycle_info_then_restores_quiet_default) {
     (void)fclose(out);
     ASSERT_TRUE(rendered_size > 0);
     ASSERT_NOT_NULL(strstr(rendered, "Discovering files (3 found)"));
+    cbm_log_set_level(saved);
     PASS();
 }
 
 TEST(cli_progress_sink_suppresses_noise_and_preserves_failures) {
+    /* The quiet frontend default is a process policy; pin it for this test
+     * and hand back whatever the process had. */
+    CBMLogLevel saved = cbm_log_get_level();
+    cbm_log_set_level(CBM_LOG_WARN);
     FILE *out = tmpfile();
     ASSERT_NOT_NULL(out);
 
@@ -276,6 +282,7 @@ TEST(cli_progress_sink_suppresses_noise_and_preserves_failures) {
                   "\r  Extracting: 1/2 files (50%)\n"
                   "level=warn msg=worker.warning detail=keep-text\n"
                   "{\"level\":\"error\",\"event\":\"worker.failure\",\"detail\":\"keep-json\"}\n");
+    cbm_log_set_level(saved);
     PASS();
 }
 
@@ -10288,9 +10295,10 @@ TEST(cli_claude_hook_commands_use_exec_form_with_custom_config_dir) {
     yyjson_doc *document = settings ? yyjson_read(settings, strlen(settings), 0) : NULL;
     yyjson_val *root = document ? yyjson_doc_get_root(document) : NULL;
     static const char *const matchers[] = {"startup", "resume", "clear", "compact"};
-    size_t owned = test_count_exec_hook(root, "PreToolUse", "Grep|Glob|Bash", binary, "hook-augment") +
-                   test_count_exec_hook(root, "PostToolUse", "Read", binary, "hook-augment") +
-                   test_count_exec_hook(root, "SubagentStart", "*", binary, "hook-augment");
+    size_t owned =
+        test_count_exec_hook(root, "PreToolUse", "Grep|Glob|Bash", binary, "hook-augment") +
+        test_count_exec_hook(root, "PostToolUse", "Read", binary, "hook-augment") +
+        test_count_exec_hook(root, "SubagentStart", "*", binary, "hook-augment");
     for (size_t i = 0U; i < sizeof(matchers) / sizeof(matchers[0]); i++) {
         owned += test_count_exec_hook(root, "SessionStart", matchers[i], binary, "hook-augment");
     }
@@ -11205,7 +11213,8 @@ TEST(cli_upgrade_migrates_released_claude_hook_scripts) {
     yyjson_val *settings_root = settings_doc ? yyjson_doc_get_root(settings_doc) : NULL;
     static const char *const matchers[] = {"startup", "resume", "clear", "compact"};
     size_t registered =
-        test_count_exec_hook(settings_root, "PreToolUse", "Grep|Glob|Bash", binary, "hook-augment") +
+        test_count_exec_hook(settings_root, "PreToolUse", "Grep|Glob|Bash", binary,
+                             "hook-augment") +
         test_count_exec_hook(settings_root, "PostToolUse", "Read", binary, "hook-augment") +
         test_count_exec_hook(settings_root, "SubagentStart", "*", binary, "hook-augment");
     for (size_t i = 0U; i < sizeof(matchers) / sizeof(matchers[0]); i++) {
@@ -12763,7 +12772,8 @@ TEST(cli_claude_hooks_use_exec_form_across_shells_issue1733) {
         yyjson_doc *doc = settings ? yyjson_read(settings, strlen(settings), 0) : NULL;
         yyjson_val *root = doc ? yyjson_doc_get_root(doc) : NULL;
         size_t owned =
-            test_count_exec_hook(root, "PreToolUse", "Grep|Glob|Bash", binary_path, "hook-augment") +
+            test_count_exec_hook(root, "PreToolUse", "Grep|Glob|Bash", binary_path,
+                                 "hook-augment") +
             test_count_exec_hook(root, "PostToolUse", "Read", binary_path, "hook-augment") +
             test_count_exec_hook(root, "SubagentStart", "*", binary_path, "hook-augment");
         for (size_t i = 0U; i < sizeof(matchers) / sizeof(matchers[0]); i++) {
@@ -12828,8 +12838,7 @@ TEST(cli_claude_exec_hooks_custom_dir_uninstall_issue1733) {
     size_t before_owned =
         test_count_exec_hook(installed_root, "PreToolUse", "Grep|Glob|Bash", binary_path,
                              "hook-augment") +
-        test_count_exec_hook(installed_root, "PostToolUse", "Read", binary_path,
-                             "hook-augment") +
+        test_count_exec_hook(installed_root, "PostToolUse", "Read", binary_path, "hook-augment") +
         test_count_exec_hook(installed_root, "SubagentStart", "*", binary_path, "hook-augment");
     for (size_t i = 0U; i < sizeof(matchers) / sizeof(matchers[0]); i++) {
         before_owned += test_count_exec_hook(installed_root, "SessionStart", matchers[i],
@@ -12846,10 +12855,9 @@ TEST(cli_claude_exec_hooks_custom_dir_uninstall_issue1733) {
     yyjson_doc *uninstalled_doc =
         uninstalled ? yyjson_read(uninstalled, strlen(uninstalled), 0) : NULL;
     yyjson_val *uninstalled_root = uninstalled_doc ? yyjson_doc_get_root(uninstalled_doc) : NULL;
-    size_t after_owned =
-        test_count_substring(uninstalled ? uninstalled : "", "\"hook-augment\"");
-    size_t foreign_count = test_count_exec_hook(uninstalled_root, "SessionStart", "resume",
-                                                "foreign-hook", "keep");
+    size_t after_owned = test_count_substring(uninstalled ? uninstalled : "", "\"hook-augment\"");
+    size_t foreign_count =
+        test_count_exec_hook(uninstalled_root, "SessionStart", "resume", "foreign-hook", "keep");
     yyjson_doc_free(uninstalled_doc);
     free(uninstalled);
 
@@ -12859,7 +12867,8 @@ TEST(cli_claude_exec_hooks_custom_dir_uninstall_issue1733) {
     test_rmdir_r(tmpdir);
     if (install_rc != 0 || before_owned != 7U || uninstall_rc != 0 || after_owned != 0U ||
         foreign_count != 1U)
-        FAIL("custom --dir uninstall must remove seven exact-owned exec hooks and keep foreign hooks");
+        FAIL("custom --dir uninstall must remove seven exact-owned exec hooks and keep foreign "
+             "hooks");
     PASS();
 }
 
