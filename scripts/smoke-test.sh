@@ -407,7 +407,7 @@ DUP_CHECKED=0
 for TOOL_ARGS in "search_graph --project $PROJECT --name-pattern compute" \
                  "search_code --project $PROJECT --query compute" \
                  "get_architecture --project $PROJECT" \
-                 "index_status --project $PROJECT"; do
+                 "index_status --project $PROJECT --format json"; do
   # shellcheck disable=SC2086
   ENVELOPE=$("$BINARY" cli $TOOL_ARGS --json 2>/dev/null || true)
   [ -z "$ENVELOPE" ] && continue
@@ -575,7 +575,7 @@ fi
 echo "OK: trace_path found $CALLERS caller(s) for 'compute'"
 
 # 3c: get_graph_schema — verify labels exist
-if ! SCHEMA=$(cli get_graph_schema --project "$PROJECT"); then
+if ! SCHEMA=$(cli get_graph_schema --project "$PROJECT" --format json --limit 500); then
   echo "FAIL: get_graph_schema (flag form) exited non-zero"; cat "$CLI_STDERR"; exit 1
 fi
 LABELS=$(echo "$SCHEMA" | python3 -c "import json,sys; d=json.loads(sys.stdin.read()); print(len(d.get('node_labels',[])))" 2>/dev/null || echo "0")
@@ -647,8 +647,10 @@ cyp_first_cell() {
   # $1 = query; echoes rows[0][0] (or empty). Flag form passes the query as ONE
   # argv token, so string-literal args (e.g. replace(f.name,"a","A")) and Cypher
   # metacharacters {}|=~<>" need no JSON escaping.
-  cli query_graph --project "$PROJECT" --query "$1" |
-    sed -n '/^rows: /{n;p;}' | sed 's/^  //' | sed 's/^"//;s/"$//;s/\\"/"/g'
+  cli query_graph --project "$PROJECT" --query "$1" --format json |
+    python3 -c 'import json,sys
+d=json.load(sys.stdin); rows=d.get("rows", [])
+print(rows[0][0] if rows and rows[0] else "")'
 }
 
 # labels(n) → JSON list like ["Function"]
@@ -840,7 +842,7 @@ fi
 
 # B4: STDIN + --json is the generated-client transport. It must return the
 # complete MCP result envelope and must NOT emit a deprecation warning.
-IM_STDIN=$(printf '%s' "{\"project\":\"$PROJECT\"}" | "$BINARY" cli --json get_graph_schema 2>"$CLI_STDERR")
+IM_STDIN=$(printf '%s' "{\"project\":\"$PROJECT\",\"format\":\"json\"}" | "$BINARY" cli --json get_graph_schema 2>"$CLI_STDERR")
 if ! printf '%s' "$IM_STDIN" | python3 -c "import json,sys; d=json.loads(sys.stdin.read()); c=d.get('content'); p=json.loads(c[0].get('text','')) if isinstance(c,list) and c and c[0].get('type') == 'text' else None; sys.exit(0 if d.get('isError') is not True and isinstance(p,dict) and isinstance(p.get('node_labels'),list) else 1)" 2>/dev/null; then
   echo "FAIL B4: compact stdin + --json did not return a successful get_graph_schema MCP payload"; echo "$IM_STDIN" | head -c 300; cat "$CLI_STDERR"; exit 1
 fi
@@ -851,7 +853,7 @@ echo "OK B4: compact STDIN + --json returns a successful schema MCP envelope, no
 
 # B5: --args-file — JSON read from a file resolves; must NOT warn deprecated.
 IM_ARGS_FILE=$(smoke_mktemp_file)
-echo "{\"project\":\"$PROJECT\"}" > "$IM_ARGS_FILE"
+echo "{\"project\":\"$PROJECT\",\"format\":\"json\",\"limit\":500}" > "$IM_ARGS_FILE"
 if ! IM_AF=$(cli get_graph_schema --args-file "$IM_ARGS_FILE"); then
   echo "FAIL B5: get_graph_schema --args-file exited non-zero"; cat "$CLI_STDERR"; rm -f "$IM_ARGS_FILE"; exit 1
 fi
