@@ -23,7 +23,7 @@
  * Relaxed ordering is the right level: each is an independent scalar with no
  * happens-before relationship to publish alongside it, and the log path must
  * stay cheap enough that nobody is tempted to route around it. */
-static _Atomic CBMLogLevel g_log_level = CBM_LOG_WARN;
+static _Atomic CBMLogLevel g_log_level = CBM_LOG_INFO;
 static _Atomic CBMLogFormat g_log_format = CBM_LOG_FORMAT_TEXT;
 /* Cast, not bare NULL: NULL is ((void*)0) and the implicit void*-to-
  * function-pointer conversion is not a compile-time constant, which

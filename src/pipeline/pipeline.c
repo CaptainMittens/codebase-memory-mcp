@@ -1429,10 +1429,7 @@ static int try_incremental_or_delete_db(cbm_pipeline_t *p, cbm_file_info_t *file
         cbm_store_close(fmt_store);
     }
     if (fmt != CBM_INDEX_FORMAT_VERSION) {
-        /* WARN, like the other route deviations: a once-per-upgrade full
-         * rebuild is what explains a long index and a cursor reset, so it must
-         * stay visible under the quiet frontend default (#1104). */
-        cbm_log_warn("pipeline.route", "path", "format_change_reindex", "stored_format",
+        cbm_log_info("pipeline.route", "path", "format_change_reindex", "stored_format",
                      itoa_buf(fmt));
         p->format_migration = true;
         int adr_rc = capture_existing_adr(p, db_path);

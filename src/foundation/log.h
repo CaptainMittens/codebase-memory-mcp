@@ -51,7 +51,7 @@ void cbm_log_init_from_env(void);
  * lifecycle records and turn a healthy long index into a false hang. */
 void cbm_log_init_for_process(bool quiet_by_default, bool require_info_liveness);
 
-/* Set minimum log level (raw process default: WARN; startup policy is role-aware). */
+/* Set minimum log level (library default: INFO; process startup policy is role-aware). */
 void cbm_log_set_level(CBMLogLevel level);
 
 /* Get current log level. */

@@ -2559,10 +2559,12 @@ int main(int argc, char **argv) {
 
     cbm_cli_set_version(CBM_VERSION);
     cbm_profile_init();
-    /* The raw logger starts WARN so allocator setup cannot pollute protocol or
-     * CLI output before argv is classified. Detached daemons retain INFO
-     * lifecycle records; physical workers require INFO because those records
-     * are their supervisor's quiet-timeout heartbeat. */
+    /* The library default stays INFO (embedders and the test runner observe
+     * INFO records through the sink); the process policy is applied here, as
+     * early as argv can be classified: thin frontends go quiet, detached
+     * daemons retain INFO lifecycle records, and physical workers require
+     * INFO because those records are their supervisor's quiet-timeout
+     * heartbeat. */
     bool quiet_log_default = role != CBM_DAEMON_PROCESS_DAEMON && role != CBM_DAEMON_PROCESS_WORKER;
     cbm_log_init_for_process(quiet_log_default, role == CBM_DAEMON_PROCESS_WORKER);
     if (role == CBM_DAEMON_PROCESS_LOCAL_CLI && main_cli_flag_present(argc, argv, "--quiet")) {
