@@ -1208,26 +1208,11 @@ static void cbm_subtract_recovered_regions(cbm_error_regions_t *regs, const CBMD
  * missing from the graph; it's a benign call the grammar can't parse without the
  * preprocessor. True if the [start_line, end_line] span contains a call `NAME(` to
  * a file-defined function-like macro (Macro label + a parameter signature). */
-static bool cbm_span_is_macro_invocation(const char *src, int src_len, uint32_t start_line,
-                                         uint32_t end_line, const CBMDefArray *defs) {
-    if (!src || src_len <= 0 || !defs || start_line == 0 || end_line < start_line) {
+static bool cbm_byte_span_is_macro_invocation(const char *src, int src_len, int span_start,
+                                              int span_end, const CBMDefArray *defs) {
+    if (!src || src_len <= 0 || !defs || span_start < 0 || span_end > src_len ||
+        span_start >= span_end) {
         return false;
-    }
-    int span_start = 0;
-    uint32_t line = 1;
-    while (span_start < src_len && line < start_line) {
-        if (src[span_start++] == '\n') {
-            line++;
-        }
-    }
-    if (line != start_line) {
-        return false;
-    }
-    int span_end = span_start;
-    while (span_end < src_len && line <= end_line) {
-        if (src[span_end++] == '\n') {
-            line++;
-        }
     }
     for (int di = 0; di < defs->count; di++) {
         const CBMDefinition *d = &defs->items[di];
@@ -1254,6 +1239,66 @@ static bool cbm_span_is_macro_invocation(const char *src, int src_len, uint32_t 
         }
     }
     return false;
+}
+
+/* Byte offset where every 1-based line starts, so finding a line's span costs
+ * one table read instead of a walk from the start of the file.
+ *
+ * The table holds line_count + 2 entries. Entry [L] is where line L starts, and
+ * the last entry is the end of the source, which gives the final line somewhere
+ * to stop. A line the file never reaches starts at the end of the source, so its
+ * span is empty and nothing can match inside it — the same answer the walk gives.
+ *
+ * Returns NULL when the allocation fails; a caller then falls back to the walk. */
+static int *cbm_build_line_offsets(const char *src, int src_len, uint32_t line_count) {
+    int *offsets = (int *)malloc(((size_t)line_count + 2) * sizeof(int));
+    if (!offsets) {
+        return NULL;
+    }
+    for (uint32_t l = 0; l <= line_count + 1; l++) {
+        offsets[l] = src_len;
+    }
+    offsets[0] = 0;
+    offsets[1] = 0;
+    uint32_t line = 1;
+    for (int i = 0; i < src_len; i++) {
+        if (src[i] != '\n') {
+            continue;
+        }
+        line++;
+        if (line > line_count + 1) {
+            break;
+        }
+        offsets[line] = i + 1;
+    }
+    return offsets;
+}
+
+/* Same question by line number, for the few callers that ask about one region
+ * rather than every line of a file. This form walks the source to find the span,
+ * which is why the per-line caller below uses a table instead. */
+static bool cbm_span_is_macro_invocation(const char *src, int src_len, uint32_t start_line,
+                                         uint32_t end_line, const CBMDefArray *defs) {
+    if (!src || src_len <= 0 || !defs || start_line == 0 || end_line < start_line) {
+        return false;
+    }
+    int span_start = 0;
+    uint32_t line = 1;
+    while (span_start < src_len && line < start_line) {
+        if (src[span_start++] == '\n') {
+            line++;
+        }
+    }
+    if (line != start_line) {
+        return false;
+    }
+    int span_end = span_start;
+    while (span_end < src_len && line <= end_line) {
+        if (src[span_end++] == '\n') {
+            line++;
+        }
+    }
+    return cbm_byte_span_is_macro_invocation(src, src_len, span_start, span_end, defs);
 }
 
 /* True if [rs, re] is fully enclosed by an extracted callable definition (a
@@ -1327,9 +1372,12 @@ static void cbm_push_trimmed_run(cbm_error_regions_t *out, uint32_t start, uint3
  * An invocation INSIDE a function body is the benign #1071 case and is left
  * alone here — cbm_subtract_macro_invocation_regions handles it later. */
 static bool cbm_line_is_toplevel_macro_call(const char *src, int src_len, uint32_t line,
-                                            const CBMDefArray *defs) {
-    return cbm_span_is_macro_invocation(src, src_len, line, line, defs) &&
-           !cbm_region_inside_callable(line, line, defs);
+                                            const int *line_offsets, const CBMDefArray *defs) {
+    bool is_call = line_offsets
+                       ? cbm_byte_span_is_macro_invocation(src, src_len, line_offsets[line],
+                                                           line_offsets[line + 1], defs)
+                       : cbm_span_is_macro_invocation(src, src_len, line, line, defs);
+    return is_call && !cbm_region_inside_callable(line, line, defs);
 }
 
 /* Cut every raw region down to the lines the preprocessed parse could not
@@ -1344,13 +1392,18 @@ static void cbm_refine_regions_with_pp_lines(cbm_error_regions_t *regs, const ui
                                              uint32_t line_count, const char *src, int src_len,
                                              const CBMDefArray *defs) {
     cbm_error_regions_t out = {{0}, {0}, 0, regs->dropped};
+    /* One offset table for the whole file. The macro check below runs once per
+     * line, and without the table each of those calls walks the source from byte
+     * 0 to find its line — bytes times lines, on exactly the whole-file-error
+     * shape this refinement exists to narrow. */
+    int *line_offsets = cbm_build_line_offsets(src, src_len, line_count);
     for (int i = 0; i < regs->count; i++) {
         uint32_t run_start = 0;
         uint32_t run_end = 0;
         uint32_t end = regs->ends[i] < line_count ? regs->ends[i] : line_count;
         for (uint32_t line = regs->starts[i]; line <= end; line++) {
             if ((map[line] & CBM_LINE_PP_PARSED) &&
-                !cbm_line_is_toplevel_macro_call(src, src_len, line, defs)) {
+                !cbm_line_is_toplevel_macro_call(src, src_len, line, line_offsets, defs)) {
                 if (run_start != 0) {
                     cbm_push_trimmed_run(&out, run_start, run_end, map, line_count);
                     run_start = 0;
@@ -1366,6 +1419,7 @@ static void cbm_refine_regions_with_pp_lines(cbm_error_regions_t *regs, const ui
             cbm_push_trimmed_run(&out, run_start, run_end, map, line_count);
         }
     }
+    free(line_offsets);
     *regs = out;
 }
 
