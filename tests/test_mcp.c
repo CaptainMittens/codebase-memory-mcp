@@ -8481,48 +8481,48 @@ TEST(search_code_fails_closed_when_complete_scan_is_impossible) {
     cbm_mcp_server_set_project(srv, project);
     ASSERT_EQ(cbm_store_upsert_project(store, project, tmp), CBM_STORE_OK);
 
-    /* The graph snapshot names a regular file that grep cannot read. Returning
-     * zero exact matches would be a false completeness claim. (A path that no
-     * longer exists, or is not a regular file, is deliberately NOT a scan
-     * operand: the scoped file list skips it — see
-     * search_code_scoped_scan_skips_non_regular_indexed_paths.) */
+    /* A regular indexed source keeps this on the scoped route. The scan itself
+     * is the seam: it delivers one plausible hit and then reports grep's error
+     * status, exactly what an operand grep could not read produces. (A path
+     * that no longer exists, or is not a regular file, is deliberately not a
+     * scan operand — the scoped file list skips it — so a refusal can only
+     * come from the scan.) Returning that hit, or zero matches, as a complete
+     * page would be a false completeness claim. */
+    char source_path[512];
+    snprintf(source_path, sizeof(source_path), "%s/partial.c", tmp);
+    ASSERT_EQ(th_write_file(source_path, "int never_scanned(void) { return 0; }\n"), 0);
+    cbm_node_t partial = {.project = project,
+                          .label = "Function",
+                          .name = "never_scanned",
+                          .qualified_name = "search-incomplete.never_scanned",
+                          .file_path = "partial.c",
+                          .start_line = 1,
+                          .end_line = 1};
+    ASSERT_GT(cbm_store_upsert_node(store, &partial), 0);
+    char scan_command[768];
 #ifdef _WIN32
-    cbm_mcp_server_free(srv);
-    ASSERT_EQ(th_rmtree(tmp), 0);
-    SKIP("POSIX permission bits drive the unreadable-operand scenario");
+    snprintf(scan_command, sizeof(scan_command), "echo %s\\partial.c:1:NEVER_SCANNED & exit /b 2",
+             tmp);
 #else
-    if (geteuid() == 0) {
-        cbm_mcp_server_free(srv);
-        ASSERT_EQ(th_rmtree(tmp), 0);
-        SKIP("root reads mode-0 files; the unreadable-operand scenario needs an unprivileged uid");
-    }
-    char unreadable_path[512];
-    snprintf(unreadable_path, sizeof(unreadable_path), "%s/unreadable.c", tmp);
-    ASSERT_EQ(th_write_file(unreadable_path, "int never_scanned(void) { return 0; }\n"), 0);
-    ASSERT_EQ(chmod(unreadable_path, 0), 0);
-    cbm_node_t unreadable = {.project = project,
-                             .label = "Function",
-                             .name = "never_scanned",
-                             .qualified_name = "search-incomplete.never_scanned",
-                             .file_path = "unreadable.c",
-                             .start_line = 1,
-                             .end_line = 1};
-    ASSERT_GT(cbm_store_upsert_node(store, &unreadable), 0);
+    snprintf(scan_command, sizeof(scan_command), "printf '%s/partial.c:1:NEVER_SCANNED\\n'; exit 2",
+             tmp);
+#endif
+    cbm_mcp_server_set_search_scan_command_for_test(srv, scan_command);
 
     char *response =
         cbm_mcp_handle_tool(srv, "search_code",
                             "{\"pattern\":\"NEVER_SCANNED\",\"project\":\"search-incomplete\","
                             "\"format\":\"json\"}");
+    cbm_mcp_server_set_search_scan_command_for_test(srv, NULL);
     ASSERT_NOT_NULL(response);
     ASSERT_NOT_NULL(strstr(response, "\"isError\":true"));
     ASSERT_NOT_NULL(strstr(response, "search failed"));
-    (void)chmod(unreadable_path, 0644);
+    ASSERT_NULL(strstr(response, "\"total_grep_matches\""));
 
     free(response);
     cbm_mcp_server_free(srv);
     ASSERT_EQ(th_rmtree(tmp), 0);
     PASS();
-#endif
 }
 
 TEST(search_code_scoped_scan_uses_canonical_file_nodes) {
