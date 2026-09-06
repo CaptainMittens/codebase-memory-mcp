@@ -379,6 +379,20 @@ static bool application_canonical_directory_exists(const char *path) {
     return cbm_path_info_utf8(path, &info) == 0 && info.is_directory;
 }
 
+/* The daemon's one spelling of a repository root. cbm_canonical_path answers in
+ * the platform's native form (backslashes on Windows) while every tool handler
+ * normalizes the separators of the paths it canonicalizes. A root kept native
+ * is a second name for one directory, and the exact comparison downstream -
+ * index-args equality when a request joins the job already running for that
+ * root - never matches it. */
+static bool application_canonical_root(const char *path, char *out, size_t out_size) {
+    if (!cbm_canonical_path(path, out, out_size)) {
+        return false;
+    }
+    cbm_normalize_path_sep(out);
+    return true;
+}
+
 static cbm_daemon_application_watch_t *application_find_watch_locked(
     cbm_daemon_application_t *application, const char *project) {
     for (cbm_daemon_application_watch_t *watch = application->watches; watch; watch = watch->next) {
@@ -2355,9 +2369,10 @@ static cbm_daemon_runtime_application_status_t application_set_context(
     }
     char canonical_root[APPLICATION_PATH_CAP] = {0};
     char canonical_allowed[APPLICATION_PATH_CAP] = {0};
-    bool canonical = cbm_canonical_path(root, canonical_root, sizeof(canonical_root));
+    bool canonical = application_canonical_root(root, canonical_root, sizeof(canonical_root));
     if (canonical && allowed_present) {
-        canonical = cbm_canonical_path(allowed, canonical_allowed, sizeof(canonical_allowed));
+        canonical =
+            application_canonical_root(allowed, canonical_allowed, sizeof(canonical_allowed));
     }
     canonical = canonical && application_canonical_directory_exists(canonical_root);
     bool set =
@@ -3372,7 +3387,7 @@ static int application_background_index(cbm_daemon_application_t *application,
         return -1;
     }
     char canonical_root[APPLICATION_PATH_CAP];
-    if (!cbm_canonical_path(root_path, canonical_root, sizeof(canonical_root)) ||
+    if (!application_canonical_root(root_path, canonical_root, sizeof(canonical_root)) ||
         !application_canonical_directory_exists(canonical_root)) {
         return -1;
     }
