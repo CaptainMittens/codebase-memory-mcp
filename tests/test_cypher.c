@@ -3262,6 +3262,41 @@ TEST(cypher_wide_edge_pattern_refused) {
     PASS();
 }
 
+TEST(cypher_unnamed_head_takes_a_slot) {
+    /* The head of the first pattern is bound whether the query names it or not:
+     * execute_single falls back to the synthetic name "_n0". So an unnamed head
+     * plus CYP_MAX_VARS (16) named nodes needs 17 slots and only 16 exist. Before
+     * the fix, the capacity check counted names alone, let this query through,
+     * and binding_set dropped the 16th name without a word — a0..a14 answered and
+     * a15 came back empty. Refuse it instead. */
+    cbm_store_t *s = setup_cypher_store();
+    char query[2048];
+    int off = snprintf(query, sizeof(query), "MATCH (:NoSuchLabelXYZ)");
+    for (int i = 0; i < 16; i++) { /* 16 named + the unnamed head = 17 */
+        off += snprintf(query + off, sizeof(query) - (size_t)off, "-[:CALLS]->(a%d)", i);
+    }
+    snprintf(query + off, sizeof(query) - (size_t)off, " RETURN a0.name");
+    cbm_cypher_result_t wide = {0};
+    ASSERT_TRUE(cbm_cypher_execute(s, query, "test", 0, &wide) != 0);
+    ASSERT_NOT_NULL(wide.error);
+    ASSERT_TRUE(strstr(wide.error, "node") != NULL);
+    cbm_cypher_result_free(&wide);
+
+    /* One name fewer fits exactly, so the guard still refuses only what a
+     * binding genuinely cannot hold. */
+    off = snprintf(query, sizeof(query), "MATCH (:NoSuchLabelXYZ)");
+    for (int i = 0; i < 15; i++) {
+        off += snprintf(query + off, sizeof(query) - (size_t)off, "-[:CALLS]->(a%d)", i);
+    }
+    snprintf(query + off, sizeof(query) - (size_t)off, " RETURN a0.name");
+    cbm_cypher_result_t ok = {0};
+    ASSERT_EQ(cbm_cypher_execute(s, query, "test", 0, &ok), 0);
+    cbm_cypher_result_free(&ok);
+
+    cbm_store_close(s);
+    PASS();
+}
+
 TEST(cypher_scope_check_survives_wide_pattern) {
     /* Regression test for #1995. check_projection_scope models declared names in
      * a fixed array and used to skip the check entirely when a query declared
@@ -4606,6 +4641,7 @@ SUITE(cypher) {
     RUN_TEST(cypher_wide_with_refused_not_truncated);
     RUN_TEST(cypher_wide_pattern_refused);
     RUN_TEST(cypher_wide_edge_pattern_refused);
+    RUN_TEST(cypher_unnamed_head_takes_a_slot);
     RUN_TEST(cypher_scope_check_survives_wide_pattern);
     RUN_TEST(cypher_parse_neq);
     RUN_TEST(cypher_parse_in);

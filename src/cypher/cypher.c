@@ -36,6 +36,10 @@ enum {
     /* search miss sentinel */ /* mask for ebuf ring buffer (8 entries) */
 };
 #define CYP_DBL_MAX 1e308
+/* execute_single binds the first pattern's leading node even when the query
+ * leaves it unnamed, so the engine needs a name for it. The binding slot is
+ * real, which is why check_pattern_var_capacity counts it. */
+#define CYP_ANON_HEAD_VAR "_n0"
 
 #include <ctype.h>
 #include <limits.h> // INT_MAX
@@ -4994,7 +4998,7 @@ static int execute_single(cbm_store_t *store, cbm_query_t *q, const char *projec
     int bind_cap = scan_count > max_rows ? scan_count : (max_rows > 0 ? max_rows : SKIP_ONE);
     binding_t *bindings = malloc((bind_cap + SKIP_ONE) * sizeof(binding_t));
     int bind_count = 0;
-    const char *var_name = pat0->nodes[0].variable ? pat0->nodes[0].variable : "_n0";
+    const char *var_name = pat0->nodes[0].variable ? pat0->nodes[0].variable : CYP_ANON_HEAD_VAR;
 
     for (int i = 0; i < scan_count && bind_count < bind_cap; i++) {
         if ((i & CYPHER_DEADLINE_CHECK_MASK) == 0 && cypher_deadline_exceeded()) {
@@ -5165,7 +5169,8 @@ static const char *scope_checkable_var(const cbm_return_item_t *item) {
 }
 
 /* Says which limit the query passed and how to get under it. An unnamed node
- * takes no slot, so dropping a name the query never uses is the cheap way out.
+ * takes no slot — except the head of the first pattern, which the engine binds
+ * either way — so dropping a name the query never uses is the cheap way out.
  * Splitting the MATCH is NOT — every pattern of one query shares one binding,
  * which is why the caller counts across all of them. Separate queries do work,
  * because each gets a binding of its own. */
@@ -5203,6 +5208,15 @@ static char *check_pattern_var_capacity(const cbm_query_t *q) {
     const char *edge_vars[CYP_MAX_EDGE_VARS] = {NULL};
     int node_n = 0;
     int edge_n = 0;
+    /* The head of the first pattern always takes a node slot, named or not:
+     * execute_single binds it under CYP_ANON_HEAD_VAR when the query leaves it
+     * unnamed. Count it first, or a query with an unnamed head and CYP_MAX_VARS
+     * named nodes passes this check and still loses its last name in
+     * binding_set — the exact silence this guard exists to remove. */
+    if (q->pattern_count > 0 && q->patterns[0].node_count > 0 &&
+        !q->patterns[0].nodes[0].variable) {
+        node_vars[node_n++] = CYP_ANON_HEAD_VAR;
+    }
     for (int pi = 0; pi < q->pattern_count; pi++) {
         const cbm_pattern_t *pat = &q->patterns[pi];
         for (int ni = 0; ni < pat->node_count; ni++) {
