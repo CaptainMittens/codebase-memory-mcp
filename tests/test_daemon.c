@@ -467,21 +467,21 @@ TEST(daemon_sessions_keep_distinct_roots_and_allowed_root_policy) {
     PASS();
 }
 
-/* The daemon canonicalizes a client's root through the platform API, which on
- * Windows answers in backslash form, while every tool handler normalizes the
- * separators of the paths it canonicalizes. Stored in its native form, one
- * directory had two names, and an explicit index_repository request was
- * refused as an options conflict instead of joining the auto-index job already
- * running for that root. Separators fold on every platform, so the check binds
- * wherever the suite runs. */
-TEST(daemon_session_context_keeps_one_spelling_of_a_root) {
+/* The session policy keeps a root in the spelling the daemon canonicalized it
+ * to - the platform's native form, backslashes on Windows. The sensitive-root
+ * and allowed-root containment checks compare that spelling byte-exact against
+ * HOME and the granted roots, so a root respelled with forward slashes on the
+ * way in stopped matching them, and $HOME was admitted for auto-index and
+ * watch on Windows. One directory being one root for the job registry is
+ * folded at that comparison, never by respelling the policy. */
+TEST(daemon_session_context_keeps_the_policy_spelling_of_a_root) {
     cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
     ASSERT_NOT_NULL(srv);
     cbm_mcp_server_set_background_tasks(srv, false);
 
     ASSERT_TRUE(cbm_mcp_server_set_session_context(srv, "C:\\repos\\cbm", "C:\\repos"));
-    ASSERT_STR_EQ(cbm_mcp_server_session_root(srv), "C:/repos/cbm");
-    ASSERT_STR_EQ(cbm_mcp_server_allowed_root(srv), "C:/repos");
+    ASSERT_STR_EQ(cbm_mcp_server_session_root(srv), "C:\\repos\\cbm");
+    ASSERT_STR_EQ(cbm_mcp_server_allowed_root(srv), "C:\\repos");
 
     cbm_mcp_server_free(srv);
     PASS();
@@ -500,5 +500,5 @@ SUITE(daemon) {
     RUN_TEST(daemon_bridge_rejects_embedded_nul_body);
     RUN_TEST(daemon_bridge_rejects_oversized_headers);
     RUN_TEST(daemon_sessions_keep_distinct_roots_and_allowed_root_policy);
-    RUN_TEST(daemon_session_context_keeps_one_spelling_of_a_root);
+    RUN_TEST(daemon_session_context_keeps_the_policy_spelling_of_a_root);
 }

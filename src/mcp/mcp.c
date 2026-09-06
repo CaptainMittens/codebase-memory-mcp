@@ -1765,18 +1765,7 @@ bool cbm_mcp_server_set_session_context(cbm_mcp_server_t *srv, const char *sessi
         return false;
     }
 
-    /* Keep both roots in the one spelling every tool handler produces. Each
-     * handler normalizes separators after canonicalizing, so a root stored in
-     * the platform's native form (backslashes on Windows) is a second name for
-     * the same directory - and the daemon compares roots exactly. An explicit
-     * index_repository request for this root was refused as an options
-     * conflict instead of joining the auto-index job already running for it,
-     * because the job's repo_path never matched the request's. */
-    char root[sizeof(srv->session_root)];
-    snprintf(root, sizeof(root), "%s", session_root);
-    cbm_normalize_path_sep(root);
-
-    char *project = cbm_project_name_from_path(root);
+    char *project = cbm_project_name_from_path(session_root);
     if (!project || project[0] == '\0' || strlen(project) >= sizeof(srv->session_project)) {
         free(project);
         return false;
@@ -1787,9 +1776,8 @@ bool cbm_mcp_server_set_session_context(cbm_mcp_server_t *srv, const char *sessi
         free(project);
         return false;
     }
-    cbm_normalize_path_sep(allowed_copy);
 
-    snprintf(srv->session_root, sizeof(srv->session_root), "%s", root);
+    snprintf(srv->session_root, sizeof(srv->session_root), "%s", session_root);
     snprintf(srv->session_project, sizeof(srv->session_project), "%s", project);
     free(project);
 
